@@ -3,6 +3,7 @@ name = "pathbase"
 version = "0.1.0"
 description = "PathBase — goals, plans, actions, and learning"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "pathbase_lib"

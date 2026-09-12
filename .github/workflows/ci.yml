@@ -23,8 +23,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -37,16 +37,19 @@ jobs:
           test -f dist/client/index.html
           test -f dist/server/index.js
           test -f dist/.openai/hosting.json
+          test -f dist/client/licenses/PathBase-MIT.txt
+          test -f dist/client/licenses/NotoSansJP-OFL.txt
+          test -f dist/client/licenses/ZenKurenaido-OFL.txt
 
   api:
     name: Rust API tests and lint
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -57,19 +60,59 @@ jobs:
       - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml
       - run: cargo +"$RUST_TOOLCHAIN" clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings
 
+      - name: Share tested API binary with browser tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-api
+          path: api/target/debug/pathbase-api
+          if-no-files-found: error
+          retention-days: 1
+
+  browser:
+    name: Browser integration tests
+    needs: api
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: e2e-api
+          path: .cache/e2e-api
+      - run: chmod +x .cache/e2e-api/pathbase-api
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          PATHBASE_E2E_API_BIN: .cache/e2e-api/pathbase-api
+      - name: Upload browser failure report and traces
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-failure-report
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
   desktop:
     name: Tauri compile check
     runs-on: macos-14
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
       - name: Install Rust
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
