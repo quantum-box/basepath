@@ -6,9 +6,12 @@ export type Goal = {
   scope: Scope;
   icon: string;
   purpose: string;
-  progress: number;
+  progress: number | null;
   next: string;
   memo: string;
+  startDate?: string | null;
+  dueDate?: string | null;
+  state?: string;
 };
 export type Task = {
   id: string;
@@ -16,13 +19,16 @@ export type Task = {
   scope: Scope;
   time: string;
   done: boolean;
+  date?: string | null;
+  recurring?: boolean;
+  state?: string;
 };
 export type Initiative = {
   id: string;
   goalId: string;
   title: string;
   icon: string;
-  progress: number;
+  progress: number | null;
 };
 export const scopeClass: Record<Scope, string> = {
   個人: "blue",

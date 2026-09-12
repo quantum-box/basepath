@@ -1,52 +1,71 @@
 # PathBase
 
-参考画像をもとに実装した、React + TypeScript + Tauri 2 の目標管理デスクトップUIです。
+既存のパステル調のUIを維持した、React / TypeScript + Rust / Axum / SQLite + Tauri 2の目標・行動管理アプリです。目標と行動の共通モデルを使用し、認証はTachyon、営業データの参照はField APIへ接続します。
 
-## 起動
+## 実装済み
 
-Node.js 22.12以降とRust、OSごとの[Tauri開発環境](https://v2.tauri.app/start/prerequisites/)を使用します。
+- タイトルだけで項目を作成。目標・取り組み・行動・アイデア・節目を共通モデルで保存し、マップ・リスト・タイムライン・今日の行動で共有
+- 5種類のテンプレート、任意の日付・時刻、週の実施回数、実施日ごとの完了・見送り・再開、アーカイブと復元
+- 4種類の関連、循環検出、次の一歩、メモの下書き、学び・振り返りの追記履歴
+- 自己評価と成果指標を分離。出典・日時・単位付き観測、訂正履歴、未計測表示。行動の完了で目標の達成率を変更しない
+- SQLite永続化、トランザクション、楽観的ロック、再送の重複防止、領域ごとのアクセス制御、JSONバックアップと検証付き復元
+- Tachyon OIDCログイン、PKCE・state・nonce・署名検証、サーバー側セッション。Tachyonの正規ユーザーIDから個人領域を解決
+- 共有ワークスペースの作成・名前変更、TachyonユーザーID宛ての期限付き招待、参加・辞退・取り消し、オーナー／編集／閲覧の権限管理と退出。複数ワークスペースを名前で選択
+- Fieldの権限付き組織一覧、営業タスクの参照、MRR / ARR / 受注残 / 売掛残 / DSOを成果指標へ記録
+- Rustの共通処理を呼ぶHTTP API、Tauri IPC、ローカルstdio MCP。AIの変更案は差分表示・人の承認を経て原子的に適用
+
+## ローカル開発
+
+Node.js 22.12以降とRustが必要です。ネイティブアプリにはOSのTauri開発環境も必要です。
 
 ```sh
-npm install
-npm run tauri dev
+npm ci
+npm run dev
 ```
 
-ブラウザだけで確認する場合は `npm run dev` で http://localhost:1420 を開きます。開発サーバーが既に起動している場合は、そのプロセスを終了してから通常の `tauri dev` を実行してください。
+Rust APIを127.0.0.1:1431、画面をlocalhost:1420で一緒に起動します。API用のランダムな認証情報は開発プロセス内だけで扱います。標準では明示的な`local-preview`モードで、日付を現在に合わせたサンプル領域が作られます。`data/pathbase.sqlite3`に保存され、再起動後も残ります。サンプルの名前・写真・自己評価は実ユーザーの情報ではありません。
+
+Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理をIPC経由で使用し、アプリデータディレクトリの`preview.sqlite3`に保存します。ブラウザ開発用DBとは別です。認証済みのデスクトップ利用は`PATHBASE_WEB_URL`で同じTachyon保護アプリを開きます。releaseはURL未設定時にローカル所有者へ切り替わりません。
+
+## Tachyon / Field
+
+[.env.example](.env.example)を参考に、PathBase用に登録されたOIDCクライアントと環境の接続情報を設定します。`npm run dev`は`.env` / `.env.local`の`PATHBASE_*`、`TACHYON_*`、`FIELD_*`を読みます。単独Rustプロセスには環境変数として渡してください。認証情報を`VITE_*`に置かないでください。
+
+`PATHBASE_MODE=tachyon`の場合、必要な認証設定がないと起動しません。コールバックは`PATHBASE_PUBLIC_URL/api/auth/callback`と完全一致させます。ブラウザにはアクセストークンを渡さず、HttpOnlyのセッションCookieを使用します。セッションはプロセスのメモリに保持し、上限8時間・サーバー再起動後は再ログインです。ログアウトはPathBaseのセッションを破棄します。
+
+本番では同一オリジンの`/api/*`をRust APIへ転送し、`/api`プレフィックスを除きます。APIはループバック待受なので、同じホストにリバースプロキシを置く構成です。CookieとOriginヘッダーを保持してください。複数インスタンス向けの共有セッションストアは未実装です。
+
+Fieldは現在のユーザーのTachyonトークンと正規のテナント文脈で呼び、操作ごとに権限を確認します。FieldのタスクをPathBaseで完了しても元タスクは更新しません。タスク参照の重複取り込みを防止し、観測できない値は0に変換しません。実装根拠と設定項目は[連携契約](docs/integration-contracts.md)を参照してください。
+
+## API / MCP
+
+[API契約と例](docs/api.md)。実行中の`/api/v1/openapi.json`は認証された利用者へOpenAPIを返します。
+
+ローカルMCPは、ブラウザプレビューと同じ絶対DBパスを指定して起動します。stdioのためHTTP用トークンは不要です。
 
 ```sh
-npm run check                        # TypeScript
-npm run build                        # フロントエンド
-npm run tauri -- build --debug --bundles app   # macOSのローカル検証用.app
-npm run tauri build                  # リリースビルド
-npm run format                       # ソース整形
+PATHBASE_MODE=local-preview PATHBASE_DB=/absolute/path/to/data/pathbase.sqlite3 npm run --silent api:mcp
 ```
 
-この環境で生成したアプリ: `src-tauri/target/debug/bundle/macos/PathBase.app`
+13個のツール、項目のResource Template、3個のPromptを提供します。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。ホスト型MCP、OAuth委譲、将来のMCP仕様用アダプタは含めていません。
 
-## 実装した操作
+## 検証
 
-- 個人・チーム・組織の目標マップ、絞り込み、拡大・縮小、全画面表示
-- 目標の選択と詳細パネルの連動、目標編集、メモ編集、次の一歩の完了
-- 5種類のテンプレート選択と目標作成
-- 取り組みの追加、進捗更新
-- 今日の行動の追加と完了チェック
-- タイムラインの期間切り替えと目標選択
-- 目標・行動・メンバー検索（⌘K / Ctrl+K）
-- 振り返り入力、メンバー・通知・設定パネル
-- 狭いウィンドウでは縦レイアウトと折りたたみメニュー
+```sh
+npm run check
+npm run test:api
+npm run build
+npm run test:sites
+cargo clippy --manifest-path api/Cargo.toml --all-targets -- -D warnings
+cargo check --manifest-path src-tauri/Cargo.toml
+```
 
-UI確認用のサンプルデータです。画像に合わせて2025年4月の予定を表示し、編集内容はReactのメモリ上で保持します。アプリの再起動・ページの再読み込みで初期状態に戻ります。アカウント認証、クラウド同期、ファイル保存、実通知の送信は未実装です。
+APIテストは一時DBとローカルの模擬OIDC / Tachyon / Fieldサーバーを使用します。`api/tests/fixtures/oidc-test-key.pem`はテスト専用に生成した公開fixtureです。実アカウントの認証情報ではありません。
 
-## 構成
+GitHub ActionsではPRと`main`へのpushで、WebビルドとSitesテスト、Rust APIテストとclippy、macOS上のTauriコンパイルを実行します。CIは外部サービスの認証情報を必要としません。
 
-- `src/App.tsx`: ダッシュボードと操作フロー
-- `src/GoalMap.tsx`: React Flowのノード・接続線・表示制御
-- `src/data.ts`: 型定義とサンプルデータ
-- `src/styles.css`: 配色・余白・レスポンシブレイアウト
-- `src/fonts.css`: オフライン利用できる日本語フォント
-- `src-tauri/`: Rustエントリポイント、ウィンドウ設定、アプリアイコン
-- `ASSETS.md`: 生成素材と生成プロンプト
+## 現在の範囲
 
-画像とフォントはアプリに同梱しています。UIアイコンは[Phosphor Icons](https://github.com/phosphor-icons/react)、マップはReact Flow、書体はNoto Sans JPとZen Kurenaidoです。TauriとViteの接続は[公式のViteガイド](https://v2.tauri.app/start/frontend/vite/)に従い、このプロジェクトの出力先 `dist/client` を参照しています。
+PathBase用のTachyonクライアント登録、issuer、コールバック登録、Field接続環境は未提供のため、実環境でのログイン・複数アカウントでの招待・Fieldデータ取得は未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB / 共有セッション、ホスト型MCPは別途実装が必要です。
 
-`worker/` と `scripts/prepare-sites-build.mjs` はスターター由来のWeb公開用構成です。今回、外部への公開は行っていません。
+`.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs`、`tests/sites-worker.test.mjs`は既存構成を維持しています。`npm run build`は`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`を生成します。Sites用workerは静的配信であり、それだけではRust APIは公開されません。外部へのデプロイは行っていません。

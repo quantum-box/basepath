@@ -1,0 +1,26 @@
+[package]
+name = "pathbase-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "io-std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+utoipa = { version = "5", features = ["chrono"] }
+rmcp = { version = "1.5.0", features = ["transport-io", "transport-streamable-http-server"] }
+tower = { version = "0.5", features = ["util"] }
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jsonwebtoken = "9.3"
+base64 = "0.22"
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"

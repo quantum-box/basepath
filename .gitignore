@@ -3,3 +3,11 @@ dist/
 src-tauri/target/
 .DS_Store
 *.local
+
+api/target/
+data/
+*.sqlite3*
+
+.env
+.env.*
+!.env.example

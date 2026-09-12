@@ -9,17 +9,34 @@ import {
 import { Icon } from "./icons";
 import { GoalMap } from "./GoalMap";
 import {
-  initialGoals,
-  initialTasks,
-  initialInitiatives,
   templates,
-  learnings,
   scopeClass,
   type Goal,
   type Scope,
   type Task,
   type Initiative,
 } from "./data";
+
+import { useWorkspace } from "./useWorkspace";
+import {
+  localDate,
+  dateLabel,
+  uiId,
+  itemPath,
+  type Item,
+  type RecordEntry,
+} from "./api";
+import { FieldIntegration } from "./FieldIntegration";
+import { WorkspaceMembers } from "./WorkspaceMembers";
+import {
+  MemoEditor,
+  ItemEditor,
+  MetricEditor,
+  RelationsEditor,
+  StorageSettings,
+  ItemList,
+  Evaluation,
+} from "./Features";
 
 type ModalState =
   | { kind: "template"; template: string }
@@ -31,6 +48,8 @@ type ModalState =
   | { kind: "activity" }
   | { kind: "editGoal" }
   | { kind: "initiativeDetail"; id: string }
+  | { kind: "metrics" }
+  | { kind: "relations" }
   | null;
 const navigation = [
   { label: "ホーム", icon: "home" },
@@ -47,10 +66,22 @@ function Badge({ scope }: { scope: Scope }) {
 function Avatar({
   male = false,
   size = 32,
+  name,
 }: {
   male?: boolean;
   size?: number;
+  name?: string;
 }) {
+  if (name)
+    return (
+      <span
+        className="avatar member-avatar"
+        style={{ width: size, height: size }}
+        aria-label={name}
+      >
+        {Array.from(name)[0]}
+      </span>
+    );
   return (
     <img
       className="avatar"
@@ -65,9 +96,10 @@ function Progress({
   value,
   color = "purple",
 }: {
-  value: number;
+  value: number | null;
   color?: string;
 }) {
+  if (value === null) return <span className="empty-value">評価未設定</span>;
   return (
     <div className={`progress ${color}`}>
       <span
@@ -100,64 +132,228 @@ function TextLink({
 }
 
 export function App() {
-  const [goals, setGoals] = useState(initialGoals);
-  const [tasks, setTasks] = useState(initialTasks);
-  const [initiatives, setInitiatives] = useState(initialInitiatives);
-  const [selectedId, setSelectedId] = useState("event");
-  const [scope, setScope] = useState<Scope | "すべて">("すべて");
-  const [workspace, setWorkspace] = useState<Scope>("個人");
+  const store = useWorkspace();
+  const route = new URLSearchParams(window.location.search);
+  const [selectedId, setSelectedId] = useState(
+    route.get("item") || "team~event",
+  );
+  const [scope, setScope] = useState<Scope | "すべて">(
+    (route.get("scope") as Scope) || "すべて",
+  );
+  const [workspaceId, setWorkspaceId] = useState(route.get("workspace") || "");
   const [activeNav, setActiveNav] = useState("ホーム");
-  const [activeTab, setActiveTab] = useState("タイムライン");
+  const [activeTab, setActiveTab] = useState(
+    route.get("view") || "タイムライン",
+  );
   const [quarter, setQuarter] = useState(0);
   const [modal, setModal] = useState<ModalState>(null);
   const [toast, setToast] = useState("");
   const [notifications, setNotifications] = useState(false);
-  const [unread, setUnread] = useState(true);
+  const [editBase, setEditBase] = useState<number | null>(null);
   const [menu, setMenu] = useState(false);
   const [sidebar, setSidebar] = useState(false);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [nextDone, setNextDone] = useState<Record<string, boolean>>({});
-  const [compact, setCompact] = useState(false);
-  const [activity, setActivity] = useState<string[]>([]);
   const [reflection, setReflection] = useState("");
   const [savedReflection, setSavedReflection] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const compact = store.settings.compact;
+  const allItems = store.snapshots.flatMap((s) => s.items);
+  const allRelations = store.snapshots.flatMap((s) => s.relations);
+  const allRecords = store.snapshots.flatMap((s) => s.records);
+  const raw = (id: string) => allItems.find((i) => uiId(i) === id);
+  const scopeOf = (w: string): Scope =>
+    store.workspaces.find((s) => s.id === w)?.scope || "個人";
+  const currentWorkspace =
+    store.workspaces.find((w) => w.id === workspaceId) || store.workspaces[0];
+  const workspace = currentWorkspace?.name || "個人";
+  const canWrite = (w?: string) =>
+    store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
+  const workspaceMatches = (id: string) =>
+    scope === "すべて" ||
+    (scopeOf(id) === scope &&
+      (currentWorkspace?.scope !== scope || currentWorkspace.id === id));
+  const reviewDraftKey = `pathbase:review:${store.me.id}:${currentWorkspace?.id || ""}`;
+  useEffect(() => {
+    setReflection(
+      store.me.id && currentWorkspace
+        ? localStorage.getItem(reviewDraftKey) || ""
+        : "",
+    );
+    setSavedReflection("");
+  }, [reviewDraftKey]);
+  const today = localDate(store.settings.timezone);
+  const visibleItems = allItems.filter(
+    (i) => !i.archived_at && workspaceMatches(i.workspace_id),
+  );
+  const goals: Goal[] = visibleItems
+    .filter((i) => ["outcome", "idea", "milestone"].includes(i.kind))
+    .map((i) => ({
+      id: uiId(i),
+      title: i.title,
+      subtitle: i.fields.subtitle || "",
+      scope: scopeOf(i.workspace_id),
+      icon: i.fields.icon || "target",
+      purpose: i.description,
+      progress: i.fields.self_assessment ?? null,
+      next:
+        allItems.find(
+          (a) =>
+            a.id === i.fields.next_action_id &&
+            a.workspace_id === i.workspace_id,
+        )?.title || "",
+      memo: i.fields.memo || "",
+      startDate: i.start_date,
+      dueDate: i.due_date,
+      state: i.state,
+    }));
+  const initiatives: Initiative[] = visibleItems
+    .filter((i) => i.kind === "initiative")
+    .map((i) => ({
+      id: uiId(i),
+      goalId: (() => {
+        const r = allRelations.find(
+          (r) =>
+            r.workspace_id === i.workspace_id &&
+            r.source_id === i.id &&
+            r.type === "part_of",
+        );
+        return r ? `${i.workspace_id}~${r.target_id}` : "";
+      })(),
+      title: i.title,
+      icon: i.fields.icon || "flag",
+      progress: i.fields.self_assessment ?? null,
+    }));
+  const doneFor = (item: Item, date = today) =>
+    item.fields.recurrence
+      ? [...allRecords]
+          .reverse()
+          .find(
+            (r) =>
+              r.workspace_id === item.workspace_id &&
+              r.occurrence_key === `${item.id}:${date}`,
+          )?.record_type === "completion"
+      : item.state === "done";
+  const tasks: Task[] = visibleItems
+    .filter(
+      (i) =>
+        i.kind === "action" &&
+        !["paused", "abandoned", "draft"].includes(i.state) &&
+        (i.fields.recurrence
+          ? (!i.start_date || i.start_date <= today) &&
+            (!i.due_date || i.due_date >= today) &&
+            (i.fields.recurrence.mode === "period_quota" ||
+              i.fields.recurrence.weekdays.includes(
+                (new Date(today + "T12:00:00").getDay() + 6) % 7,
+              ))
+          : !i.scheduled_date || i.scheduled_date === today),
+    )
+    .map((i) => ({
+      id: uiId(i),
+      title: i.title,
+      scope: scopeOf(i.workspace_id),
+      time: i.scheduled_time || "",
+      done: doneFor(i),
+      date: i.scheduled_date,
+      recurring: !!i.fields.recurrence,
+      state: i.state,
+    }));
   const selected = goals.find((g) => g.id === selectedId) ?? goals[0];
+  const selectedRaw = selected ? raw(selected.id) : undefined;
+  const nextAction =
+    selectedRaw &&
+    allItems.find(
+      (i) =>
+        i.workspace_id === selectedRaw.workspace_id &&
+        i.id === selectedRaw.fields.next_action_id &&
+        !i.archived_at,
+    );
+  const records = allRecords
+    .filter((r) =>
+      scope === "すべて"
+        ? r.workspace_id === currentWorkspace?.id
+        : workspaceMatches(r.workspace_id),
+    )
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const learnings = records
+    .filter(
+      (r) =>
+        ["learning", "review", "checkin"].includes(r.record_type) && r.body,
+    )
+    .slice(0, 4)
+    .map((r) => r.body);
+  const activity = allRecords
+    .filter(
+      (r) =>
+        selectedRaw &&
+        r.workspace_id === selectedRaw.workspace_id &&
+        r.item_ids.some(
+          (id) =>
+            id === selectedRaw.id || id === selectedRaw.fields.next_action_id,
+        ),
+    )
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const unread =
+    store.invitations.length > 0 ||
+    (store.settings.notifications && tasks.some((t) => !t.done));
   const notify = useCallback((message: string) => setToast(message), []);
-  const selectGoal = useCallback((id: string) => setSelectedId(id), []);
+  function routeTo(changes: Record<string, string>) {
+    const url = new URL(window.location.href);
+    for (const [k, v] of Object.entries(changes)) url.searchParams.set(k, v);
+    window.history.pushState({}, "", url);
+  }
+  const selectGoal = useCallback((id: string) => {
+    setSelectedId(id);
+    routeTo({ item: id });
+  }, []);
   const openInitiative = useCallback(
     (id: string) => setModal({ kind: "initiativeDetail", id }),
     [],
   );
   useEffect(() => {
     if (!toast) return;
-    const timeout = setTimeout(() => setToast(""), 3200);
-    return () => clearTimeout(timeout);
+    const timer = setTimeout(() => setToast(""), 3200);
+    return () => clearTimeout(timer);
   }, [toast]);
   useEffect(() => {
-    const handle = (e: KeyboardEvent) => {
+    function handle(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         searchRef.current?.focus();
         setSearchOpen(true);
       }
       if (e.key === "Escape") {
-        setModal(null);
         setMenu(false);
         setNotifications(false);
         setSearchOpen(false);
         setSidebar(false);
       }
-    };
+    }
+    function back() {
+      const p = new URLSearchParams(window.location.search);
+      setSelectedId(p.get("item") || "");
+      setScope((p.get("scope") as Scope) || "すべて");
+      setActiveTab(p.get("view") || "タイムライン");
+    }
     window.addEventListener("keydown", handle);
-    return () => window.removeEventListener("keydown", handle);
+    window.addEventListener("popstate", back);
+    return () => {
+      window.removeEventListener("keydown", handle);
+      window.removeEventListener("popstate", back);
+    };
   }, []);
+
   function toggleTask(id: string) {
-    setTasks((items) =>
-      items.map((item) =>
-        item.id === id ? { ...item, done: !item.done } : item,
-      ),
+    const item = raw(id);
+    if (!item || !canWrite(item.workspace_id)) return;
+    void store.run(
+      () =>
+        store.write(
+          "POST",
+          `/v1/workspaces/${item.workspace_id}/actions/${item.id}/${doneFor(item) ? "reopen" : "complete"}`,
+          { expected_version: item.version, local_date: today },
+        ),
+      () => notify(doneFor(item) ? "未完了に戻しました" : "行動を記録しました"),
     );
   }
   function navigate(label: string) {
@@ -167,12 +363,9 @@ export function App() {
       setModal({ kind: "members" });
       return;
     }
-    if (
-      label === "今日の行動" ||
-      label === "振り返り" ||
-      label === "タイムライン"
-    ) {
+    if (["今日の行動", "振り返り", "タイムライン", "リスト"].includes(label)) {
       setActiveTab(label);
+      routeTo({ view: label });
       document
         .getElementById("workspace-panels")
         ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -189,109 +382,147 @@ export function App() {
   }
   function changeScope(value: Scope | "すべて") {
     setScope(value);
+    routeTo({ scope: value });
     if (value !== "すべて") {
-      const first = goals.find((g) => g.scope === value);
-      if (first) setSelectedId(first.id);
+      const target =
+        currentWorkspace?.scope === value
+          ? currentWorkspace
+          : store.workspaces.find((w) => w.scope === value);
+      if (target) setWorkspaceId(target.id);
+      const first = allItems.find(
+        (i) =>
+          i.kind === "outcome" &&
+          !i.archived_at &&
+          scopeOf(i.workspace_id) === value,
+      );
+      if (first) setSelectedId(uiId(first));
     }
   }
-  function saveForm(e: FormEvent<HTMLFormElement>) {
+  function selectWorkspace(id: string, selectedScope?: Scope) {
+    const target = store.workspaces.find((w) => w.id === id);
+    setWorkspaceId(id);
+    setScope(target?.scope || selectedScope || "すべて");
+    routeTo({
+      workspace: id,
+      scope: target?.scope || selectedScope || "すべて",
+    });
+  }
+  async function saveForm(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
-    const title = String(data.get("title") ?? "").trim();
+    const title = String(data.get("title") || "").trim();
     if (!title) return;
-    const formScope = String(data.get("scope") || workspace) as Scope;
-    if (modal?.kind === "template") {
-      const goal: Goal = {
-        id: `goal-${Date.now()}`,
-        title,
-        scope: formScope,
-        subtitle: String(
-          data.get("description") || "やりたいことを、一歩ずつ形に。",
-        ),
-        icon:
-          modal.template === "学習計画"
-            ? "graduation"
-            : modal.template === "プロジェクト"
-              ? "folder"
-              : "target",
-        purpose: String(
-          data.get("description") || "この目標を通じて、よりよい未来をつくる。",
-        ),
-        progress: 0,
-        next: "最初の一歩を決める",
-        memo: "",
-      };
-      setGoals([...goals, goal]);
-      setSelectedId(goal.id);
-      setScope("すべて");
-      notify("新しい目標を追加しました");
-    } else if (modal?.kind === "task") {
-      setTasks([
-        ...tasks,
-        {
-          id: `task-${Date.now()}`,
-          title,
-          scope: formScope,
-          time: String(data.get("time") || "09:00"),
-          done: false,
-        },
-      ]);
-      notify("今日の行動に追加しました");
-    } else if (modal?.kind === "initiative") {
-      setInitiatives([
-        ...initiatives,
-        {
-          id: `initiative-${Date.now()}`,
-          title,
-          goalId: selected.id,
-          icon: "flag",
-          progress: 0,
-        },
-      ]);
-      notify("取り組みを追加しました");
-    } else if (modal?.kind === "editGoal") {
-      setGoals(
-        goals.map((g) =>
-          g.id === selected.id
-            ? {
-                ...g,
-                title,
-                purpose: String(data.get("description") || ""),
-                progress: Number(data.get("progress")),
-              }
-            : g,
-        ),
-      );
-      setActivity((items) => ["目標の内容を更新しました", ...items]);
-      notify("目標を更新しました");
-    }
-    setModal(null);
+    const w = String(data.get("workspace_id") || currentWorkspace?.id || "");
+    if (!w) return;
+    const base = `/v1/workspaces/${w}`;
+    await store.run(
+      async () => {
+        if (modal?.kind === "template") {
+          const ids: Record<string, string> = {
+            自由形式: "free",
+            OKR: "okr",
+            プロジェクト: "project",
+            学習計画: "learning",
+            習慣づくり: "habit",
+          };
+          const item = await store.write<Item>(
+            "POST",
+            `${base}/templates/${ids[modal.template]}/apply`,
+            {
+              title,
+              description: String(data.get("description") || ""),
+              start_date: data.get("start_date") || null,
+              due_date: data.get("due_date") || null,
+            },
+          );
+          setSelectedId(uiId(item));
+          setScope("すべて");
+          routeTo({ item: uiId(item), scope: "すべて" });
+        } else if (modal?.kind === "task") {
+          const frequency = Number(data.get("frequency") || 0);
+          await store.write("POST", `${base}/items`, {
+            title,
+            kind: "action",
+            scheduled_date: data.get("date") || null,
+            scheduled_time: data.get("time") || null,
+            fields: {
+              recurrence: frequency
+                ? {
+                    mode: "period_quota",
+                    times_per_week: frequency,
+                    timezone: store.settings.timezone,
+                    weekdays: [],
+                  }
+                : null,
+            },
+          });
+        } else if (modal?.kind === "initiative" && selectedRaw) {
+          await store.write(
+            "POST",
+            `/v1/workspaces/${selectedRaw.workspace_id}/items`,
+            {
+              title,
+              kind: "initiative",
+              parent_id: selectedRaw.id,
+              fields: { icon: "flag" },
+            },
+          );
+        } else if (modal?.kind === "editGoal" && selectedRaw) {
+          const assessment = String(data.get("progress") || "");
+          await store.write("PATCH", itemPath(selectedRaw), {
+            expected_version: editBase,
+            title,
+            description: String(data.get("description") || ""),
+            state: data.get("state"),
+            start_date: data.get("start_date") || null,
+            due_date: data.get("due_date") || null,
+            fields: {
+              self_assessment: assessment === "" ? null : Number(assessment),
+              external_url: String(data.get("external_url") || ""),
+            },
+          });
+        }
+      },
+      () => {
+        setModal(null);
+        notify("保存しました");
+      },
+    );
   }
+  useEffect(() => {
+    if (modal?.kind === "editGoal") setEditBase(selectedRaw?.version ?? null);
+  }, [modal?.kind]);
   const results = search.trim()
-    ? [
-        ...goals.map((g) => ({
-          id: g.id,
-          title: g.title,
-          scope: g.scope,
-          type: "目標",
-        })),
-        ...tasks.map((t) => ({
-          id: t.id,
-          title: t.title,
-          scope: t.scope,
-          type: "行動",
-        })),
-        ...["やまだ はるか", "佐藤 健太"].map((name, i) => ({
-          id: `member-${i}`,
-          title: name,
-          scope: "チーム" as Scope,
-          type: "メンバー",
-        })),
-      ].filter((item) =>
-        item.title.toLowerCase().includes(search.toLowerCase()),
-      )
+    ? visibleItems
+        .filter((i) => i.title.toLowerCase().includes(search.toLowerCase()))
+        .slice(0, 30)
+        .map((i) => ({
+          id: uiId(i),
+          title: i.title,
+          scope: scopeOf(i.workspace_id),
+          type:
+            i.kind === "action"
+              ? "行動"
+              : i.kind === "initiative"
+                ? "取り組み"
+                : "目標",
+        }))
     : [];
 
+  if (store.error?.code === "UNAUTHENTICATED")
+    return (
+      <main className="auth-page">
+        <div className="panel auth-card">
+          <img src="/assets/pathbase-mark.png" alt="" width="55" />
+          <h1>PathBase</h1>
+          <p>やりたいことを、動ける形に。</p>
+          <a className="primary-button" href="/api/auth/login">
+            Tachyonでログイン
+          </a>
+          <small>目標と行動はあなたのアカウントに保存されます。</small>
+        </div>
+      </main>
+    );
   return (
     <div className={`app-shell ${compact ? "compact" : ""}`}>
       {sidebar && (
@@ -315,9 +546,9 @@ export function App() {
           {(["個人", "チーム", "組織"] as Scope[]).map((item) => (
             <button
               key={item}
-              className={workspace === item ? "active" : ""}
+              className={currentWorkspace?.scope === item ? "active" : ""}
+              disabled={!store.workspaces.some((w) => w.scope === item)}
               onClick={() => {
-                setWorkspace(item);
                 changeScope(item);
               }}
             >
@@ -326,6 +557,19 @@ export function App() {
           ))}
           <Icon name="down" size={13} />
         </div>
+        <select
+          className="workspace-name-select"
+          aria-label="現在のワークスペース"
+          value={currentWorkspace?.id || ""}
+          onChange={(event) => selectWorkspace(event.target.value)}
+        >
+          {store.workspaces.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.name}
+              {w.role === "viewer" ? "（閲覧のみ）" : ""}
+            </option>
+          ))}
+        </select>
         <nav className="main-nav" aria-label="メインメニュー">
           {navigation.map((item) => (
             <button
@@ -340,6 +584,11 @@ export function App() {
                 weight={activeNav === item.label ? "fill" : "regular"}
               />
               <span>{item.label}</span>
+              {item.label === "メンバー" && store.invitations.length > 0 && (
+                <span className="invitation-count">
+                  {store.invitations.length}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -347,7 +596,6 @@ export function App() {
           <button
             onClick={() => {
               setNotifications(!notifications);
-              setUnread(false);
             }}
           >
             <Icon name="bell" size={22} />
@@ -371,10 +619,17 @@ export function App() {
           className="profile"
           onClick={() => setModal({ kind: "members" })}
         >
-          <Avatar size={46} />
+          <Avatar
+            size={46}
+            name={store.me.mode === "tachyon" ? store.me.name : undefined}
+          />
           <span>
-            <strong>やまだ はるか</strong>
-            <small>haruka@pathbase.io</small>
+            <strong>{store.me.name}</strong>
+            <small>
+              {store.me.mode === "tachyon"
+                ? "Tachyonでログイン中"
+                : "ローカル確認用"}
+            </small>
           </span>
         </button>
       </aside>
@@ -421,7 +676,11 @@ export function App() {
                             setScope("すべて");
                           } else if (result.type === "メンバー")
                             setModal({ kind: "members" });
-                          else navigate("今日の行動");
+                          else
+                            setModal({
+                              kind: "initiativeDetail",
+                              id: result.id,
+                            });
                           setSearch("");
                           setSearchOpen(false);
                         }}
@@ -441,13 +700,26 @@ export function App() {
                 </div>
               )}
             </div>
+            <span
+              className={`save-status ${store.error ? "has-error" : ""}`}
+              role="status"
+            >
+              {store.pending
+                ? "保存中…"
+                : store.error
+                  ? "未保存・確認が必要"
+                  : store.loading
+                    ? "読み込み中…"
+                    : store.me.mode === "tachyon"
+                      ? "保存済み"
+                      : "この端末に保存済み"}
+            </span>
             <div className="notification-wrap">
               <button
                 className="icon-button notification-button"
                 aria-label="お知らせを表示"
                 onClick={() => {
                   setNotifications(!notifications);
-                  setUnread(false);
                 }}
               >
                 <Icon name="bell" size={23} />
@@ -458,18 +730,30 @@ export function App() {
                   <h3>
                     お知らせ <span>今日</span>
                   </h3>
-                  <p>
-                    <Icon name="users" size={19} />
-                    佐藤 健太さんが目標にコメントしました
-                  </p>
-                  <p>
-                    <Icon name="calendar" size={19} />
-                    会場の下見予約は4月25日です
-                  </p>
-                  <p>
-                    <Icon name="check" size={19} />
-                    今週の学習を1回達成しました
-                  </p>
+                  {store.invitations.length > 0 && (
+                    <button
+                      className="text-link"
+                      onClick={() => {
+                        setModal({ kind: "members" });
+                        setNotifications(false);
+                      }}
+                    >
+                      ワークスペースへの招待が{store.invitations.length}
+                      件届いています
+                    </button>
+                  )}
+                  {tasks
+                    .filter((t) => !t.done)
+                    .slice(0, 5)
+                    .map((t) => (
+                      <p key={t.id}>
+                        <Icon name="calendar" size={19} />
+                        {t.title} {t.time}
+                      </p>
+                    ))}
+                  {!tasks.some((t) => !t.done) && (
+                    <p>今日の未完了の行動はありません</p>
+                  )}
                   <button
                     className="text-link"
                     onClick={() => setNotifications(false)}
@@ -485,7 +769,10 @@ export function App() {
               aria-label="プロフィールを表示"
               onClick={() => setModal({ kind: "members" })}
             >
-              <Avatar size={34} />
+              <Avatar
+                size={34}
+                name={store.me.mode === "tachyon" ? store.me.name : undefined}
+              />
             </button>
           </div>
           <div className="hero-copy">
@@ -502,6 +789,23 @@ export function App() {
         </header>
 
         <div className="dashboard">
+          {store.error && (
+            <div className="save-error" role="alert">
+              <span>{store.error.message}</span>
+              <button
+                onClick={() => void store.refresh()}
+                disabled={store.pending}
+              >
+                最新を読み込む
+              </button>
+              <button aria-label="エラーを閉じる" onClick={store.clearError}>
+                ×
+              </button>
+            </div>
+          )}
+          {store.loading && (
+            <p className="empty-value">保存した目標を読み込んでいます…</p>
+          )}
           <section className="panel templates-panel" id="templates">
             <div className="section-header">
               <h2>テンプレートからはじめる</h2>
@@ -549,17 +853,22 @@ export function App() {
                   role="tablist"
                   aria-label="計画と振り返り"
                 >
-                  {["タイムライン", "今日の行動", "振り返り"].map((tab) => (
-                    <button
-                      role="tab"
-                      aria-selected={activeTab === tab}
-                      key={tab}
-                      className={activeTab === tab ? "active" : ""}
-                      onClick={() => setActiveTab(tab)}
-                    >
-                      {tab}
-                    </button>
-                  ))}
+                  {["タイムライン", "今日の行動", "振り返り", "リスト"].map(
+                    (tab) => (
+                      <button
+                        role="tab"
+                        aria-selected={activeTab === tab}
+                        key={tab}
+                        className={activeTab === tab ? "active" : ""}
+                        onClick={() => {
+                          setActiveTab(tab);
+                          routeTo({ view: tab });
+                        }}
+                      >
+                        {tab}
+                      </button>
+                    ),
+                  )}
                 </div>
                 <div className="bottom-grid">
                   <div className="timeline-card">
@@ -590,15 +899,29 @@ export function App() {
                         </div>
                         <TaskList
                           tasks={tasks}
+                          canEdit={(id) => canWrite(raw(id)?.workspace_id)}
                           toggleTask={toggleTask}
                           expanded
+                          disabled={store.pending}
+                          onEdit={(id) =>
+                            setModal({ kind: "initiativeDetail", id })
+                          }
                         />
                       </>
+                    ) : activeTab === "リスト" ? (
+                      <ItemList
+                        items={visibleItems}
+                        onSelect={(id) =>
+                          setModal({ kind: "initiativeDetail", id })
+                        }
+                      />
                     ) : (
                       <>
                         <div className="section-header">
                           <h3>今週の振り返り</h3>
-                          <span className="week-label">4/21 – 4/27</span>
+                          <span className="week-label">
+                            {workspace} · {dateLabel(today)}
+                          </span>
                         </div>
                         <div className="reflection-summary">
                           <span className="reflection-icon">
@@ -612,19 +935,44 @@ export function App() {
                         <textarea
                           className="reflection-input"
                           value={reflection}
-                          onChange={(e) => setReflection(e.target.value)}
+                          onChange={(e) => {
+                            setReflection(e.target.value);
+                            localStorage.setItem(
+                              reviewDraftKey,
+                              e.target.value,
+                            );
+                          }}
                           aria-label="今週の振り返り"
                           placeholder="今週はどんな一歩を踏み出しましたか？"
                         />
                         <button
                           className="text-link"
                           disabled={
-                            !reflection.trim() || reflection === savedReflection
+                            store.pending ||
+                            !canWrite(currentWorkspace?.id) ||
+                            !currentWorkspace ||
+                            !reflection.trim() ||
+                            reflection === savedReflection
                           }
-                          onClick={() => {
-                            setSavedReflection(reflection);
-                            notify("振り返りを記録しました");
-                          }}
+                          onClick={() =>
+                            void store.run(
+                              () =>
+                                store.write(
+                                  "POST",
+                                  `/v1/workspaces/${currentWorkspace?.id}/records`,
+                                  {
+                                    record_type: "review",
+                                    body: reflection,
+                                    item_ids: [],
+                                  },
+                                ),
+                              () => {
+                                setSavedReflection(reflection);
+                                localStorage.removeItem(reviewDraftKey);
+                                notify("振り返りを記録しました");
+                              },
+                            )
+                          }
                         >
                           {savedReflection && reflection === savedReflection
                             ? "記録しました"
@@ -647,7 +995,15 @@ export function App() {
                       </h3>
                       <TextLink onClick={() => setActiveTab("今日の行動")} />
                     </div>
-                    <TaskList tasks={tasks} toggleTask={toggleTask} />
+                    <TaskList
+                      tasks={tasks.slice(0, 5)}
+                      canEdit={(id) => canWrite(raw(id)?.workspace_id)}
+                      toggleTask={toggleTask}
+                      disabled={store.pending}
+                      onEdit={(id) =>
+                        setModal({ kind: "initiativeDetail", id })
+                      }
+                    />
                     <button
                       className="add-link"
                       onClick={() => setModal({ kind: "task" })}
@@ -680,6 +1036,9 @@ export function App() {
                       />
                     </div>
                     <ul>
+                      {!learnings.length && (
+                        <li>振り返りを記録すると、ここに学びが届きます。</li>
+                      )}
                       {learnings.map((learning) => (
                         <li key={learning}>{learning}</li>
                       ))}
@@ -688,168 +1047,192 @@ export function App() {
                 </div>
               </section>
             </div>
-            <aside
-              className={`panel detail-panel ${scopeClass[selected.scope]}`}
-              aria-label="選択した目標の詳細"
-            >
-              <div className="detail-heading">
-                <span className={`detail-icon ${scopeClass[selected.scope]}`}>
-                  <Icon name={selected.icon} size={30} weight="duotone" />
-                </span>
-                <div>
-                  <Badge scope={selected.scope} />
-                  <h2>{selected.title}</h2>
-                  <p>{selected.subtitle}</p>
-                </div>
-                <div className="goal-menu">
-                  <button
-                    className="icon-button"
-                    aria-label="目標のメニュー"
-                    onClick={() => setMenu(!menu)}
-                  >
-                    <Icon name="more" size={25} weight="bold" />
-                  </button>
-                  {menu && (
-                    <div className="context-menu">
-                      <button
-                        onClick={() => {
-                          setModal({ kind: "editGoal" });
-                          setMenu(false);
-                        }}
-                      >
-                        <Icon name="note" size={17} />
-                        目標を編集
-                      </button>
-                      <button
-                        onClick={() => {
-                          setNextDone({ ...nextDone, [selected.id]: false });
-                          setMenu(false);
-                          notify("次の一歩を未完了に戻しました");
-                        }}
-                      >
-                        <Icon name="repeat" size={17} />
-                        次の一歩をリセット
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="detail-fields">
-                <DetailRow icon="flag" label="目的">
-                  <div className="field-box">{selected.purpose}</div>
-                </DetailRow>
-                <DetailRow icon="chart" label="進捗">
-                  <Progress
-                    value={selected.progress}
-                    color={scopeClass[selected.scope]}
-                  />
-                </DetailRow>
-                <DetailRow icon="rocket" label="次の一歩">
-                  <label
-                    className={`next-step ${nextDone[selected.id] ? "done" : ""}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!nextDone[selected.id]}
-                      onChange={(e) => {
-                        setNextDone({
-                          ...nextDone,
-                          [selected.id]: e.target.checked,
-                        });
-                        if (e.target.checked) {
-                          notify("一歩前進しました！");
-                          setActivity((items) => [
-                            "次の一歩を完了しました",
-                            ...items,
-                          ]);
-                        }
-                      }}
-                    />
-                    <span>
-                      {selected.next}
-                      <small className="date-chip">4月25日（金）</small>
-                    </span>
-                  </label>
-                </DetailRow>
-                <DetailRow icon="graduation" label="関連する取り組み">
-                  <div className="related-list">
-                    {initiatives
-                      .filter((i) => i.goalId === selected.id)
-                      .map((i) => (
+            {selected && selectedRaw ? (
+              <aside
+                className={`panel detail-panel ${scopeClass[selected.scope]}`}
+                aria-label="選択した目標の詳細"
+              >
+                <div className="detail-heading">
+                  <span className={`detail-icon ${scopeClass[selected.scope]}`}>
+                    <Icon name={selected.icon} size={30} weight="duotone" />
+                  </span>
+                  <div>
+                    <Badge scope={selected.scope} />
+                    <h2>{selected.title}</h2>
+                    <p>{selected.subtitle}</p>
+                  </div>
+                  <div className="goal-menu">
+                    <button
+                      className="icon-button"
+                      aria-label="目標のメニュー"
+                      onClick={() => setMenu(!menu)}
+                    >
+                      <Icon name="more" size={25} weight="bold" />
+                    </button>
+                    {menu && (
+                      <div className="context-menu">
                         <button
-                          key={i.id}
-                          onClick={() =>
-                            setModal({ kind: "initiativeDetail", id: i.id })
-                          }
+                          onClick={() => {
+                            setModal({ kind: "editGoal" });
+                            setMenu(false);
+                          }}
                         >
-                          <span
-                            className={`related-icon ${i.icon === "calendar" ? "pink" : "blue"}`}
-                          >
-                            <Icon name={i.icon} size={17} weight="duotone" />
-                          </span>
-                          {i.title.replace("\n", "")}
+                          <Icon name="note" size={17} />
+                          目標を編集
                         </button>
-                      ))}
-                    {selected.id === "event" && (
-                      <button onClick={() => setModal({ kind: "initiative" })}>
-                        <span className="related-icon blue">
-                          <Icon name="link" size={17} />
+                        <button
+                          onClick={() => {
+                            if (nextAction && doneFor(nextAction))
+                              toggleTask(uiId(nextAction));
+                            setMenu(false);
+                          }}
+                        >
+                          <Icon name="repeat" size={17} />
+                          次の一歩をリセット
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="detail-fields">
+                  <DetailRow icon="flag" label="目的">
+                    <div className="field-box">{selected.purpose}</div>
+                  </DetailRow>
+                  <DetailRow icon="chart" label="成果・手応え">
+                    <Evaluation
+                      item={selectedRaw}
+                      snapshots={store.snapshots}
+                    />
+                    <button
+                      className="text-link"
+                      onClick={() => setModal({ kind: "metrics" })}
+                    >
+                      成果を記録 <Icon name="plus" size={13} />
+                    </button>
+                  </DetailRow>
+                  <DetailRow icon="rocket" label="次の一歩">
+                    {nextAction ? (
+                      <label
+                        className={`next-step ${doneFor(nextAction) ? "done" : ""}`}
+                      >
+                        <input
+                          type="checkbox"
+                          disabled={store.pending}
+                          checked={doneFor(nextAction)}
+                          onChange={() => toggleTask(uiId(nextAction))}
+                        />
+                        <span>
+                          {nextAction.title}
+                          <small className="date-chip">
+                            {dateLabel(nextAction.scheduled_date)}
+                          </small>
                         </span>
-                        地域の協力パートナーを探す
+                      </label>
+                    ) : (
+                      <button
+                        className="add-link"
+                        onClick={() => setModal({ kind: "relations" })}
+                      >
+                        次の行動を関連付ける
                       </button>
                     )}
+                  </DetailRow>
+                  <DetailRow icon="graduation" label="関連する取り組み">
+                    <div className="related-list">
+                      {initiatives
+                        .filter((i) => i.goalId === selected.id)
+                        .map((i) => (
+                          <button
+                            key={i.id}
+                            onClick={() =>
+                              setModal({ kind: "initiativeDetail", id: i.id })
+                            }
+                          >
+                            <span
+                              className={`related-icon ${i.icon === "calendar" ? "pink" : "blue"}`}
+                            >
+                              <Icon name={i.icon} size={17} weight="duotone" />
+                            </span>
+                            {i.title.replace("\n", "")}
+                          </button>
+                        ))}
+                      <button
+                        className="add-link"
+                        onClick={() => setModal({ kind: "initiative" })}
+                      >
+                        <Icon name="plus" size={16} />
+                        取り組みを追加
+                      </button>
+                    </div>
+                  </DetailRow>
+                  <DetailRow icon="link" label="つながり">
                     <button
-                      className="add-link"
-                      onClick={() => setModal({ kind: "initiative" })}
+                      className="text-link"
+                      onClick={() => setModal({ kind: "relations" })}
                     >
-                      <Icon name="plus" size={16} />
-                      取り組みを追加
+                      関連・依存関係を編集 <Icon name="arrow" size={14} />
                     </button>
-                  </div>
-                </DetailRow>
-                <DetailRow icon="note" label="メモ">
-                  <textarea
-                    key={selected.id}
-                    className="field-box memo-input"
-                    aria-label="目標のメモ"
-                    value={selected.memo}
-                    placeholder="この目標についてメモを残す"
-                    onChange={(e) =>
-                      setGoals(
-                        goals.map((g) =>
-                          g.id === selected.id
-                            ? { ...g, memo: e.target.value }
-                            : g,
-                        ),
-                      )
-                    }
-                  />
-                </DetailRow>
-              </div>
-              <div className="activity-section">
-                <div className="section-header">
-                  <h3>
-                    <Icon name="shield" size={19} />
-                    アクティビティ
-                  </h3>
-                  <TextLink onClick={() => setModal({ kind: "activity" })} />
+                    {selectedRaw.fields.external_url && (
+                      <a
+                        className="text-link"
+                        href={selectedRaw.fields.external_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        参考リンク
+                      </a>
+                    )}
+                  </DetailRow>
+                  <DetailRow icon="note" label="メモ">
+                    <MemoEditor
+                      key={`${store.me.id}:${selected.id}`}
+                      item={selectedRaw}
+                      store={store}
+                    />
+                  </DetailRow>
                 </div>
-                <ActivityList activity={activity} />
-              </div>
-              <div className="detail-quote">
-                <Icon
-                  name="leaf"
-                  size={25}
-                  className="green-text"
-                  weight="duotone"
-                />
-                <p>
-                  やってみたからこそ、わかったことがある。
-                  <br />
-                  それが、次の一歩につながる。
-                </p>
-              </div>
-            </aside>
+                <div className="activity-section">
+                  <div className="section-header">
+                    <h3>
+                      <Icon name="shield" size={19} />
+                      アクティビティ
+                    </h3>
+                    <TextLink onClick={() => setModal({ kind: "activity" })} />
+                  </div>
+                  <ActivityList
+                    activity={activity}
+                    currentActor={store.me.id}
+                  />
+                </div>
+                <div className="detail-quote">
+                  <Icon
+                    name="leaf"
+                    size={25}
+                    className="green-text"
+                    weight="duotone"
+                  />
+                  <p>
+                    やってみたからこそ、わかったことがある。
+                    <br />
+                    それが、次の一歩につながる。
+                  </p>
+                </div>
+              </aside>
+            ) : (
+              <aside className="panel empty-detail">
+                <Icon name="target" size={38} />
+                <h2>やりたいことを一つ、ここから。</h2>
+                <p>タイトルだけで保存できます。</p>
+                <button
+                  className="primary-button"
+                  onClick={() =>
+                    setModal({ kind: "template", template: "自由形式" })
+                  }
+                >
+                  目標を追加
+                </button>
+              </aside>
+            )}
           </div>
         </div>
       </main>
@@ -884,210 +1267,365 @@ export function App() {
                           ? "アクティビティ"
                           : modal.kind === "editGoal"
                             ? "目標を編集"
-                            : "取り組みの詳細"
+                            : modal.kind === "metrics"
+                              ? "成果と手応えを記録"
+                              : modal.kind === "relations"
+                                ? "項目のつながり"
+                                : "項目の詳細"
           }
         >
+          {store.error && (
+            <p className="save-error" role="alert">
+              {store.error.message}
+              <button onClick={() => void store.refresh()}>最新を確認</button>
+            </p>
+          )}
+          {modal.kind === "editGoal" &&
+            editBase !== null &&
+            editBase !== selectedRaw?.version && (
+              <div className="conflict-note">
+                <p>
+                  最新の目標：{selectedRaw?.title} · {selectedRaw?.description}
+                </p>
+                <button
+                  onClick={() => setEditBase(selectedRaw?.version ?? null)}
+                >
+                  最新を確認し、自分の入力で更新する
+                </button>
+              </div>
+            )}
           {(modal.kind === "template" ||
             modal.kind === "task" ||
             modal.kind === "initiative" ||
             modal.kind === "editGoal") && (
             <form onSubmit={saveForm} className="editor-form">
-              {modal.kind === "template" && (
-                <>
-                  <p className="modal-intro">
-                    やってみたいことを、ここから始めましょう。
+              <fieldset
+                disabled={
+                  store.pending ||
+                  ((modal.kind === "editGoal" || modal.kind === "initiative") &&
+                    !canWrite(selectedRaw?.workspace_id)) ||
+                  (modal.kind === "editGoal" &&
+                    editBase !== null &&
+                    editBase !== selectedRaw?.version)
+                }
+              >
+                {modal.kind === "template" && (
+                  <>
+                    <p className="modal-intro">
+                      やってみたいことを、ここから始めましょう。
+                    </p>
+                    <div className="template-picker">
+                      {templates.map((t) => (
+                        <button
+                          type="button"
+                          key={t.title}
+                          aria-pressed={modal.template === t.title}
+                          className={`${t.color} ${modal.template === t.title ? "selected" : ""}`}
+                          onClick={() =>
+                            setModal({ kind: "template", template: t.title })
+                          }
+                        >
+                          <Icon name={t.icon} size={23} />
+                          <span>{t.title}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+                <label>
+                  {modal.kind === "task"
+                    ? "どんな行動をしますか？"
+                    : modal.kind === "initiative"
+                      ? "取り組みの名前"
+                      : "目標の名前"}
+                  <input
+                    name="title"
+                    autoFocus
+                    required
+                    maxLength={60}
+                    defaultValue={
+                      modal.kind === "editGoal" ? selected?.title : ""
+                    }
+                    placeholder={
+                      modal.kind === "task"
+                        ? "例：英会話を30分学習する"
+                        : "例：地域の人がつながる場所をつくる"
+                    }
+                  />
+                </label>
+                {store.error && (
+                  <p className="save-error" role="alert">
+                    {store.error.message}
+                    <button onClick={() => void store.refresh()}>
+                      最新を確認
+                    </button>
                   </p>
-                  <div className="template-picker">
-                    {templates.map((t) => (
+                )}
+                {modal.kind === "editGoal" &&
+                  editBase !== null &&
+                  editBase !== selectedRaw?.version && (
+                    <div className="conflict-note">
+                      <p>
+                        最新の目標：{selectedRaw?.title} ·{" "}
+                        {selectedRaw?.description}
+                      </p>
                       <button
-                        type="button"
-                        key={t.title}
-                        aria-pressed={modal.template === t.title}
-                        className={`${t.color} ${modal.template === t.title ? "selected" : ""}`}
                         onClick={() =>
-                          setModal({ kind: "template", template: t.title })
+                          setEditBase(selectedRaw?.version ?? null)
                         }
                       >
-                        <Icon name={t.icon} size={23} />
-                        <span>{t.title}</span>
+                        最新を確認し、自分の入力で更新する
                       </button>
-                    ))}
+                    </div>
+                  )}
+                {(modal.kind === "template" || modal.kind === "task") && (
+                  <label>
+                    ワークスペース
+                    <select
+                      name="workspace_id"
+                      defaultValue={
+                        canWrite(currentWorkspace?.id)
+                          ? currentWorkspace?.id
+                          : store.workspaces.find((w) => w.role !== "viewer")
+                              ?.id
+                      }
+                    >
+                      {store.workspaces
+                        .filter((w) => w.role !== "viewer")
+                        .map((w) => (
+                          <option key={w.id} value={w.id}>
+                            {w.name} · {w.scope}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
+                {store.error && (
+                  <p className="save-error" role="alert">
+                    {store.error.message}
+                    <button onClick={() => void store.refresh()}>
+                      最新を確認
+                    </button>
+                  </p>
+                )}
+                {modal.kind === "editGoal" &&
+                  editBase !== null &&
+                  editBase !== selectedRaw?.version && (
+                    <div className="conflict-note">
+                      <p>
+                        最新の目標：{selectedRaw?.title} ·{" "}
+                        {selectedRaw?.description}
+                      </p>
+                      <button
+                        onClick={() =>
+                          setEditBase(selectedRaw?.version ?? null)
+                        }
+                      >
+                        最新を確認し、自分の入力で更新する
+                      </button>
+                    </div>
+                  )}
+                {(modal.kind === "template" || modal.kind === "editGoal") && (
+                  <label>
+                    この目標の目的
+                    <textarea
+                      name="description"
+                      rows={3}
+                      defaultValue={
+                        modal.kind === "editGoal" ? selected?.purpose : ""
+                      }
+                      placeholder="どんな未来につなげたいですか？"
+                    />
+                  </label>
+                )}
+                {modal.kind === "template" && (
+                  <p className="template-preview">
+                    作成内容：
+                    {modal.template === "自由形式"
+                      ? "目標を1つ。数値・期限・親は任意です。"
+                      : modal.template === "OKR"
+                        ? "目標とOKRビュー。指標は後から自分で設定できます。"
+                        : modal.template === "プロジェクト"
+                          ? "目標・取り組み・最初の行動を作成します。"
+                          : "目標・取り組み・週3回の習慣を作成します。"}
+                  </p>
+                )}
+                {(modal.kind === "template" || modal.kind === "editGoal") && (
+                  <div className="form-columns">
+                    <label>
+                      開始日（任意）
+                      <input
+                        type="date"
+                        name="start_date"
+                        defaultValue={
+                          modal.kind === "editGoal"
+                            ? selectedRaw?.start_date || ""
+                            : ""
+                        }
+                      />
+                    </label>
+                    <label>
+                      終了日・期限（任意）
+                      <input
+                        type="date"
+                        name="due_date"
+                        defaultValue={
+                          modal.kind === "editGoal"
+                            ? selectedRaw?.due_date || ""
+                            : ""
+                        }
+                      />
+                    </label>
                   </div>
-                </>
-              )}
-              <label>
-                {modal.kind === "task"
-                  ? "どんな行動をしますか？"
-                  : modal.kind === "initiative"
-                    ? "取り組みの名前"
-                    : "目標の名前"}
-                <input
-                  name="title"
-                  autoFocus
-                  required
-                  maxLength={60}
-                  defaultValue={modal.kind === "editGoal" ? selected.title : ""}
-                  placeholder={
-                    modal.kind === "task"
-                      ? "例：英会話を30分学習する"
-                      : "例：地域の人がつながる場所をつくる"
-                  }
-                />
-              </label>
-              {(modal.kind === "template" || modal.kind === "task") && (
-                <label>
-                  ワークスペース
-                  <select name="scope" defaultValue={workspace}>
-                    <option>個人</option>
-                    <option>チーム</option>
-                    <option>組織</option>
-                  </select>
-                </label>
-              )}
-              {(modal.kind === "template" || modal.kind === "editGoal") && (
-                <label>
-                  この目標の目的
-                  <textarea
-                    name="description"
-                    rows={3}
-                    defaultValue={
-                      modal.kind === "editGoal" ? selected.purpose : ""
-                    }
-                    placeholder="どんな未来につなげたいですか？"
-                  />
-                </label>
-              )}
-              {modal.kind === "task" && (
-                <label>
-                  取り組む時間
-                  <input
-                    type="time"
-                    name="time"
-                    defaultValue="09:00"
-                    required
-                  />
-                </label>
-              )}
-              {modal.kind === "editGoal" && (
-                <label>
-                  進捗（%）
-                  <input
-                    type="number"
-                    name="progress"
-                    min={0}
-                    max={100}
-                    required
-                    defaultValue={selected.progress}
-                  />
-                </label>
-              )}
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setModal(null)}
-                >
-                  キャンセル
-                </button>
-                <button className="primary-button" type="submit">
-                  <Icon
-                    name={modal.kind === "editGoal" ? "check" : "plus"}
-                    size={18}
-                  />
-                  {modal.kind === "editGoal"
-                    ? "変更を保存"
-                    : modal.kind === "template"
-                      ? "目標を作成"
-                      : "追加する"}
-                </button>
-              </div>
+                )}
+                {modal.kind === "task" && (
+                  <>
+                    <label>
+                      日付（任意）
+                      <input type="date" name="date" defaultValue={today} />
+                    </label>
+                    <label>
+                      繰り返し
+                      <select name="frequency" defaultValue="0">
+                        <option value="0">繰り返さない</option>
+                        {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+                          <option key={n} value={n}>
+                            週{n}回
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
+                {modal.kind === "task" && (
+                  <label>
+                    取り組む時間
+                    <input type="time" name="time" defaultValue="" />
+                  </label>
+                )}
+                {modal.kind === "editGoal" && (
+                  <label>
+                    自己評価（%・任意）
+                    <input
+                      type="number"
+                      name="progress"
+                      min={0}
+                      max={100}
+                      defaultValue={selected?.progress ?? ""}
+                    />
+                  </label>
+                )}
+                {modal.kind === "editGoal" && (
+                  <>
+                    <label>
+                      状態
+                      <select name="state" defaultValue={selectedRaw?.state}>
+                        {Object.entries({
+                          draft: "下書き",
+                          active: "進行中",
+                          paused: "休止中",
+                          done: "達成",
+                          abandoned: "見送り",
+                        }).map(([v, l]) => (
+                          <option key={v} value={v}>
+                            {l}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      参考リンク（任意）
+                      <input
+                        type="url"
+                        name="external_url"
+                        defaultValue={selectedRaw?.fields.external_url || ""}
+                        placeholder="https://…"
+                      />
+                    </label>
+                  </>
+                )}
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => setModal(null)}
+                  >
+                    キャンセル
+                  </button>
+                  <button className="primary-button" type="submit">
+                    <Icon
+                      name={modal.kind === "editGoal" ? "check" : "plus"}
+                      size={18}
+                    />
+                    {modal.kind === "editGoal"
+                      ? "変更を保存"
+                      : modal.kind === "template"
+                        ? "目標を作成"
+                        : "追加する"}
+                  </button>
+                </div>
+              </fieldset>
             </form>
           )}
           {modal.kind === "members" && (
-            <div className="members-list">
-              <p className="modal-intro">一人ひとりの一歩を、チームの力に。</p>
-              <div>
-                <Avatar size={44} />
-                <span>
-                  <strong>
-                    やまだ はるか <small>あなた</small>
-                  </strong>
-                  <p>haruka@pathbase.io</p>
-                </span>
-                <Badge scope="チーム" />
-              </div>
-              <div>
-                <Avatar male size={44} />
-                <span>
-                  <strong>佐藤 健太</strong>
-                  <p>kenta@pathbase.io</p>
-                </span>
-                <Badge scope="チーム" />
-              </div>
-              <p className="demo-note">サンプルワークスペース · メンバー2名</p>
-            </div>
+            <WorkspaceMembers
+              store={store}
+              workspaceId={currentWorkspace?.id}
+              onSelect={selectWorkspace}
+            />
           )}
           {modal.kind === "settings" && (
-            <div className="settings-list">
-              <div>
-                <span>
-                  <strong>コンパクト表示</strong>
-                  <p>タスクの行間を小さく表示します</p>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={compact}
-                  onChange={(e) => setCompact(e.target.checked)}
-                  aria-label="コンパクト表示"
-                />
-              </div>
-              <div>
-                <span>
-                  <strong>表示言語</strong>
-                  <p>日本語</p>
-                </span>
-                <span>日本語</span>
-              </div>
-              <p className="demo-note">
-                PathBase 0.1.0 · React + Tauri
-                <br />
-                変更内容はこのセッション中のみ保持されます。
-              </p>
-            </div>
+            <>
+              <FieldIntegration
+                store={store}
+                workspaceId={currentWorkspace?.id || "personal"}
+              />
+              <StorageSettings
+                store={store}
+                workspaceId={currentWorkspace?.id || "personal"}
+                onSelect={(id) => {
+                  setModal({ kind: "initiativeDetail", id });
+                }}
+              />
+            </>
+          )}
+          {modal.kind === "metrics" && selectedRaw && (
+            <fieldset disabled={!canWrite(selectedRaw.workspace_id)}>
+              <MetricEditor item={selectedRaw} store={store} />
+            </fieldset>
+          )}
+          {modal.kind === "relations" && selectedRaw && (
+            <fieldset disabled={!canWrite(selectedRaw.workspace_id)}>
+              <RelationsEditor item={selectedRaw} store={store} />
+            </fieldset>
           )}
           {modal.kind === "learnings" && (
             <ul className="learning-modal-list">
-              {learnings.map((item, index) => (
+              {learnings.map((item) => (
                 <li key={item}>
                   <span className="related-icon orange">
                     <Icon name="bulb" size={22} weight="duotone" />
                   </span>
                   <div>
                     {item}
-                    <small>
-                      4月{24 - index}日 · {index === 2 ? "個人" : "チーム"}
-                      の学び
-                    </small>
+                    <small>{workspace}の学び</small>
                   </div>
                 </li>
               ))}
             </ul>
           )}
           {modal.kind === "activity" && (
-            <ActivityList activity={activity} full />
+            <ActivityList activity={activity} currentActor={store.me.id} full />
           )}
-          {modal.kind === "initiativeDetail" && (
-            <InitiativeDetails
-              initiative={initiatives.find((i) => i.id === modal.id)!}
-              onUpdate={(value) => {
-                setInitiatives(
-                  initiatives.map((i) =>
-                    i.id === modal.id ? { ...i, progress: value } : i,
-                  ),
-                );
-                notify("取り組みの進捗を更新しました");
-              }}
-            />
+          {modal.kind === "initiativeDetail" && raw(modal.id) && (
+            <fieldset disabled={!canWrite(raw(modal.id)?.workspace_id)}>
+              <ItemEditor
+                key={`${store.me.id}:${modal.id}`}
+                item={raw(modal.id)!}
+                store={store}
+                onClose={() => setModal(null)}
+              />
+            </fieldset>
           )}
         </Modal>
       )}
@@ -1118,74 +1656,79 @@ function TaskList({
   tasks,
   toggleTask,
   expanded = false,
+  disabled = false,
+  onEdit,
+  canEdit,
 }: {
   tasks: Task[];
   toggleTask: (id: string) => void;
   expanded?: boolean;
+  disabled?: boolean;
+  onEdit: (id: string) => void;
+  canEdit: (id: string) => boolean;
 }) {
   return (
     <div className={`task-list ${expanded ? "expanded-tasks" : ""}`}>
+      {!tasks.length && (
+        <p className="empty-value">今日の行動はまだありません。</p>
+      )}
       {tasks.map((task) => (
-        <label
+        <div
           className={`task-row ${task.done ? "completed" : ""}`}
           key={task.id}
         >
           <input
             type="checkbox"
+            aria-label={`${task.title}を完了`}
             checked={task.done}
+            disabled={disabled || !canEdit(task.id)}
             onChange={() => toggleTask(task.id)}
           />
-          <span className="task-title">{task.title}</span>
+          <button className="task-title" onClick={() => onEdit(task.id)}>
+            {task.title}
+            {task.recurring && <small> ↻ 習慣</small>}
+          </button>
           <Badge scope={task.scope} />
-          <time>今日 {task.time.replace(/^0/, "")}</time>
-        </label>
+          <time>{task.time || "時刻未定"}</time>
+        </div>
       ))}
     </div>
   );
 }
 function ActivityList({
   activity,
+  currentActor,
   full = false,
 }: {
-  activity: string[];
+  activity: RecordEntry[];
+  currentActor: string;
   full?: boolean;
 }) {
-  const entries = [
-    ...activity.map((text) => ({
-      name: "やまだ はるか",
-      text,
-      date: "たった今",
-      male: false,
-    })),
-    {
-      name: "やまだ はるか",
-      text: "会場候補をリストアップしました",
-      date: "2日前",
-      male: false,
-    },
-    {
-      name: "佐藤 健太",
-      text: "この目標にコメントしました",
-      date: "3日前",
-      male: true,
-    },
-    {
-      name: "やまだ はるか",
-      text: "進捗を30% → 40%に更新しました",
-      date: "4日前",
-      male: false,
-    },
-  ];
   return (
     <div className={`activity-list ${full ? "full" : ""}`}>
-      {entries.slice(0, full ? 20 : 3).map((item, index) => (
-        <div className="activity-row" key={index}>
-          <Avatar male={item.male} size={28} />
+      {!activity.length && <p className="empty-value">まだ記録はありません</p>}
+      {activity.slice(0, full ? 100 : 3).map((item) => (
+        <div className="activity-row" key={item.id}>
+          <Avatar
+            size={28}
+            name={item.author === currentActor ? "あなた" : item.author}
+          />
           <p>
-            <strong>{item.name}</strong>
-            <span>{item.text}</span>
+            <strong>
+              {item.author === currentActor ? "あなた" : item.author}
+            </strong>
+            <span>
+              {item.body ||
+                {
+                  completion: "行動を完了しました",
+                  reopen: "行動を未完了に戻しました",
+                  skip: "今回は見送りました",
+                  recurrence_change: "習慣の設定を変更しました",
+                }[item.record_type] ||
+                "記録を追加しました"}
+            </span>
           </p>
-          <time>{item.date}</time>
+          <time>{new Date(item.created_at).toLocaleDateString("ja-JP")}</time>
         </div>
       ))}
     </div>
@@ -1198,18 +1741,32 @@ function Timeline({
   onSelect,
 }: {
   quarter: number;
-  setQuarter: (value: number) => void;
+  setQuarter: (n: number) => void;
   goals: Goal[];
   onSelect: (id: string) => void;
 }) {
-  const start = new Date(2025, 3 + quarter * 3, 1);
-  const year = start.getFullYear();
-  const month = start.getMonth() + 1;
+  const now = new Date();
+  const start = new Date(
+    now.getFullYear(),
+    Math.floor(now.getMonth() / 3) * 3 + quarter * 3,
+    1,
+  );
+  const end = new Date(start.getFullYear(), start.getMonth() + 3, 1);
+  const span = end.getTime() - start.getTime();
+  const rows = goals.filter(
+    (g) =>
+      !g.startDate ||
+      !g.dueDate ||
+      (new Date(g.startDate + "T00:00:00") < end &&
+        new Date(g.dueDate + "T23:59:59") >= start),
+  );
+  const todayPosition = (100 * (now.getTime() - start.getTime())) / span;
   return (
     <>
       <div className="section-header timeline-header">
         <h3>
-          {year}年 {month}月 - {month + 2}月
+          {start.getFullYear()}年 {start.getMonth() + 1}月 -{" "}
+          {new Date(end.getTime() - 1).getMonth() + 1}月
         </h3>
         <div className="date-controls">
           <button
@@ -1218,7 +1775,7 @@ function Timeline({
           >
             <Icon name="left" size={14} />
           </button>
-          <button onClick={() => setQuarter(0)}>今後3ヶ月</button>
+          <button onClick={() => setQuarter(0)}>今の四半期</button>
           <button
             aria-label="次の3ヶ月"
             onClick={() => setQuarter(quarter + 1)}
@@ -1230,77 +1787,72 @@ function Timeline({
       <div className="timeline">
         <div className="timeline-labels">
           <div className="month-spacer" />
-          {goals.slice(0, 3).map((goal) => (
-            <button key={goal.id} onClick={() => onSelect(goal.id)}>
-              <span className={`timeline-dot ${scopeClass[goal.scope]}`} />
+          {rows.map((g) => (
+            <button key={g.id} onClick={() => onSelect(g.id)}>
+              <span className={`timeline-dot ${scopeClass[g.scope]}`} />
               <span>
-                <strong>{goal.title}</strong>
-                <Badge scope={goal.scope} />
+                <strong>{g.title}</strong>
+                <Badge scope={g.scope} />
               </span>
             </button>
           ))}
         </div>
         <div className="timeline-chart">
           <div className="months">
-            {[month, month + 1, month + 2].map((m) => (
-              <span key={m}>{m}月</span>
+            {[0, 1, 2].map((n) => (
+              <span key={n}>
+                {new Date(
+                  start.getFullYear(),
+                  start.getMonth() + n,
+                  1,
+                ).getMonth() + 1}
+                月
+              </span>
             ))}
           </div>
           <div className="timeline-lanes">
-            {quarter === 0 ? (
-              <>
-                <div className="today-line">
-                  <span>今週</span>
-                </div>
-                <div className="timeline-lane">
-                  <button
-                    className="timeline-bar blue"
-                    style={{ left: "2%", width: "47%" }}
-                    onClick={() => onSelect("english")}
-                  >
-                    英会話の基礎学習
-                  </button>
-                </div>
-                <div className="timeline-lane">
-                  <button
-                    className="timeline-bar purple"
-                    style={{ left: "14%", width: "39%" }}
-                    onClick={() => onSelect("event")}
-                  >
-                    イベント準備
-                  </button>
-                  <button
-                    className="timeline-bar purple event-bar"
-                    style={{ left: "56%", width: "39%" }}
-                    onClick={() => onSelect("event")}
-                  >
-                    イベント開催
-                    <Icon name="sparkle" size={17} />
-                  </button>
-                </div>
-                <div className="timeline-lane">
-                  <button
-                    className="timeline-bar green"
-                    style={{ left: "7%", width: "50%" }}
-                    onClick={() => onSelect("business")}
-                  >
-                    ユーザーインタビュー
-                  </button>
-                  <button
-                    className="timeline-bar green"
-                    style={{ left: "60%", width: "40%" }}
-                    onClick={() => onSelect("business")}
-                  >
-                    MVP開発
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="timeline-empty">
-                <Icon name="calendar" size={26} />
-                <span>この期間の予定はありません</span>
-                <button onClick={() => setQuarter(0)}>現在の計画に戻る</button>
+            {todayPosition >= 0 && todayPosition <= 100 && (
+              <div className="today-line" style={{ left: `${todayPosition}%` }}>
+                <span>今日</span>
               </div>
+            )}
+            {rows.map((g) => {
+              const left = g.startDate
+                ? Math.max(
+                    0,
+                    (100 *
+                      (new Date(g.startDate + "T00:00:00").getTime() -
+                        start.getTime())) /
+                      span,
+                  )
+                : 0;
+              const right = g.dueDate
+                ? Math.min(
+                    100,
+                    (100 *
+                      (new Date(g.dueDate + "T23:59:59").getTime() -
+                        start.getTime())) /
+                      span,
+                  )
+                : 100;
+              return (
+                <div className="timeline-lane" key={g.id}>
+                  <button
+                    className={`timeline-bar ${scopeClass[g.scope]} ${!g.startDate || !g.dueDate ? "undated" : ""}`}
+                    style={{
+                      left: `${left}%`,
+                      width: `${Math.max(2, right - left)}%`,
+                    }}
+                    onClick={() => onSelect(g.id)}
+                  >
+                    {!g.startDate || !g.dueDate ? "日程未定 · " : ""}
+                    {g.title}
+                  </button>
+                </div>
+              );
+            })}
+            {!rows.length && (
+              <p className="timeline-empty">この期間の予定はありません</p>
             )}
           </div>
         </div>
@@ -1342,38 +1894,5 @@ function Modal({
         {children}
       </div>
     </dialog>
-  );
-}
-function InitiativeDetails({
-  initiative,
-  onUpdate,
-}: {
-  initiative: Initiative;
-  onUpdate: (value: number) => void;
-}) {
-  const [progress, setProgress] = useState(initiative.progress);
-  return (
-    <div className="initiative-detail">
-      <span className="detail-icon purple">
-        <Icon name={initiative.icon} size={30} weight="duotone" />
-      </span>
-      <h3>{initiative.title.replace("\n", "")}</h3>
-      <p>小さな取り組みを、目標につなげていきましょう。</p>
-      <label htmlFor="initiative-progress">進捗を更新</label>
-      <Progress value={progress} />
-      <input
-        id="initiative-progress"
-        type="range"
-        min={0}
-        max={100}
-        step={5}
-        value={progress}
-        onChange={(e) => setProgress(Number(e.target.value))}
-      />
-      <button className="primary-button" onClick={() => onUpdate(progress)}>
-        <Icon name="check" size={18} />
-        進捗を保存
-      </button>
-    </div>
   );
 }

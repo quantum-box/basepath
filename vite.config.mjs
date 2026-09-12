@@ -14,12 +14,36 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    host: "0.0.0.0",
+    host: "127.0.0.1",
     allowedHosts: ["terminal.local"],
     warmup: {
       clientFiles: ["./src/main.tsx"],
     },
-    watch: { ignored: ["**/src-tauri/**"] },
+    watch: { ignored: ["**/src-tauri/**", "**/api/**", "**/data/**"] },
+    proxy: {
+      "/api": {
+        target: `http://127.0.0.1:${process.env.PATHBASE_API_PORT || 1431}`,
+        rewrite: (path) => path.replace(/^\/api/, ""),
+        configure(proxy) {
+          proxy.on("proxyReq", (proxyReq, req) => {
+            // Prevent cross-origin requests from using the local owner credential.
+            const origin = req.headers.origin;
+            if (
+              (origin && origin !== `http://${req.headers.host}`) ||
+              req.headers["sec-fetch-site"] === "cross-site"
+            ) {
+              proxyReq.removeHeader("authorization");
+              return;
+            }
+            proxyReq.removeHeader("origin");
+            proxyReq.setHeader(
+              "authorization",
+              `Bearer ${process.env.PATHBASE_API_TOKEN || ""}`,
+            );
+          });
+        },
+      },
+    },
   },
   plugins: [react()],
 });
