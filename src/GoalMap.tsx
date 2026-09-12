@@ -17,7 +17,7 @@ type MapData = {
   subtitle?: string;
   scope?: Scope;
   icon?: string;
-  progress?: number;
+  progress?: number | null;
   kind: "root" | "goal" | "initiative";
   active?: boolean;
   onSelect?: () => void;
@@ -58,7 +58,7 @@ function GoalNode({ data }: NodeProps<MapNode>) {
           <span className="node-copy">
             <strong>{data.title}</strong>
             {data.subtitle && <small>{data.subtitle}</small>}
-            {data.progress !== undefined && (
+            {data.progress != null && (
               <span className="node-progress">
                 <span className="progress-track">
                   <span style={{ width: `${data.progress}%` }} />
@@ -113,8 +113,8 @@ function MapCanvas({
         position: { x: fullWidth / 2 - 110, y: 8 },
         data: {
           kind: "root",
-          title: "よりよい未来をつくる",
-          subtitle: "（人生・仕事・社会にポジティブな影響を）",
+          title: "自分の目標と行動",
+          subtitle: "つながりを眺めて、次の一歩へ",
         },
         style: { width: 220, height: 62 },
       },
@@ -129,8 +129,7 @@ function MapCanvas({
         data: {
           ...goal,
           kind: "goal",
-          subtitle:
-            goal.id === "event" ? "人がつながる場をつくる" : goal.subtitle,
+          subtitle: goal.subtitle,
           progress: undefined,
           active: selected === goal.id,
           onSelect: () => onSelect(goal.id),
@@ -142,13 +141,6 @@ function MapCanvas({
           : goal.scope === "組織"
             ? "#bdcce0"
             : "#abcaf6";
-      edges.push({
-        id: `root-${goal.id}`,
-        source: "root",
-        target: goal.id,
-        type: "default",
-        style: { stroke, strokeWidth: 1.4 },
-      });
       const children = initiatives.filter((it) => it.goalId === goal.id);
       children.forEach((item, childIndex) => {
         nodes.push({
@@ -178,7 +170,9 @@ function MapCanvas({
     return { nodes, edges };
   }, [visible, initiatives, selected, onSelect, onInitiative]);
   const resetView = useCallback(() => {
-    void flow.fitView({ padding: 0.035, duration: 180 }).then(() => {
+    // Establish the baseline after fitting async-loaded data, before animation
+    // callbacks can report a percentage relative to an earlier empty graph.
+    void flow.fitView({ padding: 0.035, duration: 0, minZoom: 0.1 }).then(() => {
       setBaseZoom(flow.getZoom());
       setZoom(100);
     });
@@ -261,7 +255,7 @@ function MapCanvas({
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 0.035 }}
-          minZoom={0.35}
+          minZoom={0.1}
           maxZoom={2}
           nodesDraggable={false}
           nodesConnectable={false}
@@ -272,9 +266,6 @@ function MapCanvas({
           panOnDrag
           onMove={(_, view) =>
             setZoom(Math.round((view.zoom / baseZoom) * 100))
-          }
-          onInit={(instance) =>
-            setTimeout(() => setBaseZoom(instance.getZoom()), 150)
           }
         />
       </div>

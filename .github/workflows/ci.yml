@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.95.0
+
+jobs:
+  web:
+    name: Web build and Sites tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm run test:sites
+      - name: Verify build outputs
+        run: |
+          test -f dist/client/index.html
+          test -f dist/server/index.js
+          test -f dist/.openai/hosting.json
+
+  api:
+    name: Rust API tests and lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt --component clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            api/target
+          key: ${{ runner.os }}-api-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('api/Cargo.lock') }}
+      - run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path api/Cargo.toml -- --check
+      - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml
+      - run: cargo +"$RUST_TOOLCHAIN" clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings
+
+  desktop:
+    name: Tauri compile check
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-tauri-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('src-tauri/Cargo.lock', 'api/Cargo.lock') }}
+      - run: npm ci
+      - run: npm run build
+      - run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo +"$RUST_TOOLCHAIN" check --locked --manifest-path src-tauri/Cargo.toml

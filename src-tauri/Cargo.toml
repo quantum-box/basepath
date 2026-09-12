@@ -13,3 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+
+pathbase-api = { path = "../api" }
+serde_json = "1"
+url = "2"

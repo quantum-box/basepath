@@ -4,18 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
     "build": "tsc --noEmit && vite build && node scripts/prepare-sites-build.mjs",
     "check": "tsc --noEmit",
     "tauri": "tauri",
     "preview": "vite preview",
     "test:sites": "node --test tests/sites-worker.test.mjs",
-    "format": "prettier --write src vite.config.mjs index.html src-tauri/tauri.conf.json"
+    "format": "prettier --write src vite.config.mjs index.html src-tauri/tauri.conf.json",
+    "dev:web": "vite",
+    "dev:native": "node scripts/dev.mjs --native",
+    "api": "cargo run --manifest-path api/Cargo.toml",
+    "api:mcp": "cargo run --manifest-path api/Cargo.toml -- --mcp-stdio",
+    "test:api": "cargo test --manifest-path api/Cargo.toml",
+    "test": "npm run check && npm run test:api && npm run test:sites"
   },
   "dependencies": {
     "@fontsource/noto-sans-jp": "^5.2.6",
     "@fontsource/zen-kurenaido": "^5.2.6",
     "@phosphor-icons/react": "^2.1.10",
+    "@tauri-apps/api": "^2.11.1",
     "@vitejs/plugin-react": "5.0.4",
     "@xyflow/react": "^12.8.5",
     "react": "19.2.0",
