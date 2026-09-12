@@ -1,0 +1,15 @@
+[package]
+name = "pathbase"
+version = "0.1.0"
+description = "PathBase — goals, plans, actions, and learning"
+edition = "2021"
+
+[lib]
+name = "pathbase_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
