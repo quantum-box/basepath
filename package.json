@@ -1,6 +1,7 @@
 {
   "name": "pathbase",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +11,7 @@
     "tauri": "tauri",
     "preview": "vite preview",
     "test:sites": "node --test tests/sites-worker.test.mjs",
+    "test:e2e": "playwright test",
     "format": "prettier --write src vite.config.mjs index.html src-tauri/tauri.conf.json",
     "dev:web": "vite",
     "dev:native": "node scripts/dev.mjs --native",
@@ -30,6 +32,7 @@
     "vite": "6.4.2"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@tauri-apps/cli": "^2.10.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

@@ -62,10 +62,25 @@ cargo check --manifest-path src-tauri/Cargo.toml
 
 APIテストは一時DBとローカルの模擬OIDC / Tachyon / Fieldサーバーを使用します。`api/tests/fixtures/oidc-test-key.pem`はテスト専用に生成した公開fixtureです。実アカウントの認証情報ではありません。
 
-GitHub ActionsではPRと`main`へのpushで、WebビルドとSitesテスト、Rust APIテストとclippy、macOS上のTauriコンパイルを実行します。CIは外部サービスの認証情報を必要としません。
+GitHub ActionsではPRと`main`へのpushで、次の4ジョブを実行します。外部サービスの認証情報は不要です。
+
+- Web：TypeScript、製品ビルド、Sites配信テスト、配信ファイルとフォントライセンスの存在確認
+- Rust API：fmt、ドメイン・権限・OIDC / Field連携・MCPのテスト、clippy（警告をエラーとして扱う）
+- Browser：Chromiumで目標とメモの永続化、行動完了、同じ領域の複数ワークスペース、モバイルナビゲーションを検証
+- Desktop：macOSでRust fmtとTauriのコンパイル確認
+
+ブラウザテストはAPIジョブでビルド済みの実際のRustバイナリを再利用し、毎回空の一時DBと専用ポート（画面1425 / API1435）で実行します。クラウド認証情報や開発用DB、`.env`は引き継ぎません。失敗時は画面・トレース・HTMLレポートを7日間保存します。GitHub ActionsはコミットSHAで固定しています。
+
+ローカルのRust検証は変更に必要な範囲に絞り、重い全体検証はCIで行います。ブラウザテストを明示的にローカル実行する場合は、既存のAPIバイナリを`PATHBASE_E2E_API_BIN`で指定し、Chromiumを用意して`npm run test:e2e`を実行できます。テストがRustを自動ビルドすることはありません。
+
+実際のTachyon / Field環境との疎通、TauriのGUI実行・配布用パッケージ・Windows / Linuxでの動作は、このCIの対象外です。
 
 ## 現在の範囲
 
 PathBase用のTachyonクライアント登録、issuer、コールバック登録、Field接続環境は未提供のため、実環境でのログイン・複数アカウントでの招待・Fieldデータ取得は未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB / 共有セッション、ホスト型MCPは別途実装が必要です。
 
 `.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs`、`tests/sites-worker.test.mjs`は既存構成を維持しています。`npm run build`は`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`を生成します。Sites用workerは静的配信であり、それだけではRust APIは公開されません。外部へのデプロイは行っていません。
+
+## ライセンス
+
+独自コードは[MIT License](LICENSE)です。同梱フォントなどの第三者著作物は元のライセンスを維持します。[第三者ライセンス表記](THIRD_PARTY_NOTICES.md)を参照してください。
