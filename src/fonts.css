@@ -1,0 +1,41 @@
+/* Local WOFF2 fonts keep the desktop app fully offline. */
+@font-face {
+  font-family: "Noto Sans JP";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-400-normal.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "Noto Sans JP";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-500-normal.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "Noto Sans JP";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-600-normal.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "Noto Sans JP";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-700-normal.woff2")
+    format("woff2");
+}
+@font-face {
+  font-family: "Zen Kurenaido";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/zen-kurenaido/files/zen-kurenaido-japanese-400-normal.woff2")
+    format("woff2");
+}
