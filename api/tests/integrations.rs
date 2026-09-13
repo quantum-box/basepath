@@ -248,29 +248,45 @@ fn login(a: &TachyonAuth, s: &MockState) -> (HeaderMap, String) {
     (headers, q["state"].clone())
 }
 #[tokio::test]
-async fn concurrent_requests_refresh_session_once() {
+async fn encrypted_session_survives_auth_instance_replacement() {
     let (s, server) = upstream().await;
-    *s.token_lifetime.lock().unwrap() = 0;
-    let a = auth(&s).await;
+    let config = AuthConfig {
+        issuer: s.base.clone(),
+        client_id: "pathbase-test".into(),
+        client_secret: None,
+        redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+        public_url: "http://localhost:1420".into(),
+        tachyon_api_url: s.base.clone(),
+    };
+    let key = [7_u8; 32];
+    let a = TachyonAuth::new_with_session_keys(config.clone(), vec![key])
+        .await
+        .unwrap();
     let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
-    *s.token_lifetime.lock().unwrap() = 3600;
-    let (one, two, three) = tokio::join!(
-        a.session(&headers),
-        a.session(&headers),
-        a.session(&headers)
-    );
-    assert!(one.is_ok() && two.is_ok() && three.is_ok());
+    drop(a);
+    let replacement = TachyonAuth::new_with_session_keys(config, vec![key])
+        .await
+        .unwrap();
     assert_eq!(
-        s.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|p| *p == "/token")
-            .count(),
-        2
+        replacement.session(&headers).await.unwrap().identity.id,
+        "us_verified"
     );
+    let wrong_key = TachyonAuth::new_with_session_keys(
+        AuthConfig {
+            issuer: s.base.clone(),
+            client_id: "pathbase-test".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+            public_url: "http://localhost:1420".into(),
+            tachyon_api_url: s.base.clone(),
+        },
+        vec![[8_u8; 32]],
+    )
+    .await
+    .unwrap();
+    assert_eq!(wrong_key.session(&headers).await.err().unwrap().status, 401);
     server.abort();
 }
 #[tokio::test]
@@ -280,7 +296,8 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
     let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     let mut session_headers = HeaderMap::new();
     session_headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
-    a.select_tenant(&session_headers, "tn_allowed")
+    let (_, selected_cookie) = a
+        .select_tenant(&session_headers, "tn_allowed")
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -328,7 +345,7 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
         Request::builder()
             .method("POST")
             .uri(format!("/v1/workspaces/{w}/field/{suffix}"))
-            .header("cookie", cookie.split(';').next().unwrap())
+            .header("cookie", selected_cookie.split(';').next().unwrap())
             .header("x-pathbase-request", "1")
             .header("idempotency-key", key)
             .header("content-type", "application/json")
@@ -407,8 +424,7 @@ async fn direct_login_uses_tachyon_pkce_without_hosted_ui() {
     h.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
     let session = a.session(&h).await.unwrap();
     assert_eq!(session.identity.id, "us_verified");
-    a.logout(&h).unwrap();
-    assert!(a.session(&h).await.is_err());
+    assert!(a.logout(&h).unwrap().contains("Max-Age=0"));
     server.abort();
 }
 #[tokio::test]
@@ -636,12 +652,22 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
         .await
         .unwrap();
     assert_eq!(selected.status(), 200);
+    let selected_cookie = selected
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .uri("/v1/workspaces")
-                .header("cookie", cookie.split(';').next().unwrap())
+                .header("cookie", selected_cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
