@@ -32,6 +32,10 @@ pub struct Item {
 #[serde(deny_unknown_fields)]
 pub struct ItemFields {
     #[serde(default)]
+    pub assignee_id: Option<String>,
+    #[serde(default)]
+    pub priority: Option<String>,
+    #[serde(default)]
     pub icon: String,
     #[serde(default)]
     pub subtitle: String,
@@ -55,6 +59,20 @@ pub struct ItemFields {
     pub external_url: Option<String>,
     #[serde(default)]
     pub field_reference: Option<FieldReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Notification {
+    pub id: String,
+    pub workspace_id: String,
+    pub recipient: String,
+    pub item_id: String,
+    pub kind: String,
+    pub title: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub read_at: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]

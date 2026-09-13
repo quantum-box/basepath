@@ -21,6 +21,8 @@ export type Item = {
   scheduled_date: string | null;
   scheduled_time: string | null;
   fields: {
+    assignee_id?: string | null;
+    priority?: "low" | "medium" | "high" | "urgent" | null;
     field_reference?: {
       tenant_id: string;
       platform_id: string;
@@ -40,6 +42,22 @@ export type Item = {
     recurrence?: Recurrence | null;
     external_url?: string | null;
   };
+};
+export type Notification = {
+  id: string;
+  workspace_id: string;
+  recipient: string;
+  item_id: string;
+  kind:
+    | "assignment"
+    | "due_date"
+    | "due_today"
+    | "due_soon"
+    | "overdue"
+    | "completion";
+  title: string;
+  created_at: string;
+  read_at: string | null;
 };
 export type Workspace = {
   id: string;
@@ -150,6 +168,7 @@ export type Snapshot = {
   views: { id: string; type: string; name: string }[];
   changesets: ChangeSet[];
   weekly_reviews?: WeeklyReview[];
+  notifications: Notification[];
 };
 export type Settings = {
   compact: boolean;
