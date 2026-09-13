@@ -58,6 +58,16 @@ phases:
         shred -u "${CREDENTIALS_FILE}" 2>/dev/null \
           || python3 -c 'import os; p="/tmp/pathbase-gcp-credentials.json"; open(p,"wb").write(b"0" * os.path.getsize(p)); os.unlink(p)'
       - |
+        echo "Reading startup diagnostics for compute-pathbase-00003-rbd"
+        gcloud logging read \
+          'resource.type="cloud_run_revision" AND resource.labels.service_name="compute-pathbase" AND resource.labels.revision_name="compute-pathbase-00003-rbd"' \
+          --project=tachyon-403814 \
+          --freshness=1h \
+          --limit=100 \
+          --order=asc \
+          --format='value(timestamp,severity,textPayload,jsonPayload.message)' \
+          || echo "Cloud Run startup diagnostics unavailable"
+      - |
         MACHINE=$(uname -m)
         case "${MACHINE}" in
           x86_64) CLI_ASSET_ARCH=x86_64 ;;
