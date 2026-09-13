@@ -487,14 +487,12 @@ async fn field_delegates_tenant_and_denies_cross_tenant_without_fetching_content
         403
     );
     *s.field_status.lock().unwrap() = 401;
-    assert_eq!(
-        field
-            .tasks("test-access-token", "tn_allowed", 0)
-            .await
-            .unwrap_err()
-            .status,
-        401
-    );
+    let rejected = field
+        .tasks("test-access-token", "tn_allowed", 0)
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.status, 401);
+    assert_eq!(rejected.code, "FIELD_AUTH_REJECTED");
     server.abort();
 }
 #[tokio::test]
