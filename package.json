@@ -16,6 +16,7 @@
     "dev:web": "vite",
     "dev:native": "node scripts/dev.mjs --native",
     "api": "cargo run --manifest-path api/Cargo.toml",
+    "preflight": "node scripts/preflight.mjs",
     "api:mcp": "cargo run --manifest-path api/Cargo.toml -- --mcp-stdio",
     "test:api": "cargo test --manifest-path api/Cargo.toml",
     "test": "npm run check && npm run test:api && npm run test:sites"

@@ -4,6 +4,7 @@ pub mod field;
 pub mod mcp;
 pub mod model;
 pub mod openapi;
+pub mod preflight;
 mod seed;
 pub mod service;
 pub mod storage;

@@ -201,6 +201,21 @@ impl TachyonAuth {
             sessions: Default::default(),
         })
     }
+    pub async fn probe_verification_boundary(&self) -> Result<u16> {
+        const INVALID_PROBE_TOKEN: &str = "pathbase-preflight-intentionally-invalid";
+        let response = self
+            .client
+            .post(format!(
+                "{}/auth/v1beta/verify",
+                self.config.tachyon_api_url.trim_end_matches('/')
+            ))
+            .bearer_auth(INVALID_PROBE_TOKEN)
+            .json(&json!({"token": INVALID_PROBE_TOKEN}))
+            .send()
+            .await
+            .map_err(|_| unavailable())?;
+        Ok(response.status().as_u16())
+    }
     pub fn cookie_header(&self, name: &str, value: &str, max_age: i64) -> String {
         format!(
             "{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",

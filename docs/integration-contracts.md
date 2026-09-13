@@ -31,3 +31,5 @@ Native debug builds use the same Rust service over Tauri IPC with a separate loc
 ## Pending real-environment verification
 
 Tachyon client registration, registered callback, issuer and Field deployment context have not been provided for this app. Local contract tests can verify the adapters, but do not establish successful login or live access to production Field. No existing upstream app credentials or user tokens are reused implicitly.
+
+設定を登録したら`npm run preflight`で、値そのものを表示せずに設定形式と公開認証境界への到達性を確認する。プリフライトが成功しても利用者の権限は証明しないため、続けて実ユーザーでログインし、許可されたFieldデータ、401、403、期限切れを確認する。

@@ -30,3 +30,9 @@ Added workspace creation and renaming, targeted Tachyon invitation inboxes, acce
 Five focused Rust integration tests pass: cross-workspace privacy and restart persistence; membership revocation through a second database connection and cached request replay; viewer restrictions and departure; owner transfer and stale configuration; targeted, expired, declined and revoked invitations; agent restrictions; and local/personal sharing boundaries. The existing broad Rust checks were not rerun locally, in accordance with the requested minimum-check policy. CI retains the full Rust suite and native compile check.
 
 The invitation lifecycle is tested against the common Rust service using distinct canonical actor identities. Live multi-user Tachyon acceptance remains unverified until the deployment's OIDC configuration is available. Invitations appear inside PathBase; no email or Slack delivery is claimed.
+
+## Live connection preflight — 2026-09-13
+
+Added a redacted `npm run preflight` check for the live Tachyon / Field setup. It validates the configured mode and callback contract, loads OIDC Discovery, and confirms that intentionally unauthenticated requests reach and are rejected by the Tachyon verification and Field tenant boundaries. The report lists missing variable names but never prints client secrets, tokens, client or tenant identifiers.
+
+The focused integration test passes against local OIDC, Tachyon, and Field mocks. The production build and the four unchanged Sites packaging tests also pass. With no local `.env`, the command exits unsuccessfully and reports all missing Tachyon and Field setting names as intended. Successful real-user login, Field authorization, expiry, and 401 / 403 behavior still require the deployment credentials and remain assigned to the live acceptance step.

@@ -73,6 +73,20 @@ impl FieldClient {
             root_operator_id,
         })
     }
+    pub async fn probe_auth_boundary(&self) -> Result<u16> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/get_tenants?required_action=field%3AViewSalesAnalytics",
+                self.base_url.trim_end_matches('/')
+            ))
+            .header("x-operator-id", &self.root_operator_id)
+            .header("x-platform-id", &self.platform_id)
+            .send()
+            .await
+            .map_err(|_| upstream())?;
+        Ok(response.status().as_u16())
+    }
     async fn get(&self, path: &str, token: &str, operator: &str, platform: &str) -> Result<Value> {
         if token.is_empty() {
             return Err(ApiError::new(

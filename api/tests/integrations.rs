@@ -8,6 +8,7 @@ use axum::{
 use pathbase_api::{
     auth::{AuthConfig, TachyonAuth},
     field::FieldClient,
+    preflight,
     service::Service,
     HttpState,
 };
@@ -46,12 +47,19 @@ async fn mock(
             Json(json!({"access_token":"test-access-token","refresh_token":"test-refresh-token","id_token":id_token,"expires_in":*s.token_lifetime.lock().unwrap()})).into_response()
         },
         "/auth/v1beta/verify"=> {
-            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");assert!(headers.get("x-user-id").is_none());
+            if headers.get("authorization").and_then(|value| value.to_str().ok()) != Some("Bearer test-access-token") {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            assert!(headers.get("x-user-id").is_none());
             assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["token"],"test-access-token");
             Json(json!({"user":{"id":"us_verified","name":"Verified user","email":null,"tenants":["do-not-trust-callback-memberships"]}})).into_response()
         },
         "/get_tenants"=> {
-            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
+            assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
+            if headers.get("authorization").is_none() {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");
             Json(json!([{"id":"tn_allowed","name":"Allowed company","environment":"sandbox","platformId":"tn_platform"}])).into_response()
         },
         "/v1/erp/sales-tasks"=> {
@@ -100,6 +108,36 @@ async fn auth(s: &MockState) -> TachyonAuth {
     })
     .await
     .unwrap()
+}
+#[tokio::test]
+async fn preflight_checks_configuration_and_unauthenticated_boundaries() {
+    let (s, server) = upstream().await;
+    let report = preflight::run(
+        "tachyon".into(),
+        Ok(AuthConfig {
+            issuer: s.base.clone(),
+            client_id: "pathbase-test".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+            public_url: "http://localhost:1420".into(),
+            tachyon_api_url: s.base.clone(),
+        }),
+        false,
+        Ok(Some(
+            FieldClient::new(s.base.clone(), "tn_platform".into(), "tn_root".into()).unwrap(),
+        )),
+    )
+    .await;
+    assert!(report.configuration_ready);
+    assert!(report.requires_authenticated_check);
+    assert!(report.checks.iter().all(|check| check.status != "error"));
+    let calls = s.calls.lock().unwrap();
+    assert!(calls
+        .iter()
+        .any(|path| path == "/.well-known/openid-configuration"));
+    assert!(calls.iter().any(|path| path == "/auth/v1beta/verify"));
+    assert!(calls.iter().any(|path| path == "/get_tenants"));
+    server.abort();
 }
 fn login(a: &TachyonAuth, s: &MockState) -> (HeaderMap, String) {
     let (url, cookie) = a.begin().unwrap();
