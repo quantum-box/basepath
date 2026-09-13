@@ -357,7 +357,9 @@ impl Service {
                     "この再送キーは別の入力で使用されています",
                 ));
             }
-            return Ok(serde_json::from_str(&response)?);
+            let response = serde_json::from_str(&response)?;
+            crate::collaboration::authorize_replay(&tx, method, &parts, &response)?;
+            return Ok(response);
         }
         let result = dispatch(&tx, actor, method, path, query, &body)?;
         tx.execute(

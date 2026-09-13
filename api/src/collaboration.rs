@@ -115,6 +115,28 @@ pub(crate) fn authorize_route(
     Ok(())
 }
 
+// Idempotency preserves the original response, but an invitation response must not
+// look usable after the underlying invitation has expired or been revoked.
+pub(crate) fn authorize_replay(
+    db: &Connection,
+    method: &str,
+    p: &[&str],
+    response: &Value,
+) -> Result<()> {
+    if let ("POST", ["v1", "workspaces", workspace_id, "invitations"]) = (method, p) {
+        let id = response["id"].as_str().ok_or_else(ApiError::missing)?;
+        let current = invitation(db, id)?;
+        if current.workspace_id != *workspace_id || current.status != "pending" {
+            return Err(ApiError::new(
+                409,
+                "INVITATION_UNAVAILABLE",
+                "この招待は取り消されたか、有効期限が切れています",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn management(db: &Connection, actor: &Actor, w: &str) -> Result<Value> {
     authorize(db, &actor.id, w, false)?;
     let mut ws = workspace(db, w)?;
