@@ -2881,12 +2881,16 @@ input[type="checkbox"]:checked::after {
   }
   .sidebar {
     transform: translateX(-100%);
+    visibility: hidden;
+    pointer-events: none;
     width: 225px;
     transition: transform 0.2s;
     padding: 16px;
   }
   .sidebar.is-open {
     transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
   }
   .sidebar-scrim {
     display: block;
