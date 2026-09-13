@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     } else {
         Some(std::sync::Arc::new(
-            pathbase_api::auth::TachyonAuth::for_runtime(
+            pathbase_api::auth::TachyonAuth::for_runtime_from_env(
                 pathbase_api::auth::AuthConfig::from_env().map_err(|e| e.message)?,
             )
             .map_err(|e| e.message)?,

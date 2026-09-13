@@ -52,7 +52,9 @@ pub fn router(state: HttpState) -> Router {
 pub fn router_with_mcp(state: HttpState, mcp: Option<Router<HttpState>>) -> Router {
     let app: Router<HttpState> = Router::new().route(
         "/health",
-        get(|| async { Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite"})) }),
+        get(|| async {
+            Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite","storage_durability":"ephemeral-container"}))
+        }),
     );
     let app = if let Some(mcp) = mcp {
         app.nest("/mcp", mcp)
@@ -187,13 +189,17 @@ async fn endpoint(
         let selection: TenantSelection = serde_json::from_slice(&bytes).map_err(|_| {
             ApiError::new(400, "INVALID_JSON", "テナント選択の形式を確認してください")
         })?;
-        let tenant = state
+        let (tenant, cookie) = state
             .auth
             .as_ref()
             .ok_or_else(ApiError::missing)?
             .select_tenant(&headers, &selection.tenant_id)
             .await?;
-        return Ok(Json(json!({"selected_tenant":tenant})).into_response());
+        return Ok((
+            [(header::SET_COOKIE, cookie)],
+            Json(json!({"selected_tenant":tenant})),
+        )
+            .into_response());
     }
     if session
         .as_ref()
