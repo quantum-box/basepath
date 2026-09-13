@@ -127,6 +127,46 @@ phases:
           -f "${DOCKER_FILE}" \
           "${BUILD_CONTEXT}" \
           2>&1 | tee -a /tmp/build.log
+      - |
+        source /tmp/build_env.sh
+        set -e
+        SMOKE_CONTAINER=pathbase-cloud-run-smoke
+        cleanup_smoke() {
+          docker rm -f "${SMOKE_CONTAINER}" >/dev/null 2>&1 || true
+        }
+        trap cleanup_smoke EXIT
+        docker run --name "${SMOKE_CONTAINER}" -d \
+          -p 127.0.0.1:18080:8080 \
+          -e PORT=8080 \
+          -e PATHBASE_MODE=tachyon \
+          -e PATHBASE_PUBLIC_URL=https://pathbase.txcloud.app \
+          -e PATHBASE_WEB_ROOT=/app/web \
+          -e PATHBASE_DB=/app/data/pathbase.sqlite3 \
+          -e TACHYON_OIDC_ISSUER=https://api.n1.tachy.one \
+          -e TACHYON_OIDC_CLIENT_ID=pathbase-cloud-build-smoke \
+          -e TACHYON_OIDC_REDIRECT_URI=https://pathbase.txcloud.app/api/auth/callback \
+          -e TACHYON_API_URL=https://api.n1.tachy.one \
+          -e FIELD_API_URL=https://tachyon-field-api.txcloud.app \
+          -e FIELD_PLATFORM_ID=tn_01hjjn348rn3t49zz6hvmfq67p \
+          -e FIELD_OPERATOR_ID=tn_01m2a6ztfmd95p70gwgyshbevq \
+          "${IMAGE_URI}" >/dev/null
+        SMOKE_OK=0
+        for _ in $(seq 1 15); do
+          if curl -fsS http://127.0.0.1:18080/api/health >/dev/null; then
+            SMOKE_OK=1
+            break
+          fi
+          if [ "$(docker inspect -f '{{.State.Running}}' "${SMOKE_CONTAINER}")" != "true" ]; then
+            break
+          fi
+          sleep 1
+        done
+        docker logs "${SMOKE_CONTAINER}" 2>&1 || true
+        if [ "${SMOKE_OK}" != "1" ]; then
+          echo "ERROR: Cloud Run image smoke test failed"
+          exit 1
+        fi
+        echo "Cloud Run image smoke test passed"
   post_build:
     commands:
       - |
