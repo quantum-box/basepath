@@ -40,6 +40,7 @@ spec:
         # Docker-in-Docker requires the CodeBuild runner; the rootless k3s
         # runner cannot create the UID/GID map needed by BuildKit.
         runnerBackend: codebuild
+        command: cargo build --locked --release
       readinessProof:
         path: /api/health
         expectedStatus: 200
