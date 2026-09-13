@@ -25,6 +25,7 @@ struct MockState {
     audience: Arc<Mutex<String>>,
     calls: Arc<Mutex<Vec<String>>>,
     field_status: Arc<Mutex<u16>>,
+    field_task: Arc<Mutex<(String, String, String)>>,
     expires: Arc<Mutex<i64>>,
     token_lifetime: Arc<Mutex<i64>>,
 }
@@ -102,7 +103,8 @@ async fn mock(
         },
         "/v1/erp/sales-tasks/task_1"=> {
             assert_eq!(headers.get("x-operator-id").unwrap(),"tn_allowed");
-            Json(json!({"id":"task_1","tenantId":"tn_allowed","title":"Follow up","status":"open","dueAt":null,"updatedAt":"2026-09-12T00:00:00Z"})).into_response()
+            let task=s.field_task.lock().unwrap().clone();
+            Json(json!({"id":"task_1","tenantId":"tn_allowed","title":task.0,"status":task.1,"dueAt":null,"updatedAt":task.2})).into_response()
         },
         "/v1/erp/sales-contracts/metrics"=> {
             assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");
@@ -121,6 +123,11 @@ async fn upstream() -> (MockState, tokio::task::JoinHandle<()>) {
         audience: Arc::new(Mutex::new("pathbase-test".into())),
         calls: Default::default(),
         field_status: Arc::new(Mutex::new(200)),
+        field_task: Arc::new(Mutex::new((
+            "Follow up".into(),
+            "open".into(),
+            "2026-09-12T00:00:00Z".into(),
+        ))),
         expires: Arc::new(Mutex::new(chrono::Utc::now().timestamp() + 3600)),
         token_lifetime: Arc::new(Mutex::new(3600)),
     };
@@ -370,6 +377,44 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
         attached.push(serde_json::from_slice::<Value>(&bytes).unwrap());
     }
     assert_eq!(attached[0]["id"], attached[1]["id"]);
+    *s.field_task.lock().unwrap() = (
+        "Follow up today".into(),
+        "done".into(),
+        "2026-09-14T00:00:00Z".into(),
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            "refresh-task",
+            "refresh-task",
+            json!({"tenant_id":"tn_allowed","item_id":attached[0]["id"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 10000)
+        .await
+        .unwrap();
+    let refreshed: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(refreshed["title"], "Follow up today");
+    assert_eq!(
+        refreshed["fields"]["field_reference"]["source_status"],
+        "done"
+    );
+    assert_eq!(
+        refreshed["fields"]["field_reference"]["source_updated_at"],
+        "2026-09-14T00:00:00Z"
+    );
+    let response = app
+        .clone()
+        .oneshot(request(
+            "refresh-task",
+            "wrong-tenant",
+            json!({"tenant_id":"tn_other","item_id":attached[0]["id"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 422);
     let mut observed = vec![];
     for _ in 0..2 {
         let response = app

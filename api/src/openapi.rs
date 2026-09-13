@@ -44,6 +44,7 @@ pub fn document() -> Value {
         ("/v1/integrations/field/metrics", vec!["get"]),
         ("/v1/workspaces/{w}/field/attach-task", vec!["post"]),
         ("/v1/workspaces/{w}/field/record-metric", vec!["post"]),
+        ("/v1/workspaces/{w}/field/refresh-task", vec!["post"]),
         ("/v1/workspaces/{w}/snapshot", vec!["get"]),
         ("/v1/workspaces/{w}/weekly-review", vec!["get"]),
         ("/v1/workspaces/{w}/weekly-reviews", vec!["get"]),
