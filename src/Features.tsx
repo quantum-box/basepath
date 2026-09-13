@@ -645,6 +645,8 @@ export function ItemEditor({
     e.preventDefault();
     const d = new FormData(e.currentTarget);
     const frequency = Number(d.get("frequency") || 0);
+    const recurrenceMode = String(d.get("recurrence_mode") || "period_quota");
+    const weekdays = d.getAll("weekdays").map(Number);
     const assessment = String(d.get("assessment") || "");
     await store.run(
       () =>
@@ -663,15 +665,13 @@ export function ItemEditor({
             self_assessment: assessment === "" ? null : Number(assessment),
             ...(item.kind === "action"
               ? {
-                  recurrence: frequency
-                    ? frequency === item.fields.recurrence?.times_per_week
-                      ? item.fields.recurrence
-                      : {
-                          mode: "period_quota",
-                          times_per_week: frequency,
-                          weekdays: [],
-                          timezone: store.settings.timezone,
-                        }
+                  recurrence: frequency || weekdays.length
+                    ? {
+                        mode: recurrenceMode,
+                        times_per_week: recurrenceMode === "fixed_schedule" ? weekdays.length : frequency,
+                        weekdays,
+                        timezone: store.settings.timezone,
+                      }
                     : null,
                 }
               : {}),
@@ -814,7 +814,14 @@ export function ItemEditor({
                 </label>
               </div>
               <label>
-                繰り返し
+                習慣ルール
+                <select name="recurrence_mode" defaultValue={item.fields.recurrence?.mode || "period_quota"}>
+                  <option value="period_quota">週の回数で決める</option>
+                  <option value="fixed_schedule">曜日を固定する</option>
+                </select>
+              </label>
+              <label>
+                週の目標回数
                 <select
                   name="frequency"
                   defaultValue={item.fields.recurrence?.times_per_week || 0}
@@ -827,6 +834,12 @@ export function ItemEditor({
                   ))}
                 </select>
               </label>
+              <fieldset className="weekday-picker">
+                <legend>固定する曜日（曜日固定を選んだ場合）</legend>
+                {["月", "火", "水", "木", "金", "土", "日"].map((label, index) => (
+                  <label key={label}><input type="checkbox" name="weekdays" value={index} defaultChecked={item.fields.recurrence?.weekdays.includes(index)} />{label}</label>
+                ))}
+              </fieldset>
             </>
           ) : (
             <label>

@@ -617,6 +617,83 @@ pub fn dispatch(
                 .collect();
             Ok(json!({"items":items,"relations":edges,"truncated":total>limit,"limit":limit}))
         }
+        ("GET", "calendar", "", "") => {
+            let start = query
+                .get("start")
+                .ok_or_else(|| ApiError::invalid("startが必要です"))?;
+            let end = query
+                .get("end")
+                .ok_or_else(|| ApiError::invalid("endが必要です"))?;
+            date(&Some(start.clone()))?;
+            date(&Some(end.clone()))?;
+            let start_day = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
+            let end_day = NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap();
+            if end_day < start_day || (end_day - start_day).num_days() > 62 {
+                return Err(ApiError::invalid(
+                    "カレンダー期間は開始日以降62日以内にしてください",
+                ));
+            }
+            let timezone = query
+                .get("timezone")
+                .map(String::as_str)
+                .unwrap_or("Asia/Tokyo");
+            if timezone.parse::<chrono_tz::Tz>().is_err() {
+                return Err(ApiError::invalid("タイムゾーンを確認してください"));
+            }
+            let items: Vec<Item> = list(db, w, "items")?;
+            let records: Vec<Record> = list(db, w, "records")?;
+            let active: Vec<_> = items
+                .iter()
+                .filter(|item| item.archived_at.is_none())
+                .cloned()
+                .collect();
+            let unscheduled: Vec<_> = active
+                .iter()
+                .filter(|item| {
+                    item.start_date.is_none()
+                        && item.due_date.is_none()
+                        && item.scheduled_date.is_none()
+                        && item.fields.recurrence.is_none()
+                })
+                .cloned()
+                .collect();
+            let mut days = vec![];
+            let mut day = start_day;
+            while day <= end_day {
+                let key = day.to_string();
+                let weekday = day.weekday().num_days_from_monday() as u8;
+                let mut entries = vec![];
+                for item in &active {
+                    for (label, value) in [
+                        ("start", item.start_date.as_deref()),
+                        ("due", item.due_date.as_deref()),
+                        ("scheduled", item.scheduled_date.as_deref()),
+                    ] {
+                        if value == Some(key.as_str()) {
+                            entries.push(json!({"item":item,"label":label}));
+                        }
+                    }
+                    if let Some(rule) = &item.fields.recurrence {
+                        let in_range = item.start_date.as_ref().is_none_or(|value| value <= &key)
+                            && item.due_date.as_ref().is_none_or(|value| value >= &key);
+                        if in_range
+                            && (rule.mode == "period_quota" || rule.weekdays.contains(&weekday))
+                        {
+                            let occurrence = format!("{}:{key}", item.id);
+                            let latest = records.iter().rev().find(|record| {
+                                record.occurrence_key.as_deref() == Some(&occurrence)
+                            });
+                            entries.push(json!({"item":item,"label":"habit","occurrence_key":occurrence,"status":latest.map(|record| record.record_type.as_str()).unwrap_or("missed")}));
+                        }
+                    }
+                }
+                days.push(json!({"date":key,"entries":entries}));
+                day = day.succ_opt().unwrap();
+            }
+            Ok(
+                json!({"start":start,"end":end,"timezone":timezone,"days":days,"unscheduled":unscheduled}),
+            )
+        }
         ("GET", "today", "", "") => {
             let d = query.get("local_date").cloned().unwrap_or_else(|| {
                 Utc::now()
