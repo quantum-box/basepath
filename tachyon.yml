@@ -83,4 +83,7 @@ spec:
         - name: FIELD_PLATFORM_ID
           value: tn_01hjjn348rn3t49zz6hvmfq67p
         - name: FIELD_OPERATOR_ID
-          value: tn_01m2a6ztfmd95p70gwgyshbevq
+          # Field's production tenant-directory root. This is deliberately not
+          # the PathBase operator: Field forwards this context to Tachyon Auth
+          # when evaluating the caller's delegated access token.
+          value: tn_01j91h09tpj5ehwbwfwfxpak2b
