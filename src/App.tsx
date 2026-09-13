@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { OnboardingWizard } from "./OnboardingWizard";
 import {
   MemoEditor,
   ItemEditor,
@@ -434,6 +435,9 @@ export function App() {
     store.workspaces.find((s) => s.id === w)?.scope || "個人";
   const currentWorkspace =
     store.workspaces.find((w) => w.id === workspaceId) || store.workspaces[0];
+  const currentSnapshot = store.snapshots.find(
+    (snapshot) => snapshot.workspace_id === currentWorkspace?.id,
+  );
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
@@ -1248,6 +1252,26 @@ export function App() {
             {store.loading && (
               <p className="empty-value">保存した目標を読み込んでいます…</p>
             )}
+            {!store.loading &&
+              currentWorkspace &&
+              currentSnapshot &&
+              currentSnapshot.items.every((item) => item.archived_at) && (
+                <OnboardingWizard
+                  store={store}
+                  workspaces={
+                    currentWorkspace.role === "viewer"
+                      ? [currentWorkspace]
+                      : store.workspaces
+                  }
+                  onComplete={(goalId, actionId) => {
+                    setSelectedId(goalId);
+                    setScope("すべて");
+                    routeTo({ item: goalId, scope: "すべて" });
+                    navigate(actionId ? "今日の行動" : "目標マップ");
+                    notify("最初の目標を作成しました");
+                  }}
+                />
+              )}
             <section className="panel templates-panel" id="templates">
               <div className="section-header">
                 <h2>テンプレートからはじめる</h2>
