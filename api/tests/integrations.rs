@@ -106,6 +106,10 @@ async fn mock(
             let task=s.field_task.lock().unwrap().clone();
             Json(json!({"id":"task_1","tenantId":"tn_allowed","title":task.0,"status":task.1,"dueAt":null,"updatedAt":task.2})).into_response()
         },
+        "/v1/erp/sales-tasks/task_2"=> {
+            assert_eq!(headers.get("x-operator-id").unwrap(),"tn_allowed");
+            Json(json!({"id":"task_2","tenantId":"tn_allowed","title":"Prepare proposal","status":"open","dueAt":null,"updatedAt":"2026-09-13T00:00:00Z"})).into_response()
+        },
         "/v1/erp/sales-contracts/metrics"=> {
             assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");
             assert_eq!(headers.get("x-operator-id").unwrap(),"tn_allowed");
@@ -359,6 +363,34 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
             .body(Body::from(body.to_string()))
             .unwrap()
     };
+    let field_reads_before_cross_tenant = s
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|path| path.starts_with("/v1/erp/"))
+        .count();
+    let cross_tenant = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/integrations/field/tasks?tenant_id=tn_other")
+                .header("cookie", selected_cookie.split(';').next().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_tenant.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        s.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|path| path.starts_with("/v1/erp/"))
+            .count(),
+        field_reads_before_cross_tenant
+    );
     let mut attached = vec![];
     for key in ["attach1", "attach2"] {
         let response = app
@@ -414,7 +446,34 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), 422);
+    assert_eq!(response.status(), 403);
+    let missing_key = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/workspaces/{w}/field/attach-task"))
+                .header("cookie", selected_cookie.split(';').next().unwrap())
+                .header("x-pathbase-request", "1")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"tenant_id":"tn_allowed","task_id":"task_1"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_key.status(), StatusCode::BAD_REQUEST);
+    let conflicting_replay = app
+        .clone()
+        .oneshot(request(
+            "attach-task",
+            "attach1",
+            json!({"tenant_id":"tn_allowed","task_id":"task_2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(conflicting_replay.status(), StatusCode::CONFLICT);
     let mut observed = vec![];
     for _ in 0..2 {
         let response = app
