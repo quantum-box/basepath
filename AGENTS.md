@@ -18,3 +18,4 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 - Authentication must use Tachyon (user decision, 2026-09-12); do not create a separate account/password authority. Reuse Field API contracts wherever they fit, including canonical tenant context and domain data references. Keep authN callbacks separate from per-request authZ checks.
 - Do not use Cognito Hosted UI for PathBase authentication (user decision, 2026-09-13). Collect credentials only in the PathBase sign-in form, send them to the Rust API over the same origin, and let the Rust API authenticate through Tachyon without persisting or logging the password.
+- Allow a user from any Tachyon operator tenant to authenticate to PathBase through the shared Tachyon platform OAuth client (user decision, 2026-09-13). Do not use an operator-tenant membership as a PathBase login gate; enforce access with PathBase workspace memberships after authentication.

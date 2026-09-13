@@ -30,7 +30,7 @@ Native debug builds use the same Rust service over Tauri IPC with a separate loc
 
 ## Real-environment verification
 
-`tachyon.yml` declares the `pathbase-local` public PKCE client for the PathBase tenant. Its exact localhost callback is registered with Tachyon, and `.env.example` records the non-secret client identifier plus the canonical Tachyon and Field endpoints. Apply the manifest with an authenticated Tachyon CLI profile before using a fresh tenant; the generated client has no secret. No existing upstream app credentials or user tokens are reused implicitly.
+`tachyon.yml` declares the `pathbase-local` public PKCE client for the shared Tachyon platform tenant. This admits authenticated Tachyon users regardless of their operator-tenant membership; PathBase workspace membership remains the authorization boundary after authentication. Its exact localhost callback is registered with Tachyon, and `.env.example` records the non-secret client identifier plus the canonical Tachyon and Field endpoints. Apply the manifest with an authenticated Tachyon CLI profile before using a fresh platform; the generated client has no secret. No existing upstream app credentials or user tokens are reused implicitly.
 
 The unauthenticated preflight has reached OIDC Discovery, Tachyon token verification and the production Field tenant-discovery boundary. A successful user login and that user's authorized production Field data still require an interactive sign-in and must be verified separately. The browser must remain on the PathBase origin throughout sign-in; `/auth/callback` rejects obsolete Hosted UI callbacks.
 

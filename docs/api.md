@@ -4,7 +4,7 @@ Rustルーター内のパスを記載しています。ブラウザからは先�
 
 ## 共通規則
 
-- 本番はTachyon認証済みの`pathbase_session` Cookieを使います。`POST /auth/login`は同一オリジンのPathBaseログインフォームから資格情報を受け取り、Tachyonの`POST /oauth2/login`とサーバー間のAuthorization Code + PKCE交換でセッションを確立します。Cognito Hosted UIと独自のパスワード保存は使いません。`POST /auth/logout`でPathBaseからログアウトし、`GET /auth/status`と`GET /health`は公開の設定状況・ヘルス情報です。
+- 本番はTachyon認証済みの`pathbase_session` Cookieを使います。`POST /auth/login`は同一オリジンのPathBaseログインフォームから資格情報を受け取り、Tachyonの`POST /oauth2/login`とサーバー間のAuthorization Code + PKCE交換でセッションを確立します。共有Tachyonプラットフォームのユーザーであれば所属オペレーターテナントを問わず認証でき、アクセス範囲はログイン後にPathBaseワークスペースのメンバーシップで判定します。Cognito Hosted UIと独自のパスワード保存は使いません。`POST /auth/logout`でPathBaseからログアウトし、`GET /auth/status`と`GET /health`は公開の設定状況・ヘルス情報です。
 - 変更には`Idempotency-Key`を指定します。同じ操作者・領域・キー・入力は同じ結果を返し、異なる入力は409。成功結果はDB内に保持し、履歴削除ポリシーはまだ設けていません。AI提案元と人の承認元でキーの名前空間を分けます。
 - ブラウザの変更には`X-PathBase-Request: 1`が必要です。設定した公開オリジン以外からのリクエストは拒否します。CORSは許可しません。ローカル確認モードだけは開発プロキシ内のBearer資格情報でアクセスします。
 - 更新は`expected_version`が必要です。競合は409 `VERSION_CONFLICT`、未指定は428。入力を保持して最新の内容を取得し、人が差分を確認してから再送してください。
