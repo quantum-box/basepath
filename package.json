@@ -16,6 +16,7 @@
     "@fontsource/noto-sans-jp": "^5.2.6",
     "@fontsource/zen-kurenaido": "^5.2.6",
     "@phosphor-icons/react": "^2.1.10",
+    "@tauri-apps/api": "^2.11.1",
     "@vitejs/plugin-react": "5.0.4",
     "@xyflow/react": "^12.8.5",
     "react": "19.2.0",

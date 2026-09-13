@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Icon } from "./icons";
 import { GoalMap } from "./GoalMap";
+import { isTauri, loadState, saveState } from "./api";
 import {
   initialGoals,
   initialTasks,
@@ -122,6 +123,7 @@ export function App() {
   const [activity, setActivity] = useState<string[]>([]);
   const [reflection, setReflection] = useState("");
   const [savedReflection, setSavedReflection] = useState("");
+  const [stateReady, setStateReady] = useState(!isTauri());
   const searchRef = useRef<HTMLInputElement>(null);
   const selected = goals.find((g) => g.id === selectedId) ?? goals[0];
   const notify = useCallback((message: string) => setToast(message), []);
@@ -130,6 +132,53 @@ export function App() {
     (id: string) => setModal({ kind: "initiativeDetail", id }),
     [],
   );
+  useEffect(() => {
+    let active = true;
+    loadState()
+      .then((saved) => {
+        if (!active || !saved) return;
+        setGoals(saved.goals);
+        setTasks(saved.tasks);
+        setInitiatives(saved.initiatives);
+        setNextDone(saved.nextDone);
+        setReflection(saved.reflection);
+        setSavedReflection(saved.savedReflection);
+        setActivity(saved.activity);
+        setSelectedId(saved.selectedId);
+      })
+      .catch(() => notify("保存データを読み込めませんでした"))
+      .finally(() => active && setStateReady(true));
+    return () => {
+      active = false;
+    };
+  }, [notify]);
+  useEffect(() => {
+    if (!stateReady || !isTauri()) return;
+    const timeout = setTimeout(() => {
+      saveState({
+        goals,
+        tasks,
+        initiatives,
+        nextDone,
+        reflection,
+        savedReflection,
+        activity,
+        selectedId,
+      }).catch(() => notify("変更を保存できませんでした"));
+    }, 250);
+    return () => clearTimeout(timeout);
+  }, [
+    goals,
+    tasks,
+    initiatives,
+    nextDone,
+    reflection,
+    savedReflection,
+    activity,
+    selectedId,
+    stateReady,
+    notify,
+  ]);
   useEffect(() => {
     if (!toast) return;
     const timeout = setTimeout(() => setToast(""), 3200);
