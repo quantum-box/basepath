@@ -91,6 +91,20 @@ function navigationFromHash(): NavigationLabel {
     "ホーム"
   );
 }
+
+const screenPaths = new Set(["/login", "/tenants"]);
+function replaceScreenUrl(pathname: string, tenantId = "") {
+  const url = new URL(window.location.href);
+  url.pathname = pathname;
+  if (tenantId && pathname !== "/login")
+    url.searchParams.set("tenant_id", tenantId);
+  else url.searchParams.delete("tenant_id");
+  if (pathname !== "/") {
+    for (const key of ["item", "scope", "view", "workspace"])
+      url.searchParams.delete(key);
+  }
+  window.history.replaceState({}, "", url);
+}
 function Badge({ scope }: { scope: Scope }) {
   return <span className={`scope-badge ${scopeClass[scope]}`}>{scope}</span>;
 }
@@ -229,12 +243,23 @@ function TachyonLogin({ onSignedIn }: { onSignedIn: () => Promise<unknown> }) {
 type TachyonTenant = { id: string; name: string };
 function TachyonTenantSelection({
   onSelected,
+  onBack,
+  initialTenantId,
+  onTenantChange,
+  backLabel,
+  backPendingLabel,
 }: {
-  onSelected: () => Promise<unknown>;
+  onSelected: (tenantId: string) => Promise<unknown>;
+  onBack: () => Promise<unknown> | void;
+  initialTenantId: string;
+  onTenantChange: (tenantId: string) => void;
+  backLabel: string;
+  backPendingLabel: string;
 }) {
   const [tenants, setTenants] = useState<TachyonTenant[]>([]);
   const [tenantId, setTenantId] = useState("");
   const [pending, setPending] = useState(true);
+  const [goingBack, setGoingBack] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
@@ -244,8 +269,14 @@ function TachyonTenantSelection({
     }>("GET", "/v1/tenants")
       .then((result) => {
         if (!active) return;
+        const nextTenantId = result.tenants.some(
+          (tenant) => tenant.id === initialTenantId,
+        )
+          ? initialTenantId
+          : result.selected_tenant_id || result.tenants[0]?.id || "";
         setTenants(result.tenants);
-        setTenantId(result.selected_tenant_id || result.tenants[0]?.id || "");
+        setTenantId(nextTenantId);
+        onTenantChange(nextTenantId);
         if (!result.tenants.length)
           setError("利用できるTachyonテナントがありません。");
       })
@@ -273,7 +304,7 @@ function TachyonTenantSelection({
       await request("POST", "/v1/tenant-selection", {
         tenant_id: tenantId,
       });
-      await onSelected();
+      await onSelected(tenantId);
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -281,6 +312,24 @@ function TachyonTenantSelection({
           : "テナントを選択できませんでした。",
       );
     } finally {
+      setPending(false);
+    }
+  }
+  async function goBack() {
+    if (pending) return;
+    setPending(true);
+    setGoingBack(true);
+    setError("");
+    try {
+      await onBack();
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "前の画面に戻れませんでした。時間をおいて再試行してください。",
+      );
+    } finally {
+      setGoingBack(false);
       setPending(false);
     }
   }
@@ -297,7 +346,10 @@ function TachyonTenantSelection({
             Tachyonテナント
             <select
               value={tenantId}
-              onChange={(event) => setTenantId(event.target.value)}
+              onChange={(event) => {
+                setTenantId(event.target.value);
+                onTenantChange(event.target.value);
+              }}
               disabled={pending || !tenants.length}
               required
             >
@@ -308,13 +360,26 @@ function TachyonTenantSelection({
               ))}
             </select>
           </label>
-          {error && <p className="auth-error" role="alert">{error}</p>}
+          {error && (
+            <p className="auth-error" role="alert">
+              {error}
+            </p>
+          )}
           <button
             className="primary-button"
             disabled={pending || !tenantId}
             type="submit"
           >
             {pending ? "読み込み中…" : "このテナントで始める"}
+          </button>
+          <button
+            className="secondary-button"
+            disabled={pending}
+            type="button"
+            onClick={() => void goBack()}
+          >
+            <Icon name="left" size={14} />
+            {goingBack ? backPendingLabel : backLabel}
           </button>
         </form>
         <small>選択後も、表示できる内容はPathBaseの権限で制御されます。</small>
@@ -326,6 +391,9 @@ function TachyonTenantSelection({
 export function App() {
   const store = useWorkspace();
   const route = new URLSearchParams(window.location.search);
+  const [tenantId, setTenantId] = useState(
+    route.get("tenant_id") || "",
+  );
   const [selectedId, setSelectedId] = useState(
     route.get("item") || "team~event",
   );
@@ -345,6 +413,9 @@ export function App() {
   const [editBase, setEditBase] = useState<number | null>(null);
   const [menu, setMenu] = useState(false);
   const [sidebar, setSidebar] = useState(false);
+  const [selectingTenant, setSelectingTenant] = useState(
+    window.location.pathname === "/tenants",
+  );
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [reflection, setReflection] = useState("");
@@ -492,6 +563,8 @@ export function App() {
   const notify = useCallback((message: string) => setToast(message), []);
   function routeTo(changes: Record<string, string>) {
     const url = new URL(window.location.href);
+    url.pathname = "/";
+    if (tenantId) url.searchParams.set("tenant_id", tenantId);
     for (const [k, v] of Object.entries(changes)) url.searchParams.set(k, v);
     window.history.pushState({}, "", url);
   }
@@ -538,6 +611,55 @@ export function App() {
       window.removeEventListener("popstate", back);
     };
   }, []);
+  useEffect(() => {
+    if (store.error?.code === "UNAUTHENTICATED") {
+      replaceScreenUrl("/login");
+      return;
+    }
+    if (store.error?.code === "TENANT_SELECTION_REQUIRED") {
+      replaceScreenUrl("/tenants", tenantId);
+      return;
+    }
+    if (
+      !store.loading &&
+      store.me.mode !== "tachyon" &&
+      screenPaths.has(window.location.pathname)
+    ) {
+      setSelectingTenant(false);
+      replaceScreenUrl("/");
+    }
+  }, [store.error?.code, store.loading, store.me.mode, tenantId]);
+  useEffect(() => {
+    if (
+      store.loading ||
+      store.me.mode !== "tachyon" ||
+      selectingTenant ||
+      store.error?.code === "UNAUTHENTICATED" ||
+      store.error?.code === "TENANT_SELECTION_REQUIRED"
+    )
+      return;
+    let active = true;
+    void request<{
+      tenants: TachyonTenant[];
+      selected_tenant_id: string | null;
+    }>("GET", "/v1/tenants").then(
+      (result) => {
+        if (!active || !result.selected_tenant_id) return;
+        setTenantId(result.selected_tenant_id);
+        replaceScreenUrl("/", result.selected_tenant_id);
+      },
+      () => {},
+    );
+    return () => {
+      active = false;
+    };
+  }, [
+    selectingTenant,
+    store.error?.code,
+    store.loading,
+    store.me.id,
+    store.me.mode,
+  ]);
 
   useEffect(() => {
     document.title =
@@ -703,7 +825,51 @@ export function App() {
   if (store.error?.code === "UNAUTHENTICATED")
     return <TachyonLogin onSignedIn={store.refresh} />;
   if (store.error?.code === "TENANT_SELECTION_REQUIRED")
-    return <TachyonTenantSelection onSelected={store.refresh} />;
+    return (
+      <TachyonTenantSelection
+        initialTenantId={tenantId}
+        onTenantChange={(id) => {
+          setTenantId(id);
+          replaceScreenUrl("/tenants", id);
+        }}
+        onSelected={async (id) => {
+          setTenantId(id);
+          await store.refresh();
+          setSelectingTenant(false);
+          replaceScreenUrl("/", id);
+        }}
+        onBack={async () => {
+          await request("POST", "/auth/logout", {});
+          await store.refresh();
+          setTenantId("");
+          replaceScreenUrl("/login");
+        }}
+        backLabel="ログイン画面に戻る"
+        backPendingLabel="ログアウト中…"
+      />
+    );
+  if (selectingTenant && store.me.mode === "tachyon")
+    return (
+      <TachyonTenantSelection
+        initialTenantId={tenantId}
+        onTenantChange={(id) => {
+          setTenantId(id);
+          replaceScreenUrl("/tenants", id);
+        }}
+        onSelected={async (id) => {
+          setTenantId(id);
+          await store.refresh();
+          setSelectingTenant(false);
+          replaceScreenUrl("/", id);
+        }}
+        onBack={() => {
+          setSelectingTenant(false);
+          replaceScreenUrl("/", tenantId);
+        }}
+        backLabel="ホームに戻る"
+        backPendingLabel="戻っています…"
+      />
+    );
   return (
     <div className={`app-shell ${compact ? "compact" : ""}`}>
       {sidebar && (
@@ -722,7 +888,24 @@ export function App() {
           <img className="brand-mark" src="/assets/pathbase-mark.png" alt="" />
           <span>PathBase</span>
         </button>
-        <div className="workspace-label">現在のワークスペース</div>
+        <div className="workspace-label">
+          <span>現在のワークスペース</span>
+          {store.me.mode === "tachyon" && (
+            <button
+              className="text-link"
+              onClick={() => {
+                setSidebar(false);
+                setNotifications(false);
+                setModal(null);
+                setSelectingTenant(true);
+                replaceScreenUrl("/tenants", tenantId);
+              }}
+            >
+              テナント切替
+              <Icon name="right" size={12} />
+            </button>
+          )}
+        </div>
         <div className="workspace-switch">
           {(["個人", "チーム", "組織"] as Scope[]).map((item) => (
             <button
