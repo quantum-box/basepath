@@ -12,11 +12,12 @@ use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, OriginalUri, Query, State},
     http::{header, HeaderMap, Method, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use model::{ApiError, FieldReference, Item};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use service::{Actor, Service};
 use std::{collections::HashMap, sync::Arc};
@@ -26,6 +27,11 @@ pub struct HttpState {
     pub token: String,
     pub auth: Option<Arc<auth::TachyonAuth>>,
     pub field: Option<field::FieldClient>,
+}
+#[derive(Deserialize)]
+struct LoginCredentials {
+    username: String,
+    password: String,
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -69,29 +75,33 @@ async fn endpoint(
         return Ok(Json(json!({"mode":if state.auth.is_some(){"tachyon"}else{"local-preview"},"configured":state.auth.is_some(),"field_configured":state.field.is_some()})).into_response());
     }
     if let Some(auth) = &state.auth {
-        if path == "/auth/login" && method == Method::GET {
-            let (url, cookie) = auth.begin()?;
-            return Ok(([(header::SET_COOKIE, cookie)], Redirect::to(&url)).into_response());
-        }
-        if path == "/auth/callback" && method == Method::GET {
+        if path == "/auth/login" {
+            if method != Method::POST {
+                return Err(ApiError::new(
+                    405,
+                    "METHOD_NOT_ALLOWED",
+                    "PathBaseのログイン画面を利用してください",
+                ));
+            }
+            require_login_origin(auth, &headers)?;
+            let credentials: LoginCredentials = serde_json::from_slice(&bytes).map_err(|_| {
+                ApiError::new(400, "INVALID_JSON", "ログイン情報の形式を確認してください")
+            })?;
             let cookie = auth
-                .callback(
-                    &headers,
-                    query.get("state").map(String::as_str).unwrap_or(""),
-                    query.get("code").map(String::as_str).unwrap_or(""),
-                )
+                .direct_login(&credentials.username, &credentials.password)
                 .await?;
             return Ok((
-                [
-                    (header::SET_COOKIE, cookie),
-                    (
-                        header::SET_COOKIE,
-                        auth.cookie_header("pathbase_login", "", 0),
-                    ),
-                ],
-                Redirect::to(&auth.config.public_url),
+                [(header::SET_COOKIE, cookie)],
+                Json(json!({"signed_in":true})),
             )
                 .into_response());
+        }
+        if path == "/auth/callback" {
+            return Err(ApiError::new(
+                410,
+                "HOSTED_LOGIN_DISABLED",
+                "PathBaseではHosted UIログインを使用しません",
+            ));
         }
     }
     let (actor, session) = if let Some(auth) = &state.auth {
@@ -190,6 +200,31 @@ async fn endpoint(
     .await
     .map_err(|_| ApiError::new(500, "INTERNAL_ERROR", "処理に失敗しました"))??;
     Ok(Json(v).into_response())
+}
+fn require_login_origin(auth: &auth::TachyonAuth, headers: &HeaderMap) -> Result<(), ApiError> {
+    if headers
+        .get("x-pathbase-request")
+        .and_then(|value| value.to_str().ok())
+        != Some("1")
+    {
+        return Err(ApiError::new(
+            403,
+            "CSRF_REJECTED",
+            "同一オリジンのPathBaseからログインしてください",
+        ));
+    }
+    let expected = url::Url::parse(&auth.config.public_url)
+        .unwrap()
+        .origin()
+        .ascii_serialization();
+    if headers.get("origin").and_then(|value| value.to_str().ok()) != Some(expected.as_str()) {
+        return Err(ApiError::new(
+            403,
+            "ORIGIN_NOT_ALLOWED",
+            "Origin is not allowed",
+        ));
+    }
+    Ok(())
 }
 async fn field_endpoint(
     state: &HttpState,

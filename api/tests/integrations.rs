@@ -40,6 +40,23 @@ async fn mock(
     match path {
         "/.well-known/openid-configuration"=>Json(json!({"issuer":s.base,"authorization_endpoint":format!("{}/authorize",s.base),"token_endpoint":format!("{}/token",s.base),"jwks_uri":format!("{}/jwks",s.base)})).into_response(),
         "/jwks"=>Json(serde_json::from_str::<Value>(include_str!("fixtures/oidc-jwks.json")).unwrap()).into_response(),
+        "/oauth2/login"=> {
+            assert_eq!(method, Method::POST);
+            let credentials=serde_json::from_str::<Value>(&body).unwrap();
+            assert_eq!(credentials["username"],"test-user");
+            assert_eq!(credentials["password"],"test-password");
+            assert_eq!(credentials["client_id"],"pathbase-test");
+            Json(json!({"status":"authenticated","session_token":"test-session-token","user_id":"us_verified"})).into_response()
+        },
+        "/authorize"=> {
+            assert_eq!(method, Method::POST);
+            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-session-token");
+            let request=serde_json::from_str::<Value>(&body).unwrap();
+            assert_eq!(request["code_challenge_method"],"S256");
+            assert!(request["code_challenge"].as_str().unwrap().len()>32);
+            *s.nonce.lock().unwrap()=request["nonce"].as_str().unwrap().into();
+            Json(json!({"authorization_code":"code","redirect_uri":request["redirect_uri"],"state":request["state"]})).into_response()
+        },
         "/token"=> {
             assert!(body.contains("code_verifier=") || body.contains("refresh_token="));
             let mut header=jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);header.kid=Some("test-key".into());
@@ -157,8 +174,7 @@ async fn concurrent_requests_refresh_session_once() {
     let (s, server) = upstream().await;
     *s.token_lifetime.lock().unwrap() = 0;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
+    let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
     *s.token_lifetime.lock().unwrap() = 3600;
@@ -183,8 +199,7 @@ async fn concurrent_requests_refresh_session_once() {
 async fn field_references_and_observations_are_idempotent_and_preserve_missing_values() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
+    let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let service = Service::open(&dir.path().join("db")).unwrap();
     let actor = pathbase_api::service::Actor {
@@ -296,18 +311,15 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
     server.abort();
 }
 #[tokio::test]
-async fn oidc_pkce_nonce_identity_and_authz_separation() {
+async fn direct_login_uses_tachyon_pkce_without_hosted_ui() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
+    let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Lax"));
     assert!(!s.calls.lock().unwrap().iter().any(|p| p == "/get_tenants"));
-    assert_eq!(
-        a.callback(&h, &state, "code").await.unwrap_err().status,
-        401
-    );
+    assert!(s.calls.lock().unwrap().iter().any(|p| p == "/oauth2/login"));
+    assert!(s.calls.lock().unwrap().iter().any(|p| p == "/authorize"));
     let mut h = HeaderMap::new();
     h.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
     let session = a.session(&h).await.unwrap();
@@ -406,8 +418,6 @@ async fn field_delegates_tenant_and_denies_cross_tenant_without_fetching_content
 async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let service = Service::open(&dir.path().join("db")).unwrap();
     service.initialize(true).unwrap();
@@ -417,6 +427,58 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
         auth: Some(Arc::new(a)),
         field: None,
     });
+    let hosted_ui = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/callback?code=obsolete&state=obsolete")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hosted_ui.status(), 410);
+    let wrong_origin = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "https://example.invalid")
+                .body(Body::from(
+                    json!({"username":"test-user","password":"test-password"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_origin.status(), 403);
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "http://localhost:1420")
+                .body(Body::from(
+                    json!({"username":"test-user","password":"test-password"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let unauthorized = app
         .clone()
         .oneshot(

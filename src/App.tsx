@@ -19,10 +19,12 @@ import {
 
 import { useWorkspace } from "./useWorkspace";
 import {
+  ApiError,
   localDate,
   dateLabel,
   uiId,
   itemPath,
+  request,
   type Item,
   type RecordEntry,
 } from "./api";
@@ -128,6 +130,70 @@ function TextLink({
       {children}
       <Icon name="arrow" size={14} />
     </button>
+  );
+}
+function TachyonLogin({ onSignedIn }: { onSignedIn: () => Promise<unknown> }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) return;
+    setPending(true);
+    setError("");
+    try {
+      await request("POST", "/auth/login", { username, password });
+      setPassword("");
+      await onSignedIn();
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "ログインできませんでした。時間をおいて再試行してください。",
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <main className="auth-page">
+      <div className="panel auth-card">
+        <img src="/assets/pathbase-mark.png" alt="" width="55" />
+        <div>
+          <h1>PathBase</h1>
+          <p>やりたいことを、動ける形に。</p>
+        </div>
+        <form className="auth-form" onSubmit={submit}>
+          <label>
+            Tachyonユーザー名またはメールアドレス
+            <input
+              autoComplete="username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+            />
+          </label>
+          <label>
+            パスワード
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+          </label>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button className="primary-button" disabled={pending} type="submit">
+            {pending ? "ログイン中…" : "Tachyonでログイン"}
+          </button>
+        </form>
+        <small>
+          認証情報はPathBaseに保存されず、Tachyonで認証されます。
+        </small>
+      </div>
+    </main>
   );
 }
 
@@ -510,19 +576,7 @@ export function App() {
     : [];
 
   if (store.error?.code === "UNAUTHENTICATED")
-    return (
-      <main className="auth-page">
-        <div className="panel auth-card">
-          <img src="/assets/pathbase-mark.png" alt="" width="55" />
-          <h1>PathBase</h1>
-          <p>やりたいことを、動ける形に。</p>
-          <a className="primary-button" href="/api/auth/login">
-            Tachyonでログイン
-          </a>
-          <small>目標と行動はあなたのアカウントに保存されます。</small>
-        </div>
-      </main>
-    );
+    return <TachyonLogin onSignedIn={store.refresh} />;
   return (
     <div className={`app-shell ${compact ? "compact" : ""}`}>
       {sidebar && (

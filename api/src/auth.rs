@@ -129,6 +129,16 @@ struct TokenResponse {
     refresh_token: Option<String>,
     expires_in: Option<i64>,
 }
+#[derive(Deserialize)]
+struct PasswordLoginResponse {
+    status: String,
+    session_token: Option<String>,
+}
+#[derive(Deserialize)]
+struct AuthorizeResponse {
+    authorization_code: String,
+    state: String,
+}
 fn unavailable() -> ApiError {
     ApiError::new(
         503,
@@ -279,6 +289,102 @@ impl TachyonAuth {
         }
         r.json().await.map_err(|_| unavailable())
     }
+    pub async fn direct_login(&self, username: &str, password: &str) -> Result<String> {
+        let username = username.trim();
+        if username.is_empty()
+            || username.len() > 320
+            || password.is_empty()
+            || password.len() > 4096
+        {
+            return Err(unauthorized());
+        }
+        let response = self
+            .client
+            .post(format!(
+                "{}/oauth2/login",
+                self.config.issuer.trim_end_matches('/')
+            ))
+            .json(&json!({
+                "username": username,
+                "password": password,
+                "client_id": self.config.client_id,
+            }))
+            .send()
+            .await
+            .map_err(|_| unavailable())?;
+        if !response.status().is_success() {
+            return Err(match response.status().as_u16() {
+                429 => ApiError::new(
+                    429,
+                    "RATE_LIMITED",
+                    "ログイン試行が多すぎます。時間をおいて再試行してください",
+                ),
+                status if status >= 500 => unavailable(),
+                _ => unauthorized(),
+            });
+        }
+        let login: PasswordLoginResponse = response.json().await.map_err(|_| unavailable())?;
+        if login.status == "new_password_required" {
+            return Err(ApiError::new(
+                409,
+                "NEW_PASSWORD_REQUIRED",
+                "Tachyonで新しいパスワードを設定してから再試行してください",
+            ));
+        }
+        let session_token = login.session_token.ok_or_else(unauthorized)?;
+
+        let state = random();
+        let verifier = random();
+        let nonce = random();
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let response = self
+            .client
+            .post(&self.discovery.authorization_endpoint)
+            .bearer_auth(session_token)
+            .json(&json!({
+                "client_id": self.config.client_id,
+                "redirect_uri": self.config.redirect_uri,
+                "response_type": "code",
+                "scope": "openid profile email",
+                "state": state,
+                "nonce": nonce,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+            }))
+            .send()
+            .await
+            .map_err(|_| unavailable())?;
+        if !response.status().is_success() {
+            return Err(match response.status().as_u16() {
+                403 => ApiError::new(
+                    403,
+                    "FORBIDDEN",
+                    "このTachyonアカウントはPathBaseを利用できません",
+                ),
+                429 => ApiError::new(
+                    429,
+                    "RATE_LIMITED",
+                    "ログイン試行が多すぎます。時間をおいて再試行してください",
+                ),
+                status if status >= 500 => unavailable(),
+                _ => unauthorized(),
+            });
+        }
+        let authorization: AuthorizeResponse = response.json().await.map_err(|_| unavailable())?;
+        if authorization.state != state || authorization.authorization_code.is_empty() {
+            return Err(unauthorized());
+        }
+        let token = self
+            .tokens(vec![
+                ("grant_type", "authorization_code".into()),
+                ("client_id", self.config.client_id.clone()),
+                ("redirect_uri", self.config.redirect_uri.clone()),
+                ("code", authorization.authorization_code),
+                ("code_verifier", verifier),
+            ])
+            .await?;
+        self.establish_session(token, &nonce).await
+    }
     async fn validate_id_token(&self, token: &str, nonce: &str) -> Result<String> {
         let header = decode_header(token).map_err(|_| unauthorized())?;
         if header.alg != Algorithm::RS256 {
@@ -360,13 +466,13 @@ impl TachyonAuth {
                 ("code_verifier", login.verifier),
             ])
             .await?;
-        self.validate_id_token(
-            token.id_token.as_deref().ok_or_else(unauthorized)?,
-            &login.nonce,
-        )
-        .await?;
+        self.establish_session(token, &login.nonce).await
+    }
+    async fn establish_session(&self, token: TokenResponse, nonce: &str) -> Result<String> {
+        self.validate_id_token(token.id_token.as_deref().ok_or_else(unauthorized)?, nonce)
+            .await?;
         let identity = self.verify_identity(&token.access_token).await?;
-        // No Field tenant lookup, membership resolution or RBAC in this callback.
+        // No Field tenant lookup, membership resolution or RBAC in authentication.
         let id = random();
         let now = Utc::now().timestamp();
         let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
