@@ -306,12 +306,13 @@ test("two team workspaces keep goals in the selected workspace", async ({
     .getByRole("navigation", { name: "メインメニュー" })
     .getByRole("button", { name: "メンバー", exact: true })
     .click();
-  const dialog = page.getByRole("dialog");
-  const creator = dialog
-    .locator("details")
-    .filter({
-      has: page.locator("summary", { hasText: "新しいワークスペースを作成" }),
-    });
+  await expect(
+    page.getByRole("heading", { name: "メンバー", exact: true, level: 1 }),
+  ).toBeVisible();
+  const manager = page.locator(".members-page-content");
+  const creator = manager.locator("details").filter({
+    has: page.locator("summary", { hasText: "新しいワークスペースを作成" }),
+  });
   await creator.locator("summary").click();
   const ids = [];
   for (const name of ["E2E: 読書会", "E2E: 勉強会"]) {
@@ -321,12 +322,15 @@ test("two team workspaces keep goals in the selected workspace", async ({
       .getByRole("button", { name: "作成する", exact: true })
       .click();
     await expect(
-      dialog.getByLabel("管理するワークスペース").locator("option:checked"),
+      manager.getByLabel("管理するワークスペース").locator("option:checked"),
     ).toContainText(name);
-    ids.push(await dialog.getByLabel("管理するワークスペース").inputValue());
+    ids.push(await manager.getByLabel("管理するワークスペース").inputValue());
   }
   expect(ids[0]).not.toBe(ids[1]);
-  await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "メインメニュー" })
+    .getByRole("button", { name: "ホーム", exact: true })
+    .click();
   const title = "E2E: 勉強会の目標";
   await createGoal(page, title);
   expect(
@@ -345,7 +349,7 @@ test("two team workspaces keep goals in the selected workspace", async ({
   ).toBeVisible();
 });
 
-test("mobile navigation opens the workspace manager and returns to the app", async ({
+test("mobile navigation opens the workspace manager page and returns home", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -357,16 +361,28 @@ test("mobile navigation opens the workspace manager and returns to the app", asy
     .getByRole("navigation", { name: "メインメニュー" })
     .getByRole("button", { name: "メンバー", exact: true })
     .click();
-  const dialog = page.getByRole("dialog");
   await expect(
-    dialog.getByRole("heading", {
-      name: "ワークスペースのメンバー",
+    page.getByRole("heading", {
+      name: "メンバー",
       exact: true,
+      level: 1,
     }),
   ).toBeVisible();
-  await expect(dialog.getByLabel("管理するワークスペース")).toBeVisible();
-  await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
-  await expect(dialog).not.toBeVisible();
+  await expect(page.getByLabel("管理するワークスペース")).toBeVisible();
+  await page
+    .getByRole("button", { name: "メニューを開く", exact: true })
+    .click();
+  await page
+    .getByRole("navigation", { name: "メインメニュー" })
+    .getByRole("button", { name: "ホーム", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", {
+      name: "やりたいことを、動ける形に。",
+      exact: true,
+      level: 1,
+    }),
+  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "メニューを開く", exact: true }),
   ).toBeVisible();
