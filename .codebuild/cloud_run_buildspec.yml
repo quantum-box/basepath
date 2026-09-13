@@ -58,6 +58,41 @@ phases:
         shred -u "${CREDENTIALS_FILE}" 2>/dev/null \
           || python3 -c 'import os; p="/tmp/pathbase-gcp-credentials.json"; open(p,"wb").write(b"0" * os.path.getsize(p)); os.unlink(p)'
       - |
+        echo "Reading sanitized Cloud Run service state"
+        gcloud run services describe compute-pathbase \
+          --project=tachyon-403814 \
+          --region=asia-northeast1 \
+          --format=json \
+          | jq '{
+              name: .metadata.name,
+              generation: .metadata.generation,
+              observedGeneration: .status.observedGeneration,
+              latestCreatedRevision: .status.latestCreatedRevisionName,
+              latestReadyRevision: .status.latestReadyRevisionName,
+              url: .status.url,
+              conditions: [.status.conditions[] | {
+                type,
+                status,
+                reason,
+                message,
+                lastTransitionTime
+              }]
+            }'
+        gcloud run revisions list \
+          --service=compute-pathbase \
+          --project=tachyon-403814 \
+          --region=asia-northeast1 \
+          --limit=5 \
+          --format=json \
+          | jq 'map({
+              name: .metadata.name,
+              created: .metadata.creationTimestamp,
+              service: .metadata.labels["serving.knative.dev/service"],
+              conditions: [.status.conditions[] | {type,status,reason,message}]
+            })'
+        echo "Stopping after read-only Cloud Run diagnostics"
+        exit 1
+      - |
         MACHINE=$(uname -m)
         case "${MACHINE}" in
           x86_64) CLI_ASSET_ARCH=x86_64 ;;
