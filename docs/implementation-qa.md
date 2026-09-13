@@ -49,3 +49,9 @@ The acceptance suite now exercises the browser-facing Tachyon and Field boundari
 The existing browser tests continue to run against the real Rust HTTP API and an isolated temporary SQLite database for the principal persistence flows: title-only goal plus memo across a fresh browser context, idempotent action completion across reload, and workspace selection/data isolation across reload. Rust integration tests remain the source of truth for cookie, PKCE/OIDC, tenant membership, application RBAC, and Field header/tenant contracts; browser route fixtures cover only the UI response to those already-tested API contracts.
 
 No production token, password, client secret, tenant identifier, or developer database is read by these tests. Successful production Field reads still require an authorized real user and remain a live acceptance item rather than a CI claim.
+
+## Production connection recheck — 2026-09-14
+
+The shared-platform Cloud App has the Tachyon OAuth client, Field endpoint and canonical Field platform/root context configured. Its production session key is stored as a secret app environment variable, and the manifest now references that server-side secret without containing key material. Builds from `main` complete successfully.
+
+The live URL cannot yet be used for an authenticated Tachyon/Field acceptance pass: every current Cloud Run deployment fails in the provider with `404 Not Found`, and `https://pathbase.txcloud.app/api/health` consequently returns the routing-layer response `No route for: pathbase`. This is a deployment-provider failure after a successful image build, not evidence of a Tachyon or Field authorization result. Do not mark live Field access verified until a deployment has a public URL, `/api/health` returns 200, and an authenticated user can select a current Tachyon tenant and read an authorized Field resource.
