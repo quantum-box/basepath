@@ -312,8 +312,11 @@ impl Service {
         } else {
             ""
         };
-        let workspace_write =
-            method != "GET" && parts.as_slice() != ["v1", "workspaces", w, "leave"];
+        let suggestion_preview =
+            parts.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
+        let workspace_write = method != "GET"
+            && parts.as_slice() != ["v1", "workspaces", w, "leave"]
+            && !suggestion_preview;
         if !w.is_empty() {
             authorize(&db, &actor.id, w, workspace_write)?;
         }
@@ -433,7 +436,9 @@ pub fn dispatch(
     let col = p[3];
     let id = p.get(4).copied().unwrap_or("");
     let suffix = p.get(5).copied().unwrap_or("");
-    authorize(db, &actor.id, w, method != "GET")?;
+    let suggestion_preview =
+        p.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
+    authorize(db, &actor.id, w, method != "GET" && !suggestion_preview)?;
     if actor.agent
         && method != "GET"
         && !(col == "changesets" && (id == "preview" || suffix == "apply"))
@@ -445,6 +450,9 @@ pub fn dispatch(
         ));
     }
     match (method, col, id, suffix) {
+        ("POST", "ai", "suggestions", "preview") if !actor.agent => {
+            crate::suggestions::preview(db, w, body)
+        }
         ("GET", "snapshot", "", "") => {
             let cols = [
                 "items",

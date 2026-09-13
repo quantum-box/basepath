@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { AiSuggestions } from "./AiSuggestions";
 import {
   MemoEditor,
   ItemEditor,
@@ -52,6 +53,7 @@ type ModalState =
   | { kind: "initiativeDetail"; id: string }
   | { kind: "metrics" }
   | { kind: "relations" }
+  | { kind: "aiSuggestions" }
   | null;
 const navigation = [
   { label: "ホーム", icon: "home" },
@@ -1527,6 +1529,14 @@ export function App() {
                         次の行動を関連付ける
                       </button>
                     )}
+                    <button
+                      className="ai-suggest-link"
+                      disabled={!canWrite(selectedRaw.workspace_id)}
+                      onClick={() => setModal({ kind: "aiSuggestions" })}
+                    >
+                      <Icon name="sparkle" size={15} weight="duotone" />
+                      AIと次の一歩を考える
+                    </button>
                   </DetailRow>
                   <DetailRow icon="graduation" label="関連する取り組み">
                     <div className="related-list">
@@ -1731,6 +1741,8 @@ export function App() {
                               ? "成果と手応えを記録"
                               : modal.kind === "relations"
                                 ? "項目のつながり"
+                                : modal.kind === "aiSuggestions"
+                                  ? "AIによる次の行動・振り返り提案"
                                 : "項目の詳細"
           }
         >
@@ -2058,6 +2070,16 @@ export function App() {
             <fieldset disabled={!canWrite(selectedRaw.workspace_id)}>
               <RelationsEditor item={selectedRaw} store={store} />
             </fieldset>
+          )}
+          {modal.kind === "aiSuggestions" && selectedRaw && (
+            <AiSuggestions
+              goal={selectedRaw}
+              store={store}
+              onApplied={() => {
+                setModal(null);
+                notify("AI提案を確認して採用しました");
+              }}
+            />
           )}
           {modal.kind === "learnings" && (
             <ul className="learning-modal-list">

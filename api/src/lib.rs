@@ -8,6 +8,7 @@ pub mod preflight;
 mod seed;
 pub mod service;
 pub mod storage;
+mod suggestions;
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, Query, State},
