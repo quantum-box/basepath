@@ -22,9 +22,46 @@ phases:
           source "$HOME/google-cloud-sdk/path.bash.inc"
         fi
       - |
+        set -euo pipefail
         GAR_HOST=$(echo "${CONTAINER_REGISTRY}" | cut -d/ -f1)
         echo "Authenticating to Artifact Registry: ${GAR_HOST}"
-        gcloud auth configure-docker "${GAR_HOST}" --quiet
+        CREDENTIALS_FILE=/tmp/pathbase-gcp-credentials.json
+        SECRET_VALUE=""
+        # The CodeBuild service role may read tenant-scoped provider secrets.
+        # Try both historical and current AWS secret path forms without ever
+        # writing the provider payload to logs or the Cloud App runtime.
+        for SECRET_ID in \
+          tn_01jcjtqxah6mhyw4e5mahg02nd/providers/google_cloud \
+          /tn_01jcjtqxah6mhyw4e5mahg02nd/providers/google_cloud; do
+          if SECRET_VALUE=$(aws secretsmanager get-secret-value \
+            --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" \
+            --secret-id "${SECRET_ID}" \
+            --query SecretString \
+            --output text 2>/dev/null); then
+            break
+          fi
+          SECRET_VALUE=""
+        done
+        if [ -z "${SECRET_VALUE}" ]; then
+          echo "ERROR: Google Cloud build credentials are unavailable"
+          exit 1
+        fi
+        printf '%s' "${SECRET_VALUE}" \
+          | python3 -c 'import json,sys; value=json.load(sys.stdin).get("credentials_json"); assert isinstance(value,str) and value; print(value, end="")' \
+          > "${CREDENTIALS_FILE}"
+        unset SECRET_VALUE
+        chmod 600 "${CREDENTIALS_FILE}"
+        gcloud auth activate-service-account \
+          --key-file="${CREDENTIALS_FILE}" \
+          --quiet >/dev/null
+        gcloud auth print-access-token \
+          | docker login \
+              --username oauth2accesstoken \
+              --password-stdin "https://${GAR_HOST}" >/dev/null
+        # Authentication state is now an ephemeral Docker access token. Do not
+        # retain the long-lived provider key for the remainder of the build.
+        shred -u "${CREDENTIALS_FILE}" 2>/dev/null \
+          || python3 -c 'import os; p="/tmp/pathbase-gcp-credentials.json"; open(p,"wb").write(b"0" * os.path.getsize(p)); os.unlink(p)'
       - |
         MACHINE=$(uname -m)
         case "${MACHINE}" in
@@ -82,7 +119,7 @@ phases:
       - |
         source /tmp/build_env.sh
         echo "Building Docker image: ${IMAGE_URI}"
-        set -o pipefail
+        set -eo pipefail
         docker build \
           -t "${IMAGE_URI}" \
           -f "${DOCKER_FILE}" \
@@ -129,7 +166,7 @@ phases:
         fi
       - |
         source /tmp/build_env.sh
-        set -o pipefail
+        set -eo pipefail
         docker push "${IMAGE_URI}" 2>&1 | tee -a /tmp/build.log
         echo "Pushed ${IMAGE_URI}"
     finally:
