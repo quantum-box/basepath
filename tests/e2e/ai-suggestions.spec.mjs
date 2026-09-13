@@ -61,4 +61,25 @@ test("AI proposal stays read-only until preview approval and apply", async ({
   expect(after.items.filter((item) => item.kind === "action")).toHaveLength(
     actionCount + 1,
   );
+
+  // The browser suite shares one isolated database. Archive only the records
+  // created by this test so later cases can still exercise an empty workspace.
+  const originalIds = new Set(before.items.map((item) => item.id));
+  const createdItems = after.items.filter(
+    (item) =>
+      !originalIds.has(item.id) || item.title === "E2E: AI提案を試す目標",
+  );
+  for (const item of createdItems) {
+    const cleanupResponse = await request.patch(
+      `/api/v1/workspaces/${workspaceId}/items/${item.id}`,
+      {
+        headers: { "Idempotency-Key": `ai-e2e-cleanup-${item.id}` },
+        data: {
+          expected_version: item.version,
+          archived_at: new Date().toISOString(),
+        },
+      },
+    );
+    expect(cleanupResponse.ok()).toBeTruthy();
+  }
 });
