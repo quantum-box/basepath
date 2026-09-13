@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { WeeklyReviewScreen } from "./WeeklyReview";
 import {
   MemoEditor,
   ItemEditor,
@@ -1626,6 +1627,26 @@ export function App() {
             )}
           </div>
         </div>
+        ) : activeNav === "振り返り" ? (
+          <WeeklyReviewScreen
+            store={store}
+            workspace={currentWorkspace}
+            onOpenItem={(id) => {
+              const item = currentWorkspace
+                ? allItems.find(
+                    (entry) =>
+                      entry.workspace_id === currentWorkspace.id && entry.id === id,
+                  )
+                : undefined;
+              if (!item) return;
+              if (item.kind === "action" || item.kind === "initiative") {
+                setModal({ kind: "initiativeDetail", id: uiId(item) });
+              } else {
+                selectGoal(uiId(item));
+                navigate("目標マップ");
+              }
+            }}
+          />
         ) : (
           <DedicatedScreen
             page={activeNav}

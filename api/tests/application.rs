@@ -21,6 +21,19 @@ fn req(s: &Service, method: &str, path: &str, b: Value) -> Result<Value> {
         Some(&uuid::Uuid::new_v4().to_string()),
     )
 }
+fn get_with_query(s: &Service, path: &str, query: &[(&str, &str)]) -> Result<Value> {
+    s.handle(
+        &Actor::local(),
+        "GET",
+        path,
+        &query
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect(),
+        json!({}),
+        None,
+    )
+}
 fn item(s: &Service, kind: &str) -> Value {
     req(
         s,
@@ -40,6 +53,135 @@ fn relation(s: &Service, source: &Value, target: &Value, kind: &str) -> Result<V
         "/v1/workspaces/personal/relations",
         json!({"source_id":id(source),"target_id":id(target),"type":kind}),
     )
+}
+#[test]
+fn weekly_review_aggregates_evidence_and_preserves_finalized_corrections() {
+    let (_d, s) = setup();
+    let goal = item(&s, "outcome");
+    req(
+        &s,
+        "PATCH",
+        &format!("/v1/workspaces/personal/items/{}", id(&goal)),
+        json!({"expected_version":1,"fields":{"self_assessment":72}}),
+    )
+    .unwrap();
+    let action = req(
+        &s,
+        "POST",
+        "/v1/workspaces/personal/items",
+        json!({"title":"週の行動","kind":"action","scheduled_date":"2026-09-14"}),
+    )
+    .unwrap();
+    req(
+        &s,
+        "POST",
+        &format!("/v1/workspaces/personal/actions/{}/complete", id(&action)),
+        json!({"expected_version":1,"local_date":"2026-09-14","completed_at":"2026-09-14T01:00:00Z"}),
+    )
+    .unwrap();
+    let metric = req(
+        &s,
+        "POST",
+        "/v1/workspaces/personal/metrics",
+        json!({"item_id":id(&goal),"name":"利用者","unit":"人","baseline":0,"target":100,"direction":"increase"}),
+    )
+    .unwrap();
+    for (value, observed) in [(10, "2026-09-06T01:00:00Z"), (14, "2026-09-14T02:00:00Z")] {
+        req(
+            &s,
+            "POST",
+            "/v1/workspaces/personal/observations",
+            json!({"metric_id":id(&metric),"value":value,"unit":"人","source":"test","observed_at":observed}),
+        )
+        .unwrap();
+    }
+    let summary = get_with_query(
+        &s,
+        "/v1/workspaces/personal/weekly-review",
+        &[("week_start", "2026-09-14")],
+    )
+    .unwrap();
+    assert_eq!(summary["actions"]["completed"], 1);
+    assert_eq!(summary["goals"][0]["self_assessment"], 72.0);
+    assert_eq!(summary["metrics"][0]["delta"], 4.0);
+    assert_eq!(summary["timezone"], "Asia/Tokyo");
+
+    let draft = req(
+        &s,
+        "POST",
+        "/v1/workspaces/personal/weekly-reviews/draft",
+        json!({"week_start":"2026-09-14","learnings":"学び","challenges":"課題","next_focus":"重点"}),
+    )
+    .unwrap();
+    let finalized = req(
+        &s,
+        "POST",
+        &format!(
+            "/v1/workspaces/personal/weekly-reviews/{}/finalize",
+            id(&draft)
+        ),
+        json!({"expected_version":draft["version"]}),
+    )
+    .unwrap();
+    let correction = req(
+        &s,
+        "POST",
+        "/v1/workspaces/personal/weekly-reviews/draft",
+        json!({"week_start":"2026-09-14","learnings":"訂正版","challenges":"","next_focus":""}),
+    )
+    .unwrap();
+    assert_eq!(finalized["status"], "finalized");
+    assert_eq!(correction["revision"], 2);
+    assert_eq!(correction["supersedes_id"], finalized["id"]);
+}
+
+#[test]
+fn weekly_review_rejects_non_monday_boundary_and_unauthorized_access() {
+    let (_d, s) = setup();
+    assert_eq!(
+        get_with_query(
+            &s,
+            "/v1/workspaces/personal/weekly-review",
+            &[("week_start", "2026-09-15")],
+        )
+        .unwrap_err()
+        .code,
+        "VALIDATION_ERROR"
+    );
+    let outsider = Actor {
+        id: "outsider".into(),
+        agent: false,
+    };
+    let mut query = HashMap::new();
+    query.insert("week_start".into(), "2026-09-14".into());
+    assert_eq!(
+        s.handle(
+            &outsider,
+            "GET",
+            "/v1/workspaces/personal/weekly-review",
+            &query,
+            json!({}),
+            None
+        )
+        .unwrap_err()
+        .status,
+        404
+    );
+    req(
+        &s,
+        "POST",
+        "/v1/workspaces/team/items",
+        json!({"title":"担当行動","kind":"action","scheduled_date":"2026-09-14","fields":{"assignee":"local-owner"}}),
+    )
+    .unwrap();
+    let team = get_with_query(
+        &s,
+        "/v1/workspaces/team/weekly-review",
+        &[("week_start", "2026-09-14")],
+    )
+    .unwrap();
+    assert_eq!(team["members"][0]["actor"], "local-owner");
+    assert_eq!(team["members"][0]["incomplete"], 1);
 }
 #[test]
 fn title_only_survives_restart() {

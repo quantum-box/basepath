@@ -387,3 +387,24 @@ test("mobile navigation opens the workspace manager page and returns home", asyn
     page.getByRole("button", { name: "メニューを開く", exact: true }),
   ).toBeVisible();
 });
+
+test("weekly review saves, finalizes, and remains usable at 390px", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openApp(page);
+  await page.getByRole("button", { name: "メニューを開く", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "メインメニュー" })
+    .getByRole("button", { name: "振り返り", exact: true })
+    .click();
+  await expect(page.getByRole("heading", { name: "週次レビュー", exact: true })).toBeVisible();
+  await expect(page.getByText("行動完了率とは別指標", { exact: true })).toBeVisible();
+  await page.getByLabel("学び", { exact: true }).fill("E2E: 小さな完了を確認できた");
+  await page.getByLabel("課題", { exact: true }).fill("E2E: 未計測を埋める");
+  await page.getByLabel("次週の重点", { exact: true }).fill("E2E: 観測を続ける");
+  await page.getByRole("button", { name: "下書き保存", exact: true }).click();
+  await expect(page.getByText("下書き保存済み", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "レビューを確定", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /確定済みレビュー/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "訂正版を作成", exact: true })).toBeVisible();
+  expect(await page.locator(".weekly-review-screen").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+});

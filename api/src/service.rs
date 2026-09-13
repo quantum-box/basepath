@@ -67,6 +67,154 @@ fn timestamp(s: &str) -> Result<()> {
         .map(|_| ())
         .map_err(|_| ApiError::invalid("日時はタイムゾーンを含むRFC3339で指定してください"))
 }
+fn review_week(body_or_query: &HashMap<String, String>) -> Result<(NaiveDate, NaiveDate)> {
+    let raw = body_or_query
+        .get("week_start")
+        .ok_or_else(|| ApiError::invalid("week_startが必要です"))?;
+    let start = NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .map_err(|_| ApiError::invalid("week_startはYYYY-MM-DDで指定してください"))?;
+    if start.weekday().num_days_from_monday() != 0 {
+        return Err(ApiError::invalid("week_startは月曜日を指定してください"));
+    }
+    Ok((start, start + chrono::Duration::days(6)))
+}
+
+fn latest_by_occurrence(records: &[Record]) -> HashMap<String, &Record> {
+    let mut result = HashMap::new();
+    for record in records {
+        if let Some(key) = &record.occurrence_key {
+            result.insert(key.clone(), record);
+        }
+    }
+    result
+}
+
+fn weekly_summary(db: &Connection, w: &str, query: &HashMap<String, String>) -> Result<Value> {
+    let (start, end) = review_week(query)?;
+    let workspace: Workspace = db
+        .query_row("SELECT body FROM workspaces WHERE id=?1", [w], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()?
+        .ok_or_else(ApiError::missing)?;
+    let items: Vec<Item> = list(db, w, "items")?;
+    let records: Vec<Record> = list(db, w, "records")?;
+    let metrics: Vec<Metric> = list(db, w, "metrics")?;
+    let observations: Vec<Observation> = list(db, w, "observations")?;
+    let latest_occurrences = latest_by_occurrence(&records);
+    let start_s = start.to_string();
+    let end_s = end.to_string();
+
+    let mut actions = Vec::new();
+    let mut member_counts: HashMap<String, [u64; 3]> = HashMap::new();
+    for item in items
+        .iter()
+        .filter(|item| item.kind == "action" && item.archived_at.is_none())
+    {
+        let mut occurrences: Vec<(String, Option<&Record>)> = Vec::new();
+        if let Some(recurrence) = &item.fields.recurrence {
+            if recurrence.mode == "period_quota" {
+                occurrences.extend(latest_occurrences.values().filter_map(|record| {
+                    let key = record.occurrence_key.as_ref()?;
+                    let (item_id, date) = key.rsplit_once(':')?;
+                    (item_id == item.id && date >= start_s.as_str() && date <= end_s.as_str())
+                        .then(|| (date.to_string(), Some(*record)))
+                }));
+                occurrences.sort_by(|a, b| a.0.cmp(&b.0));
+                while occurrences.len() < recurrence.times_per_week as usize {
+                    occurrences.push((start_s.clone(), None));
+                }
+            } else {
+                for offset in 0..7 {
+                    let day = start + chrono::Duration::days(offset);
+                    let date = day.to_string();
+                    if item.start_date.as_ref().is_some_and(|d| d > &date)
+                        || item.due_date.as_ref().is_some_and(|d| d < &date)
+                        || !recurrence
+                            .weekdays
+                            .contains(&(day.weekday().num_days_from_monday() as u8))
+                    {
+                        continue;
+                    }
+                    let key = format!("{}:{date}", item.id);
+                    occurrences.push((date, latest_occurrences.get(&key).copied()));
+                }
+            }
+        } else if item
+            .scheduled_date
+            .as_ref()
+            .is_some_and(|d| d >= &start_s && d <= &end_s)
+        {
+            let date = item.scheduled_date.clone().unwrap();
+            let key = format!("{}:{date}", item.id);
+            occurrences.push((date, latest_occurrences.get(&key).copied()));
+        }
+        for (date, record) in occurrences {
+            let status = match record.map(|r| r.record_type.as_str()) {
+                Some("completion") => "completed",
+                Some("skip") => "skipped",
+                None if item.fields.recurrence.is_none() && item.state == "done" => "completed",
+                None if item.fields.recurrence.is_none() && item.state == "abandoned" => "skipped",
+                _ => "incomplete",
+            };
+            let evidence_id = record.map(|r| r.id.clone());
+            let actor = item
+                .fields
+                .assignee
+                .clone()
+                .or_else(|| record.map(|r| r.author.clone()));
+            if let Some(actor) = &actor {
+                let counts = member_counts.entry(actor.clone()).or_default();
+                counts[match status {
+                    "completed" => 0,
+                    "skipped" => 1,
+                    _ => 2,
+                }] += 1;
+            }
+            actions.push(json!({"item_id":item.id,"title":item.title,"date":date,"status":status,"record_id":evidence_id,"actor":actor}));
+        }
+    }
+    let completed = actions
+        .iter()
+        .filter(|a| a["status"] == "completed")
+        .count();
+    let skipped = actions.iter().filter(|a| a["status"] == "skipped").count();
+    let incomplete = actions.len().saturating_sub(completed + skipped);
+
+    let goals: Vec<Value> = items.iter().filter(|item| ["outcome", "milestone"].contains(&item.kind.as_str()) && item.archived_at.is_none())
+        .map(|item| json!({"item_id":item.id,"title":item.title,"self_assessment":item.fields.self_assessment,"assessed_at":item.fields.assessed_at})).collect();
+    let now = Utc::now();
+    let metric_values: Vec<Value> = metrics.iter().map(|metric| {
+        let mut own: Vec<&Observation> = observations.iter().filter(|o| o.metric_id == metric.id && !observations.iter().any(|n| n.supersedes_id.as_deref() == Some(&o.id))).collect();
+        own.sort_by(|a,b| a.observed_at.cmp(&b.observed_at));
+        let latest = own.last().copied();
+        let prior = latest.and_then(|l| own.iter().rev().copied().find(|o| o.observed_at < l.observed_at && o.observed_at < format!("{}T23:59:59Z", start_s)));
+        let stale = latest.and_then(|o| DateTime::parse_from_rfc3339(&o.observed_at).ok()).is_some_and(|d| now.signed_duration_since(d.with_timezone(&Utc)).num_days() > 14);
+        json!({"metric_id":metric.id,"item_id":metric.item_id,"name":metric.name,"unit":metric.unit,"latest":latest.map(|o| o.value),"latest_observation_id":latest.map(|o| o.id.clone()),"previous":prior.map(|o| o.value),"delta":latest.zip(prior).map(|(a,b)|a.value-b.value),"status":if latest.is_none(){"unmeasured"}else if stale{"stale"}else{"current"}})
+    }).collect();
+    let members: Vec<Value> = if workspace.scope == "チーム" {
+        let mut stmt =
+            db.prepare("SELECT actor,role FROM memberships WHERE workspace_id=?1 ORDER BY actor")?;
+        let rows = stmt.query_map([w], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let memberships = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        memberships.into_iter().map(|(actor,role)| {
+            let counts=member_counts.get(&actor).copied().unwrap_or_default();
+            json!({"actor":actor,"role":role,"completed":counts[0],"skipped":counts[1],"incomplete":counts[2]})
+        }).collect()
+    } else {
+        vec![]
+    };
+    let mut reviews: Vec<WeeklyReview> = list(db, w, "weekly_reviews")?;
+    reviews.retain(|r| r.week_start == start_s);
+    reviews.sort_by_key(|r| r.revision);
+    Ok(
+        json!({"workspace_id":w,"timezone":workspace.timezone,"week_start":start_s,"week_end":end_s,"actions":{"total":actions.len(),"completed":completed,"skipped":skipped,"incomplete":incomplete,"items":actions},"goals":goals,"metrics":metric_values,"members":members,"review":reviews.last(),"history":reviews}),
+    )
+}
 pub(crate) fn version(v: &Value, current: i64) -> Result<()> {
     let n = v["expected_version"]
         .as_i64()
@@ -149,6 +297,18 @@ fn validate_item(db: &Connection, item: &Item) -> Result<()> {
         let next: Item = get(db, &item.workspace_id, "items", id)?;
         if next.kind != "action" {
             return Err(ApiError::invalid("次の一歩には行動を指定してください"));
+        }
+    }
+    if let Some(actor) = &item.fields.assignee {
+        let member: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id=?1 AND actor=?2)",
+            params![item.workspace_id, actor],
+            |row| row.get(0),
+        )?;
+        if !member {
+            return Err(ApiError::invalid(
+                "担当者は同じワークスペースのメンバーから選んでください",
+            ));
         }
     }
     Ok(())
@@ -445,6 +605,89 @@ pub fn dispatch(
         ));
     }
     match (method, col, id, suffix) {
+        ("GET", "weekly-review", "", "") => weekly_summary(db, w, query),
+        ("POST", "weekly-reviews", "draft", "") => {
+            only(
+                body,
+                &[
+                    "week_start",
+                    "learnings",
+                    "challenges",
+                    "next_focus",
+                    "expected_version",
+                ],
+            )?;
+            let mut week_query = HashMap::new();
+            week_query.insert("week_start".into(), text(body, "week_start").into());
+            let (start, end) = review_week(&week_query)?;
+            for field in ["learnings", "challenges", "next_focus"] {
+                if text(body, field).chars().count() > 20_000 {
+                    return Err(ApiError::invalid(
+                        "レビューの各入力は20000文字以内にしてください",
+                    ));
+                }
+            }
+            let mut reviews: Vec<WeeklyReview> = list(db, w, "weekly_reviews")?;
+            reviews.retain(|r| r.week_start == start.to_string());
+            reviews.sort_by_key(|r| r.revision);
+            let latest = reviews.last();
+            let stamp = now();
+            let mut review = if let Some(old) = latest.filter(|r| r.status == "draft") {
+                version(body, old.version)?;
+                let mut next = old.clone();
+                next.version += 1;
+                next.updated_at = stamp.clone();
+                next
+            } else {
+                WeeklyReview {
+                    id: new_id("weekly_review"),
+                    workspace_id: w.into(),
+                    week_start: start.to_string(),
+                    week_end: end.to_string(),
+                    status: "draft".into(),
+                    learnings: String::new(),
+                    challenges: String::new(),
+                    next_focus: String::new(),
+                    version: 1,
+                    revision: latest.map_or(1, |r| r.revision + 1),
+                    author: actor.id.clone(),
+                    created_at: stamp.clone(),
+                    updated_at: stamp,
+                    finalized_at: None,
+                    supersedes_id: latest.map(|r| r.id.clone()),
+                }
+            };
+            review.learnings = text(body, "learnings").into();
+            review.challenges = text(body, "challenges").into();
+            review.next_focus = text(body, "next_focus").into();
+            let review_id = review.id.clone();
+            put(db, w, "weekly_reviews", &review_id, &review)?;
+            value(review)
+        }
+        ("POST", "weekly-reviews", id, "finalize") if !id.is_empty() => {
+            only(body, &["expected_version"])?;
+            let mut review: WeeklyReview = get(db, w, "weekly_reviews", id)?;
+            version(body, review.version)?;
+            if review.status != "draft" {
+                return Err(ApiError::new(
+                    409,
+                    "VERSION_CONFLICT",
+                    "このレビューはすでに確定されています",
+                ));
+            }
+            if review.learnings.trim().is_empty()
+                && review.challenges.trim().is_empty()
+                && review.next_focus.trim().is_empty()
+            {
+                return Err(ApiError::invalid("確定前にレビューを入力してください"));
+            }
+            review.status = "finalized".into();
+            review.version += 1;
+            review.updated_at = now();
+            review.finalized_at = Some(review.updated_at.clone());
+            put(db, w, "weekly_reviews", id, &review)?;
+            value(review)
+        }
         ("GET", "snapshot", "", "") => {
             let cols = [
                 "items",
@@ -454,6 +697,7 @@ pub fn dispatch(
                 "observations",
                 "views",
                 "changesets",
+                "weekly_reviews",
             ];
             let mut result = json!({"workspace_id":w});
             for col in cols {
@@ -545,6 +789,7 @@ pub fn dispatch(
                 "observations",
                 "views",
                 "changesets",
+                "weekly_reviews",
             ]
             .contains(&col) =>
         {
@@ -592,6 +837,7 @@ pub fn dispatch(
                     "observations",
                     "views",
                     "changesets",
+                    "weekly_reviews",
                 ]
                 .contains(&col) =>
         {
@@ -1046,6 +1292,7 @@ pub fn dispatch(
                 "metrics",
                 "observations",
                 "views",
+                "weekly_reviews",
             ] {
                 backup[col] = value(list::<Value>(db, w, col)?)?;
             }
@@ -1236,6 +1483,7 @@ fn import(db: &Connection, w: &str, b: &Value) -> Result<Value> {
             "metrics",
             "observations",
             "views",
+            "weekly_reviews",
         ],
     )?;
     if b["schema_version"] != 1 {
@@ -1248,12 +1496,16 @@ fn import(db: &Connection, w: &str, b: &Value) -> Result<Value> {
         "metrics",
         "observations",
         "views",
+        "weekly_reviews",
     ];
     let mut count = 0;
     for col in cols {
-        let docs = b[col]
-            .as_array()
-            .ok_or_else(|| ApiError::invalid("バックアップに必要な一覧がありません"))?;
+        let Some(docs) = b[col].as_array() else {
+            if col == "weekly_reviews" {
+                continue;
+            }
+            return Err(ApiError::invalid("バックアップに必要な一覧がありません"));
+        };
         if docs.len() > 10000 {
             return Err(ApiError::invalid("一度に取り込める件数を超えています"));
         }
@@ -1303,6 +1555,16 @@ fn import(db: &Connection, w: &str, b: &Value) -> Result<Value> {
         timestamp(&o.observed_at)?;
         if let Some(id) = o.supersedes_id {
             let _: Observation = get(db, w, "observations", &id)?;
+        }
+    }
+    for review in list::<WeeklyReview>(db, w, "weekly_reviews")? {
+        date(&Some(review.week_start.clone()))?;
+        date(&Some(review.week_end.clone()))?;
+        if !["draft", "finalized"].contains(&review.status.as_str()) {
+            return Err(ApiError::invalid("週次レビューの状態が不正です"));
+        }
+        if let Some(id) = review.supersedes_id {
+            let _: WeeklyReview = get(db, w, "weekly_reviews", &id)?;
         }
     }
     Ok(json!({"imported":count,"workspace_id":w}))
