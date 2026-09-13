@@ -20,3 +20,13 @@ test("production delegates Field authorization through the Field directory root"
     /name: FIELD_OPERATOR_ID\n(?:[ \t]*#.*\n)*[ \t]*value: tn_01m2a6ztfmd95p70gwgyshbevq/,
   );
 });
+
+test("production keeps the session key as a managed secret reference", async () => {
+  const manifest = await readFile(new URL("../tachyon.yml", import.meta.url), "utf8");
+
+  assert.match(
+    manifest,
+    /name: PATHBASE_SESSION_KEYS\n[ \t]*type: credential\n[ \t]*target: production\n[ \t]*valueFrom:\n[ \t]*secret: pathbase\/PATHBASE_SESSION_KEYS/,
+  );
+  assert.doesNotMatch(manifest, /name: PATHBASE_SESSION_KEYS\n[ \t]*value:/);
+});

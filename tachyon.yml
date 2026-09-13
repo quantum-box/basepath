@@ -66,6 +66,11 @@ spec:
           value: /app/web
         - name: PATHBASE_DB
           value: /app/data/pathbase.sqlite3
+        - name: PATHBASE_SESSION_KEYS
+          type: credential
+          target: production
+          valueFrom:
+            secret: pathbase/PATHBASE_SESSION_KEYS
         - name: TACHYON_OIDC_ISSUER
           value: https://api.n1.tachy.one
         - name: TACHYON_OIDC_CLIENT_ID
