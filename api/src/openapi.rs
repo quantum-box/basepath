@@ -45,6 +45,7 @@ pub fn document() -> Value {
         ("/v1/workspaces/{w}/field/record-metric", vec!["post"]),
         ("/v1/workspaces/{w}/snapshot", vec!["get"]),
         ("/v1/workspaces/{w}/today", vec!["get"]),
+        ("/v1/workspaces/{w}/calendar", vec!["get"]),
         ("/v1/workspaces/{w}/graph", vec!["get"]),
         ("/v1/workspaces/{w}/audit", vec!["get"]),
         ("/v1/workspaces/{w}/items", vec!["get", "post"]),

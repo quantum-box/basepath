@@ -204,6 +204,23 @@ fn workspace_isolation_and_viewer_denial() {
         id: "outsider".into(),
         agent: false,
     };
+    let calendar_query = HashMap::from([
+        ("start".into(), "2026-09-01".into()),
+        ("end".into(), "2026-09-07".into()),
+    ]);
+    assert_eq!(
+        s.handle(
+            &actor,
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &calendar_query,
+            json!({}),
+            None
+        )
+        .unwrap_err()
+        .status,
+        404
+    );
     assert_eq!(
         s.handle(
             &actor,
@@ -230,6 +247,16 @@ fn workspace_isolation_and_viewer_denial() {
             "GET",
             "/v1/workspaces/personal/snapshot",
             &HashMap::new(),
+            json!({}),
+            None
+        )
+        .is_ok());
+    assert!(s
+        .handle(
+            &actor,
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &calendar_query,
             json!({}),
             None
         )
@@ -370,6 +397,60 @@ fn habit_occurrences_do_not_complete_the_whole_habit() {
         )
         .unwrap();
     assert_eq!(today["items"][0]["completed"], false);
+}
+#[test]
+fn calendar_respects_boundaries_timezone_rules_and_corrections() {
+    let (_d, s) = setup();
+    let habit=req(&s,"POST","/v1/workspaces/personal/items",json!({"title":"DST habit","kind":"action","start_date":"2026-03-08","due_date":"2026-03-10","fields":{"recurrence":{"mode":"fixed_schedule","times_per_week":2,"timezone":"America/New_York","weekdays":[0,6]}}})).unwrap();
+    let path = format!("/v1/workspaces/personal/actions/{}/complete", id(&habit));
+    req(&s,"POST",&path,json!({"expected_version":1,"local_date":"2026-03-08","completed_at":"2026-03-08T01:30:00-05:00"})).unwrap();
+    req(
+        &s,
+        "POST",
+        &format!("/v1/workspaces/personal/actions/{}/skip", id(&habit)),
+        json!({"expected_version":2,"local_date":"2026-03-08"}),
+    )
+    .unwrap();
+    let mut query = HashMap::new();
+    query.insert("start".into(), "2026-03-07".into());
+    query.insert("end".into(), "2026-03-10".into());
+    query.insert("timezone".into(), "America/New_York".into());
+    let calendar = s
+        .handle(
+            &Actor::local(),
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &query,
+            json!({}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(calendar["days"].as_array().unwrap().len(), 4);
+    let march_eighth = &calendar["days"][1]["entries"];
+    assert!(march_eighth
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["label"] == "habit" && entry["status"] == "skip"));
+    assert!(calendar["days"][3]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["label"] == "due"));
+    query.insert("timezone".into(), "Mars/Olympus".into());
+    assert_eq!(
+        s.handle(
+            &Actor::local(),
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &query,
+            json!({}),
+            None
+        )
+        .unwrap_err()
+        .code,
+        "VALIDATION_ERROR"
+    );
 }
 #[test]
 fn observation_units_corrections_and_missing_measurement() {

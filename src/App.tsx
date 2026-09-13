@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { CalendarView } from "./CalendarView";
 import {
   MemoEditor,
   ItemEditor,
@@ -753,18 +754,20 @@ export function App() {
           routeTo({ item: uiId(item), scope: "すべて" });
         } else if (modal?.kind === "task") {
           const frequency = Number(data.get("frequency") || 0);
+          const weekdays = data.getAll("weekdays").map(Number);
+          const recurrenceMode = String(data.get("recurrence_mode") || "period_quota");
           await store.write("POST", `${base}/items`, {
             title,
             kind: "action",
             scheduled_date: data.get("date") || null,
             scheduled_time: data.get("time") || null,
             fields: {
-              recurrence: frequency
+              recurrence: frequency || weekdays.length
                 ? {
-                    mode: "period_quota",
-                    times_per_week: frequency,
+                    mode: recurrenceMode,
+                    times_per_week: recurrenceMode === "fixed_schedule" ? weekdays.length : frequency,
                     timezone: store.settings.timezone,
-                    weekdays: [],
+                    weekdays,
                   }
                 : null,
             },
@@ -1636,7 +1639,9 @@ export function App() {
             selectedId={selectedId}
             scope={scope}
             workspace={workspace}
-            quarter={quarter}
+            calendarItems={visibleItems}
+            calendarRecords={allRecords.filter((record) => workspaceMatches(record.workspace_id))}
+            timezone={store.settings.timezone}
             reflection={reflection}
             savedReflection={savedReflection}
             learnings={learnings}
@@ -1657,7 +1662,7 @@ export function App() {
             }}
             onChangeScope={changeScope}
             onOpenInitiative={openInitiative}
-            onSetQuarter={setQuarter}
+            onCalendarToday={() => navigate("今日の行動")}
             onToggleTask={toggleTask}
             onCanEditTask={(id) => canWrite(raw(id)?.workspace_id)}
             onEditTask={(id) =>
@@ -1945,7 +1950,14 @@ export function App() {
                       <input type="date" name="date" defaultValue={today} />
                     </label>
                     <label>
-                      繰り返し
+                      習慣ルール
+                      <select name="recurrence_mode" defaultValue="period_quota">
+                        <option value="period_quota">週の回数で決める</option>
+                        <option value="fixed_schedule">曜日を固定する</option>
+                      </select>
+                    </label>
+                    <label>
+                      週の目標回数
                       <select name="frequency" defaultValue="0">
                         <option value="0">繰り返さない</option>
                         {[1, 2, 3, 4, 5, 6, 7].map((n) => (
@@ -1955,6 +1967,12 @@ export function App() {
                         ))}
                       </select>
                     </label>
+                    <fieldset className="weekday-picker">
+                      <legend>固定する曜日（曜日固定を選んだ場合）</legend>
+                      {["月", "火", "水", "木", "金", "土", "日"].map((label, index) => (
+                        <label key={label}><input type="checkbox" name="weekdays" value={index} />{label}</label>
+                      ))}
+                    </fieldset>
                   </>
                 )}
                 {modal.kind === "task" && (
@@ -2102,7 +2120,9 @@ type DedicatedScreenProps = {
   selectedId: string;
   scope: Scope | "すべて";
   workspace: string;
-  quarter: number;
+  calendarItems: Item[];
+  calendarRecords: RecordEntry[];
+  timezone: string;
   reflection: string;
   savedReflection: string;
   learnings: string[];
@@ -2112,7 +2132,7 @@ type DedicatedScreenProps = {
   onSelectGoal: (id: string) => void;
   onChangeScope: (scope: Scope | "すべて") => void;
   onOpenInitiative: (id: string) => void;
-  onSetQuarter: (value: number) => void;
+  onCalendarToday: () => void;
   onToggleTask: (id: string) => void;
   onCanEditTask: (id: string) => boolean;
   onEditTask: (id: string) => void;
@@ -2133,7 +2153,9 @@ function DedicatedScreen({
   selectedId,
   scope,
   workspace,
-  quarter,
+  calendarItems,
+  calendarRecords,
+  timezone,
   reflection,
   savedReflection,
   learnings,
@@ -2143,7 +2165,7 @@ function DedicatedScreen({
   onSelectGoal,
   onChangeScope,
   onOpenInitiative,
-  onSetQuarter,
+  onCalendarToday,
   onToggleTask,
   onCanEditTask,
   onEditTask,
@@ -2261,41 +2283,9 @@ function DedicatedScreen({
   if (page === "タイムライン") {
     return (
       <div className="page-content timeline-screen">
-        <div className="screen-main-grid">
-          <section className="panel screen-primary-card dedicated-timeline-card">
-            <Timeline
-              quarter={quarter}
-              setQuarter={onSetQuarter}
-              goals={goals}
-              onSelect={onSelectGoal}
-            />
-          </section>
-          <aside className="panel screen-side-card milestone-panel">
-            <div className="section-header">
-              <h2>目標の進捗</h2>
-              <span className="eyebrow">全{goals.length}件</span>
-            </div>
-            <div className="milestone-list">
-              {!goals.length && (
-                <p className="empty-value">表示できる目標はありません。</p>
-              )}
-              {goals.map((goal) => (
-                <button key={goal.id} onClick={() => onSelectGoal(goal.id)}>
-                  <span className={`milestone-icon ${scopeClass[goal.scope]}`}>
-                    <Icon name={goal.icon} size={20} weight="duotone" />
-                  </span>
-                  <span>
-                    <strong>{goal.title}</strong>
-                    <Progress
-                      value={goal.progress}
-                      color={scopeClass[goal.scope]}
-                    />
-                  </span>
-                </button>
-              ))}
-            </div>
-          </aside>
-        </div>
+        <section className="panel screen-primary-card calendar-card">
+          <CalendarView items={calendarItems} records={calendarRecords} timezone={timezone} onOpen={onEditTask} onToday={onCalendarToday} />
+        </section>
       </div>
     );
   }

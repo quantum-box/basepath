@@ -29,6 +29,7 @@ Rustルーター内のパスを記載しています。ブラウザからは先�
 | `GET /v1/workspaces/{w}/metrics` | 成果指標一覧 |
 | `GET /v1/workspaces/{w}/observations` | 訂正前を含む観測一覧 |
 | `GET /v1/workspaces/{w}/today?local_date=2026-09-12` | その日の行動と実施状態 |
+| `GET /v1/workspaces/{w}/calendar?start=2026-09-01&end=2026-10-12&timezone=Asia/Tokyo` | 最大63日分の開始・期限・予定・習慣と未予定項目。習慣は訂正後の最新状態を返す |
 | `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影。最大200ノード、truncatedを確認 |
 | `GET /v1/workspaces/{w}/views` | 保存ビュー一覧 |
 | `GET /v1/workspaces/{w}/changesets` | 変更案一覧 |
