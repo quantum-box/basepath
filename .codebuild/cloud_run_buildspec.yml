@@ -58,8 +58,8 @@ phases:
         shred -u "${CREDENTIALS_FILE}" 2>/dev/null \
           || python3 -c 'import os; p="/tmp/pathbase-gcp-credentials.json"; open(p,"wb").write(b"0" * os.path.getsize(p)); os.unlink(p)'
       - |
-        echo "Reading sanitized revision configuration for compute-pathbase-00006-7b5"
-        gcloud run revisions describe compute-pathbase-00006-7b5 \
+        echo "Reading sanitized revision configuration for compute-pathbase-00005-zzh"
+        gcloud run revisions describe compute-pathbase-00005-zzh \
           --project=tachyon-403814 \
           --region=asia-northeast1 \
           --format=json \
