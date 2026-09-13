@@ -32,10 +32,14 @@ spec:
         owner: quantum-box
         name: basepath
         defaultBranch: main
-      rootDirectory: ""
+      rootDirectory: api
       dockerContext: "."
-      framework: docker
+      framework: rust_server
       deploymentTarget: cloud_run
+      build:
+        # Docker-in-Docker requires the CodeBuild runner; the rootless k3s
+        # runner cannot create the UID/GID map needed by BuildKit.
+        runnerBackend: codebuild
       readinessProof:
         path: /api/health
         expectedStatus: 200
