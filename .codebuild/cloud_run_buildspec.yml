@@ -102,10 +102,14 @@ phases:
           export TACHYON_TENANT_ID=tn_01hjjn348rn3t49zz6hvmfq67p
           export TACHYON_API_URL=https://api.n1.tachy.one
           set +e
+          # Production desired state is applied by the release command before
+          # triggering this build. The build-scoped token verifies that the
+          # checked-out manifest has no drift without mutating its own app.
           IAC_PLAN_OUTPUT=$(tachyon-build manifest apply \
             -f "${CODEBUILD_SRC_DIR}/tachyon.yml" \
             --app pathbase \
             --environment production \
+            --dry-run \
             2>&1)
           IAC_EXIT_CODE=$?
           set -e
