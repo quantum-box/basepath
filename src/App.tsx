@@ -61,7 +61,36 @@ const navigation = [
   { label: "振り返り", icon: "book" },
   { label: "テンプレート", icon: "stack" },
   { label: "メンバー", icon: "users" },
-];
+] as const;
+type NavigationLabel = (typeof navigation)[number]["label"];
+
+const navigationRoutes: Record<NavigationLabel, string> = {
+  ホーム: "home",
+  目標マップ: "goals",
+  タイムライン: "timeline",
+  今日の行動: "today",
+  振り返り: "reflection",
+  テンプレート: "templates",
+  メンバー: "members",
+};
+
+const navigationDescriptions: Record<NavigationLabel, string> = {
+  ホーム: "目標・計画・行動・学びを、ひとつの場所で見渡せます。",
+  目標マップ: "目標と取り組みのつながりを見ながら、次の一歩を整えます。",
+  タイムライン: "これからの予定と目標の進み方を、時間軸で確認します。",
+  今日の行動: "今日やることに集中して、小さな前進を積み重ねます。",
+  振り返り: "できたことや気づきを残し、次の行動につなげます。",
+  テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
+  メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
+};
+
+function navigationFromHash(): NavigationLabel {
+  const route = window.location.hash.replace(/^#\/?/, "");
+  return (
+    navigation.find((item) => navigationRoutes[item.label] === route)?.label ??
+    "ホーム"
+  );
+}
 function Badge({ scope }: { scope: Scope }) {
   return <span className={`scope-badge ${scopeClass[scope]}`}>{scope}</span>;
 }
@@ -304,7 +333,8 @@ export function App() {
     (route.get("scope") as Scope) || "すべて",
   );
   const [workspaceId, setWorkspaceId] = useState(route.get("workspace") || "");
-  const [activeNav, setActiveNav] = useState("ホーム");
+  const [activeNav, setActiveNav] =
+    useState<NavigationLabel>(navigationFromHash);
   const [activeTab, setActiveTab] = useState(
     route.get("view") || "タイムライン",
   );
@@ -497,6 +527,9 @@ export function App() {
       setSelectedId(p.get("item") || "");
       setScope((p.get("scope") as Scope) || "すべて");
       setActiveTab(p.get("view") || "タイムライン");
+      setActiveNav(navigationFromHash());
+      setSidebar(false);
+      window.scrollTo({ top: 0, behavior: "smooth" });
     }
     window.addEventListener("keydown", handle);
     window.addEventListener("popstate", back);
@@ -505,6 +538,11 @@ export function App() {
       window.removeEventListener("popstate", back);
     };
   }, []);
+
+  useEffect(() => {
+    document.title =
+      activeNav === "ホーム" ? "PathBase" : `${activeNav} | PathBase`;
+  }, [activeNav]);
 
   function toggleTask(id: string) {
     const item = raw(id);
@@ -519,29 +557,19 @@ export function App() {
       () => notify(doneFor(item) ? "未完了に戻しました" : "行動を記録しました"),
     );
   }
-  function navigate(label: string) {
+  function navigate(label: NavigationLabel) {
+    const url = new URL(window.location.href);
+    url.hash = `/${navigationRoutes[label]}`;
+    if (window.location.hash !== url.hash) {
+      window.history.pushState(null, "", url);
+    }
     setActiveNav(label);
     setSidebar(false);
-    if (label === "メンバー") {
-      setModal({ kind: "members" });
-      return;
-    }
-    if (["今日の行動", "振り返り", "タイムライン", "リスト"].includes(label)) {
-      setActiveTab(label);
-      routeTo({ view: label });
-      document
-        .getElementById("workspace-panels")
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    } else
-      document
-        .getElementById(
-          label === "目標マップ"
-            ? "goal-map"
-            : label === "テンプレート"
-              ? "templates"
-              : "home",
-        )
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setModal(null);
+    setMenu(false);
+    setNotifications(false);
+    setSearchOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function changeScope(value: Scope | "すべて") {
     setScope(value);
@@ -788,7 +816,7 @@ export function App() {
       </aside>
 
       <main className="main-content" id="home">
-        <header className="hero">
+        <header className={activeNav === "ホーム" ? "hero" : "subpage-header"}>
           <div className="topbar">
             <button
               className="icon-button mobile-menu"
@@ -827,13 +855,17 @@ export function App() {
                           if (result.type === "目標") {
                             setSelectedId(result.id);
                             setScope("すべて");
-                          } else if (result.type === "メンバー")
-                            setModal({ kind: "members" });
-                          else
+                            navigate("目標マップ");
+                          } else if (result.type === "メンバー") {
+                            navigate("メンバー");
+                          } else if (result.type === "行動") {
+                            navigate("今日の行動");
+                          } else {
                             setModal({
                               kind: "initiativeDetail",
                               id: result.id,
                             });
+                          }
                           setSearch("");
                           setSearchOpen(false);
                         }}
@@ -928,19 +960,42 @@ export function App() {
               />
             </button>
           </div>
-          <div className="hero-copy">
-            <h1>やりたいことを、動ける形に。</h1>
-            <p>
-              目標・計画・行動・学びをつなげて、人生も仕事も、前に進めるプラットフォームです。
-            </p>
-          </div>
-          <p className="hero-note">
-            今日の一歩が、
-            <br />
-            <span>未来をつくる。</span>
-          </p>
+          {activeNav === "ホーム" ? (
+            <>
+              <div className="hero-copy">
+                <h1>やりたいことを、動ける形に。</h1>
+                <p>
+                  目標・計画・行動・学びをつなげて、人生も仕事も、前に進めるプラットフォームです。
+                </p>
+              </div>
+              <p className="hero-note">
+                今日の一歩が、
+                <br />
+                <span>未来をつくる。</span>
+              </p>
+            </>
+          ) : (
+            <div className="subpage-heading">
+              <span className="subpage-heading-icon">
+                <Icon
+                  name={
+                    navigation.find((item) => item.label === activeNav)?.icon ??
+                    "home"
+                  }
+                  size={26}
+                  weight="duotone"
+                />
+              </span>
+              <div>
+                <small>PathBase / {workspace}</small>
+                <h1>{activeNav}</h1>
+                <p>{navigationDescriptions[activeNav]}</p>
+              </div>
+            </div>
+          )}
         </header>
 
+        {activeNav === "ホーム" ? (
         <div className="dashboard">
           {store.error && (
             <div className="save-error" role="alert">
@@ -1388,6 +1443,72 @@ export function App() {
             )}
           </div>
         </div>
+        ) : (
+          <DedicatedScreen
+            page={activeNav}
+            goals={goals}
+            tasks={tasks}
+            initiatives={initiatives}
+            selected={selected}
+            selectedId={selectedId}
+            scope={scope}
+            workspace={workspace}
+            quarter={quarter}
+            reflection={reflection}
+            savedReflection={savedReflection}
+            learnings={learnings}
+            pending={store.pending}
+            canSaveReflection={
+              !!currentWorkspace && canWrite(currentWorkspace.id)
+            }
+            membersContent={
+              <WorkspaceMembers
+                store={store}
+                workspaceId={currentWorkspace?.id}
+                onSelect={selectWorkspace}
+              />
+            }
+            onSelectGoal={selectGoal}
+            onChangeScope={changeScope}
+            onOpenInitiative={openInitiative}
+            onSetQuarter={setQuarter}
+            onToggleTask={toggleTask}
+            onCanEditTask={(id) => canWrite(raw(id)?.workspace_id)}
+            onEditTask={(id) =>
+              setModal({ kind: "initiativeDetail", id })
+            }
+            onAddTask={() => setModal({ kind: "task" })}
+            onChooseTemplate={(template) =>
+              setModal({ kind: "template", template })
+            }
+            onEditGoal={() => setModal({ kind: "editGoal" })}
+            onAddInitiative={() => setModal({ kind: "initiative" })}
+            onReflectionChange={(value) => {
+              setReflection(value);
+              localStorage.setItem(reviewDraftKey, value);
+            }}
+            onSaveReflection={() => {
+              if (!currentWorkspace) return;
+              void store.run(
+                () =>
+                  store.write(
+                    "POST",
+                    `/v1/workspaces/${currentWorkspace.id}/records`,
+                    {
+                      record_type: "review",
+                      body: reflection,
+                      item_ids: [],
+                    },
+                  ),
+                () => {
+                  setSavedReflection(reflection);
+                  localStorage.removeItem(reviewDraftKey);
+                  notify("振り返りを記録しました");
+                },
+              );
+            }}
+          />
+        )}
       </main>
       {toast && (
         <div className="toast" role="status">
@@ -1784,6 +1905,394 @@ export function App() {
       )}
     </div>
   );
+}
+
+type DedicatedScreenProps = {
+  page: NavigationLabel;
+  goals: Goal[];
+  tasks: Task[];
+  initiatives: Initiative[];
+  selected?: Goal;
+  selectedId: string;
+  scope: Scope | "すべて";
+  workspace: string;
+  quarter: number;
+  reflection: string;
+  savedReflection: string;
+  learnings: string[];
+  pending: boolean;
+  canSaveReflection: boolean;
+  membersContent: ReactNode;
+  onSelectGoal: (id: string) => void;
+  onChangeScope: (scope: Scope | "すべて") => void;
+  onOpenInitiative: (id: string) => void;
+  onSetQuarter: (value: number) => void;
+  onToggleTask: (id: string) => void;
+  onCanEditTask: (id: string) => boolean;
+  onEditTask: (id: string) => void;
+  onAddTask: () => void;
+  onChooseTemplate: (template: string) => void;
+  onEditGoal: () => void;
+  onAddInitiative: () => void;
+  onReflectionChange: (value: string) => void;
+  onSaveReflection: () => void;
+};
+
+function DedicatedScreen({
+  page,
+  goals,
+  tasks,
+  initiatives,
+  selected,
+  selectedId,
+  scope,
+  workspace,
+  quarter,
+  reflection,
+  savedReflection,
+  learnings,
+  pending,
+  canSaveReflection,
+  membersContent,
+  onSelectGoal,
+  onChangeScope,
+  onOpenInitiative,
+  onSetQuarter,
+  onToggleTask,
+  onCanEditTask,
+  onEditTask,
+  onAddTask,
+  onChooseTemplate,
+  onEditGoal,
+  onAddInitiative,
+  onReflectionChange,
+  onSaveReflection,
+}: DedicatedScreenProps) {
+  const doneCount = tasks.filter((task) => task.done).length;
+  const completion = tasks.length
+    ? Math.round((doneCount / tasks.length) * 100)
+    : 0;
+
+  if (page === "目標マップ") {
+    const selectedInitiatives = selected
+      ? initiatives.filter((item) => item.goalId === selected.id)
+      : [];
+    return (
+      <div className="page-content goal-map-screen">
+        <div className="goal-map-screen-grid">
+          <GoalMap
+            goals={goals}
+            initiatives={initiatives}
+            selected={selectedId}
+            onSelect={onSelectGoal}
+            scope={scope}
+            setScope={onChangeScope}
+            onInitiative={onOpenInitiative}
+          />
+          {selected ? (
+            <section className={`panel goal-overview ${scopeClass[selected.scope]}`}>
+              <div className="goal-overview-heading">
+                <span className={`detail-icon ${scopeClass[selected.scope]}`}>
+                  <Icon name={selected.icon} size={28} weight="duotone" />
+                </span>
+                <div>
+                  <Badge scope={selected.scope} />
+                  <h2>{selected.title}</h2>
+                  <p>{selected.subtitle}</p>
+                </div>
+              </div>
+              <div className="goal-overview-progress">
+                <span>現在の進捗</span>
+                <Progress
+                  value={selected.progress}
+                  color={scopeClass[selected.scope]}
+                />
+              </div>
+              <div className="goal-overview-block">
+                <small>この目標の目的</small>
+                <p>{selected.purpose || "目的はまだ設定されていません。"}</p>
+              </div>
+              <div className="goal-overview-block">
+                <small>次の一歩</small>
+                <strong>
+                  <Icon name="rocket" size={18} weight="duotone" />
+                  {selected.next || "次の一歩を設定しましょう"}
+                </strong>
+              </div>
+              <div className="goal-overview-block">
+                <div className="section-header">
+                  <small>関連する取り組み</small>
+                  <button className="text-link" onClick={onAddInitiative}>
+                    <Icon name="plus" size={14} />
+                    追加
+                  </button>
+                </div>
+                <div className="goal-initiative-list">
+                  {!selectedInitiatives.length && (
+                    <p className="empty-value">関連する取り組みはまだありません。</p>
+                  )}
+                  {selectedInitiatives.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => onOpenInitiative(item.id)}
+                    >
+                      <span className={`related-icon ${scopeClass[selected.scope]}`}>
+                        <Icon name={item.icon} size={18} weight="duotone" />
+                      </span>
+                      <span>
+                        <strong>{item.title.replace("\n", "")}</strong>
+                        <small>
+                          {item.progress === null
+                            ? "評価未設定"
+                            : `${item.progress}% 完了`}
+                        </small>
+                      </span>
+                      <Icon name="right" size={15} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                className="secondary-button goal-edit-button"
+                onClick={onEditGoal}
+              >
+                <Icon name="note" size={17} />
+                この目標を編集
+              </button>
+            </section>
+          ) : (
+            <aside className="panel empty-detail">
+              <Icon name="target" size={38} />
+              <h2>目標はまだありません</h2>
+              <p>テンプレート画面から最初の目標を作成できます。</p>
+            </aside>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "タイムライン") {
+    return (
+      <div className="page-content timeline-screen">
+        <div className="screen-main-grid">
+          <section className="panel screen-primary-card dedicated-timeline-card">
+            <Timeline
+              quarter={quarter}
+              setQuarter={onSetQuarter}
+              goals={goals}
+              onSelect={onSelectGoal}
+            />
+          </section>
+          <aside className="panel screen-side-card milestone-panel">
+            <div className="section-header">
+              <h2>目標の進捗</h2>
+              <span className="eyebrow">全{goals.length}件</span>
+            </div>
+            <div className="milestone-list">
+              {!goals.length && (
+                <p className="empty-value">表示できる目標はありません。</p>
+              )}
+              {goals.map((goal) => (
+                <button key={goal.id} onClick={() => onSelectGoal(goal.id)}>
+                  <span className={`milestone-icon ${scopeClass[goal.scope]}`}>
+                    <Icon name={goal.icon} size={20} weight="duotone" />
+                  </span>
+                  <span>
+                    <strong>{goal.title}</strong>
+                    <Progress
+                      value={goal.progress}
+                      color={scopeClass[goal.scope]}
+                    />
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "今日の行動") {
+    const orderedTasks = [...tasks].sort(compareTasksByDone);
+    return (
+      <div className="page-content today-screen">
+        <div className="metric-grid" aria-label="今日の進捗">
+          <section className="panel metric-card blue">
+            <span className="metric-icon">
+              <Icon name="tasks" size={23} weight="duotone" />
+            </span>
+            <span><small>今日の行動</small><strong>{tasks.length}件</strong></span>
+          </section>
+          <section className="panel metric-card green">
+            <span className="metric-icon">
+              <Icon name="check" size={23} weight="bold" />
+            </span>
+            <span><small>完了</small><strong>{doneCount}件</strong></span>
+          </section>
+          <section className="panel metric-card purple">
+            <span className="metric-icon">
+              <Icon name="chart" size={23} weight="duotone" />
+            </span>
+            <span><small>達成率</small><strong>{completion}%</strong></span>
+          </section>
+        </div>
+        <section className="panel screen-primary-card action-list-panel">
+          <div className="screen-card-header">
+            <div>
+              <span className="eyebrow">{workspace}</span>
+              <h2>今日やること</h2>
+              <p>未完了の行動から順に表示しています。</p>
+            </div>
+            <button className="primary-button" onClick={onAddTask}>
+              <Icon name="plus" size={18} />
+              行動を追加
+            </button>
+          </div>
+          <TaskList
+            tasks={orderedTasks}
+            toggleTask={onToggleTask}
+            expanded
+            disabled={pending}
+            canEdit={onCanEditTask}
+            onEdit={onEditTask}
+          />
+          <div className="action-progress-footer">
+            <span>{doneCount} / {tasks.length}件を完了</span>
+            <Progress value={completion} color="green" />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (page === "振り返り") {
+    return (
+      <div className="page-content reflection-screen">
+        <div className="screen-main-grid reflection-grid">
+          <section className="panel screen-primary-card reflection-editor-card">
+            <div className="reflection-lead">
+              <span className="reflection-icon">
+                <Icon name="leaf" size={30} weight="duotone" />
+              </span>
+              <div>
+                <span className="eyebrow">{workspace} · 今週の振り返り</span>
+                <h2>小さな一歩を、次の力に。</h2>
+                <p>できたこと、気づいたこと、次に試したいことを自由に残しましょう。</p>
+              </div>
+            </div>
+            <label className="reflection-editor-label" htmlFor="weekly-reflection">
+              今週はどんな一歩を踏み出しましたか？
+            </label>
+            <textarea
+              id="weekly-reflection"
+              className="reflection-page-input"
+              value={reflection}
+              onChange={(event) => onReflectionChange(event.target.value)}
+              placeholder="できたことや、次に試したいことを記録しましょう。"
+            />
+            <div className="reflection-actions">
+              <span>
+                {savedReflection && reflection === savedReflection
+                  ? "保存済みです"
+                  : "入力内容は下書きとして保存されます"}
+              </span>
+              <button
+                className="primary-button"
+                disabled={
+                  pending ||
+                  !canSaveReflection ||
+                  !reflection.trim() ||
+                  reflection === savedReflection
+                }
+                onClick={onSaveReflection}
+              >
+                <Icon name="check" size={18} />
+                振り返りを記録
+              </button>
+            </div>
+          </section>
+          <aside className="panel screen-side-card learning-history-panel">
+            <div className="section-header">
+              <h2>最近の学び</h2>
+              <Icon name="bulb" size={21} className="orange-text" />
+            </div>
+            <ul>
+              {!learnings.length && (
+                <li><p>振り返りを記録すると、ここに学びが届きます。</p></li>
+              )}
+              {learnings.map((learning, index) => (
+                <li key={`${learning}-${index}`}>
+                  <span>{index + 1}</span>
+                  <p>{learning}</p>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "テンプレート") {
+    return (
+      <div className="page-content template-screen">
+        <div className="screen-card-header template-screen-heading">
+          <div>
+            <span className="eyebrow">5つのスタート地点</span>
+            <h2>どんな形で始めますか？</h2>
+            <p>あとから自由に編集できるので、今の目的に近いものを選んでください。</p>
+          </div>
+        </div>
+        <div className="template-screen-grid">
+          {templates.map((template, index) => (
+            <button
+              key={template.title}
+              className={`panel template-screen-card ${template.color}`}
+              onClick={() => onChooseTemplate(template.title)}
+            >
+              <span className="template-number">0{index + 1}</span>
+              <span className="template-screen-icon">
+                <Icon name={template.icon} size={31} weight="duotone" />
+              </span>
+              <span className="template-screen-copy">
+                <strong>{template.title}</strong>
+                <small>{template.description}</small>
+              </span>
+              <span className="template-start">
+                このテンプレートで始める
+                <Icon name="arrow" size={16} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "メンバー") {
+    return (
+      <div className="page-content members-screen">
+        <section className="panel screen-primary-card members-panel">
+          <div className="screen-card-header">
+            <div>
+              <span className="eyebrow">{workspace}</span>
+              <h2>一緒に進めるメンバー</h2>
+              <p>メンバー、招待、権限をこの画面で管理できます。</p>
+            </div>
+          </div>
+          <div className="members-page-content">{membersContent}</div>
+        </section>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function compareTasksByDone(a: Task, b: Task) {
+  return Number(a.done) - Number(b.done);
 }
 
 function DetailRow({
