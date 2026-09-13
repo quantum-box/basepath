@@ -9,7 +9,7 @@ use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, Validation};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
@@ -93,11 +93,18 @@ pub struct Identity {
     pub id: String,
     pub name: Option<String>,
     pub email: Option<String>,
+    pub tenants: Vec<TachyonTenant>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TachyonTenant {
+    pub id: String,
+    pub name: String,
 }
 #[derive(Clone)]
 pub struct Session {
     pub identity: Identity,
     pub access_token: String,
+    pub selected_tenant: Option<String>,
     refresh_token: Option<String>,
     expires_at: i64,
     session_expires_at: i64,
@@ -138,6 +145,18 @@ struct PasswordLoginResponse {
 struct AuthorizeResponse {
     authorization_code: String,
     state: String,
+}
+#[derive(Deserialize)]
+struct MeResponse {
+    user: MeUser,
+    tenants: Vec<TachyonTenant>,
+}
+#[derive(Deserialize)]
+struct MeUser {
+    id: String,
+    name: Option<String>,
+    username: Option<String>,
+    email: Option<String>,
 }
 fn unavailable() -> ApiError {
     ApiError::new(
@@ -420,12 +439,11 @@ impl TachyonAuth {
     pub async fn verify_identity(&self, access_token: &str) -> Result<Identity> {
         let response = self
             .client
-            .post(format!(
-                "{}/auth/v1beta/verify",
+            .get(format!(
+                "{}/v1/me",
                 self.config.tachyon_api_url.trim_end_matches('/')
             ))
             .bearer_auth(access_token)
-            .json(&json!({"token":access_token}))
             .send()
             .await
             .map_err(|_| unavailable())?;
@@ -436,13 +454,23 @@ impl TachyonAuth {
                 unauthorized()
             });
         }
-        let v: Value = response.json().await.map_err(|_| unavailable())?;
-        let identity: Identity =
-            serde_json::from_value(v["user"].clone()).map_err(|_| unauthorized())?;
-        if !identity.id.starts_with("us_") || identity.id.len() > 128 {
+        let me: MeResponse = response.json().await.map_err(|_| unavailable())?;
+        if !me.user.id.starts_with("us_")
+            || me.user.id.len() > 128
+            || me.tenants.iter().any(|tenant| {
+                !tenant.id.starts_with("tn_")
+                    || tenant.id.len() > 128
+                    || tenant.name.trim().is_empty()
+            })
+        {
             return Err(unauthorized());
         }
-        Ok(identity)
+        Ok(Identity {
+            id: me.user.id,
+            name: me.user.name.or(me.user.username),
+            email: me.user.email,
+            tenants: me.tenants,
+        })
     }
     pub async fn callback(&self, headers: &HeaderMap, state: &str, code: &str) -> Result<String> {
         if cookie(headers, "pathbase_login").as_deref() != Some(state) || code.is_empty() {
@@ -482,6 +510,7 @@ impl TachyonAuth {
             Session {
                 identity,
                 access_token: token.access_token,
+                selected_tenant: None,
                 refresh_token: token.refresh_token,
                 expires_at: now + token.expires_in.unwrap_or(3600).min(86400),
                 session_expires_at: now + 8 * 3600,
@@ -544,15 +573,44 @@ impl TachyonAuth {
         if identity.id != session.identity.id {
             return Err(unauthorized());
         }
-        if !self
-            .sessions
-            .lock()
-            .map_err(|_| unavailable())?
-            .contains_key(&id)
+        if session
+            .selected_tenant
+            .as_ref()
+            .is_some_and(|selected| !identity.tenants.iter().any(|tenant| &tenant.id == selected))
         {
-            return Err(unauthorized());
+            session.selected_tenant = None;
         }
+        session.identity = identity;
+        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
+        let existing = sessions.get_mut(&id).ok_or_else(unauthorized)?;
+        *existing = session.clone();
         Ok(session)
+    }
+    pub async fn select_tenant(
+        &self,
+        headers: &HeaderMap,
+        tenant_id: &str,
+    ) -> Result<TachyonTenant> {
+        let mut session = self.session(headers).await?;
+        let tenant = session
+            .identity
+            .tenants
+            .iter()
+            .find(|tenant| tenant.id == tenant_id)
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::new(
+                    403,
+                    "TENANT_NOT_ALLOWED",
+                    "このTachyonテナントは選択できません",
+                )
+            })?;
+        session.selected_tenant = Some(tenant.id.clone());
+        let id = cookie(headers, "pathbase_session").ok_or_else(unauthorized)?;
+        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
+        let existing = sessions.get_mut(&id).ok_or_else(unauthorized)?;
+        *existing = session;
+        Ok(tenant)
     }
     pub fn logout(&self, headers: &HeaderMap) -> Result<String> {
         if let Some(id) = cookie(headers, "pathbase_session") {

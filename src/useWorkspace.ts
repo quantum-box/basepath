@@ -115,6 +115,13 @@ export function useWorkspace() {
       retryKeys.current.clear();
       identityId.current = "";
     }
+    if (error.code === "TENANT_SELECTION_REQUIRED") {
+      sequence.current++;
+      setSnapshots([]);
+      setWorkspaces([]);
+      setInvitations([]);
+      retryKeys.current.clear();
+    }
     setError(error);
   }, []);
   useEffect(() => {

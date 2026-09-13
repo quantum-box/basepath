@@ -147,6 +147,7 @@ function TachyonLogin({ onSignedIn }: { onSignedIn: () => Promise<unknown> }) {
       setPassword("");
       await onSignedIn();
     } catch (failure) {
+      setPassword("");
       setError(
         failure instanceof ApiError
           ? failure.message
@@ -192,6 +193,102 @@ function TachyonLogin({ onSignedIn }: { onSignedIn: () => Promise<unknown> }) {
         <small>
           認証情報はPathBaseに保存されず、Tachyonで認証されます。
         </small>
+      </div>
+    </main>
+  );
+}
+type TachyonTenant = { id: string; name: string };
+function TachyonTenantSelection({
+  onSelected,
+}: {
+  onSelected: () => Promise<unknown>;
+}) {
+  const [tenants, setTenants] = useState<TachyonTenant[]>([]);
+  const [tenantId, setTenantId] = useState("");
+  const [pending, setPending] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void request<{
+      tenants: TachyonTenant[];
+      selected_tenant_id: string | null;
+    }>("GET", "/v1/tenants")
+      .then((result) => {
+        if (!active) return;
+        setTenants(result.tenants);
+        setTenantId(result.selected_tenant_id || result.tenants[0]?.id || "");
+        if (!result.tenants.length)
+          setError("利用できるTachyonテナントがありません。");
+      })
+      .catch((failure) => {
+        if (!active) return;
+        setError(
+          failure instanceof ApiError
+            ? failure.message
+            : "Tachyonテナントを取得できませんでした。",
+        );
+      })
+      .finally(() => {
+        if (active) setPending(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending || !tenantId) return;
+    setPending(true);
+    setError("");
+    try {
+      await request("POST", "/v1/tenant-selection", {
+        tenant_id: tenantId,
+      });
+      await onSelected();
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "テナントを選択できませんでした。",
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <main className="auth-page">
+      <div className="panel auth-card">
+        <img src="/assets/pathbase-mark.png" alt="" width="55" />
+        <div>
+          <h1>利用するテナント</h1>
+          <p>PathBaseで操作するTachyonテナントを選択してください。</p>
+        </div>
+        <form className="auth-form" onSubmit={submit}>
+          <label>
+            Tachyonテナント
+            <select
+              value={tenantId}
+              onChange={(event) => setTenantId(event.target.value)}
+              disabled={pending || !tenants.length}
+              required
+            >
+              {tenants.map((tenant) => (
+                <option key={tenant.id} value={tenant.id}>
+                  {tenant.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button
+            className="primary-button"
+            disabled={pending || !tenantId}
+            type="submit"
+          >
+            {pending ? "読み込み中…" : "このテナントで始める"}
+          </button>
+        </form>
+        <small>選択後も、表示できる内容はPathBaseの権限で制御されます。</small>
       </div>
     </main>
   );
@@ -577,6 +674,8 @@ export function App() {
 
   if (store.error?.code === "UNAUTHENTICATED")
     return <TachyonLogin onSignedIn={store.refresh} />;
+  if (store.error?.code === "TENANT_SELECTION_REQUIRED")
+    return <TachyonTenantSelection onSelected={store.refresh} />;
   return (
     <div className={`app-shell ${compact ? "compact" : ""}`}>
       {sidebar && (

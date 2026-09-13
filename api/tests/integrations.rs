@@ -72,6 +72,20 @@ async fn mock(
             assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["token"],"test-access-token");
             Json(json!({"user":{"id":"us_verified","name":"Verified user","email":null,"tenants":["do-not-trust-callback-memberships"]}})).into_response()
         },
+        "/v1/me"=> {
+            assert_eq!(method, Method::GET);
+            if headers.get("authorization").and_then(|value| value.to_str().ok()) != Some("Bearer test-access-token") {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            assert!(headers.get("x-user-id").is_none());
+            Json(json!({
+                "user":{"id":"us_verified","username":"verified-user","name":"Verified user","email":null},
+                "tenants":[
+                    {"id":"tn_allowed","name":"Allowed company"},
+                    {"id":"tn_other","name":"Other company"}
+                ]
+            })).into_response()
+        },
         "/get_tenants"=> {
             assert_eq!(method, Method::POST);
             assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
@@ -200,6 +214,11 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
     let (s, server) = upstream().await;
     let a = auth(&s).await;
     let cookie = a.direct_login("test-user", "test-password").await.unwrap();
+    let mut session_headers = HeaderMap::new();
+    session_headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
+    a.select_tenant(&session_headers, "tn_allowed")
+        .await
+        .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let service = Service::open(&dir.path().join("db")).unwrap();
     let actor = pathbase_api::service::Actor {
@@ -491,6 +510,68 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
         .await
         .unwrap();
     assert_eq!(unauthorized.status(), 401);
+    let selection_required = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/workspaces")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selection_required.status(), 428);
+    let available = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/tenants")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(available.status(), 200);
+    let body = axum::body::to_bytes(available.into_body(), 10000)
+        .await
+        .unwrap();
+    let available: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(available["tenants"].as_array().unwrap().len(), 2);
+    assert!(available["selected_tenant_id"].is_null());
+    let forbidden_tenant = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tenant-selection")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "http://localhost:1420")
+                .body(Body::from(json!({"tenant_id":"tn_unknown"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden_tenant.status(), 403);
+    let selected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tenant-selection")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "http://localhost:1420")
+                .body(Body::from(json!({"tenant_id":"tn_allowed"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.status(), 200);
     let response = app
         .clone()
         .oneshot(

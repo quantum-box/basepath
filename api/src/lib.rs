@@ -33,6 +33,10 @@ struct LoginCredentials {
     username: String,
     password: String,
 }
+#[derive(Deserialize)]
+struct TenantSelection {
+    tenant_id: String,
+}
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
@@ -143,7 +147,6 @@ async fn endpoint(
         }
         let session = auth.session(&headers).await?;
         let actor = auth::TachyonAuth::actor(&session);
-        state.service.provision_personal(&actor)?;
         (actor, Some(session))
     } else {
         let supplied = headers
@@ -164,6 +167,41 @@ async fn endpoint(
     };
     if path == "/v1/me" && method == Method::GET {
         return Ok(Json(if let Some(s)=&session{json!({"id":s.identity.id,"name":s.identity.name.as_deref().unwrap_or("あなた"),"email":s.identity.email,"mode":"tachyon"})}else{json!({"id":actor.id,"name":"やまだ はるか","mode":"local-preview"})}).into_response());
+    }
+    if path == "/v1/tenants" && method == Method::GET {
+        let session = session.as_ref().ok_or_else(|| {
+            ApiError::new(404, "NOT_FOUND", "Tachyonテナントは設定されていません")
+        })?;
+        return Ok(Json(json!({
+            "tenants": session.identity.tenants,
+            "selected_tenant_id": session.selected_tenant,
+        }))
+        .into_response());
+    }
+    if path == "/v1/tenant-selection" && method == Method::POST {
+        let selection: TenantSelection = serde_json::from_slice(&bytes).map_err(|_| {
+            ApiError::new(400, "INVALID_JSON", "テナント選択の形式を確認してください")
+        })?;
+        let tenant = state
+            .auth
+            .as_ref()
+            .ok_or_else(|| ApiError::missing())?
+            .select_tenant(&headers, &selection.tenant_id)
+            .await?;
+        return Ok(Json(json!({"selected_tenant":tenant})).into_response());
+    }
+    if session
+        .as_ref()
+        .is_some_and(|session| session.selected_tenant.is_none())
+    {
+        return Err(ApiError::new(
+            428,
+            "TENANT_SELECTION_REQUIRED",
+            "利用するTachyonテナントを選択してください",
+        ));
+    }
+    if session.is_some() {
+        state.service.provision_personal(&actor)?;
     }
     if path == "/v1/openapi.json" && method == Method::GET {
         return Ok(Json(openapi::document()).into_response());
