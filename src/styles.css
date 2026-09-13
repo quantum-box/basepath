@@ -4093,3 +4093,56 @@ button:disabled {
     flex-wrap: wrap;
   }
 }
+.onboarding-wizard { padding:30px; display:grid; gap:22px; overflow:hidden; }
+.onboarding-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
+.onboarding-heading small, .onboarding-preview > small { color:#7562b8; font-weight:800; letter-spacing:.08em; }
+.onboarding-heading h2 { margin:5px 0 7px; font-size:25px; }
+.onboarding-heading p { margin:0; color:#6d7683; font-size:13px; }
+.onboarding-progress { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; }
+.onboarding-progress span { height:5px; border-radius:99px; background:#eceaf0; }
+.onboarding-progress span.active { background:#8c72d8; }
+.onboarding-step { display:grid; gap:18px; max-width:720px; }
+.onboarding-step h3 { margin:0; font-size:17px; }
+.onboarding-step label, .onboarding-fields label { display:grid; gap:7px; font-size:13px; font-weight:700; }
+.onboarding-step textarea, .onboarding-step select, .onboarding-fields input, .onboarding-fields textarea, .metric-fields input { width:100%; box-sizing:border-box; border:1px solid #ddd9e5; border-radius:10px; padding:11px 12px; background:#fff; color:#31343b; font:inherit; }
+.onboarding-step textarea:focus, .onboarding-fields input:focus, .onboarding-fields textarea:focus, .metric-fields input:focus { outline:3px solid #e9e2ff; border-color:#8c72d8; }
+.onboarding-scope-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+.onboarding-scope-grid button { border:1px solid #e1dde8; border-radius:13px; background:#fff; padding:17px; display:grid; justify-items:start; gap:5px; color:#525765; text-align:left; }
+.onboarding-scope-grid button.active { border-color:#8c72d8; background:#f7f4ff; color:#654eb0; box-shadow:inset 0 0 0 1px #8c72d8; }
+.onboarding-scope-grid button:disabled { opacity:.45; }
+.onboarding-scope-grid small { color:#8a919c; font-size:11px; }
+.onboarding-hint { display:flex; align-items:center; gap:7px; color:#6d7683; font-size:12px; }
+.onboarding-review { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(240px,.7fr); gap:22px; align-items:start; }
+.onboarding-fields { display:grid; gap:15px; }
+.onboarding-fields label > span { color:#8267cd; font-size:10px; }
+.onboarding-fields label > small, .onboarding-fields legend small { color:#9096a0; font-weight:500; }
+.onboarding-fields .form-row { display:grid; grid-template-columns:.65fr 1.35fr; gap:12px; }
+.onboarding-fields fieldset { border:1px solid #e1dde8; border-radius:12px; padding:13px; }
+.onboarding-fields legend { font-size:13px; font-weight:700; padding:0 5px; }
+.metric-fields { display:grid; grid-template-columns:1.4fr .7fr .7fr .7fr; gap:8px; }
+.onboarding-preview { background:#f8f7fa; border:1px solid #e8e5ec; border-radius:14px; padding:18px; display:grid; gap:13px; }
+.onboarding-preview h3 { margin:-4px 0 2px; font-size:17px; }
+.onboarding-preview > div { display:grid; gap:3px; padding-bottom:10px; border-bottom:1px solid #e6e3e9; }
+.onboarding-preview > div span { color:#858c96; font-size:10px; }
+.onboarding-preview > div strong { font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.onboarding-preview > div strong.unset { color:#9ca1a9; font-weight:500; }
+.onboarding-preview p { display:flex; gap:6px; margin:2px 0 0; color:#6d7683; font-size:11px; line-height:1.5; }
+.onboarding-actions { display:flex; justify-content:flex-end; align-items:center; gap:10px; }
+.onboarding-actions .text-link { margin-right:auto; }
+.onboarding-readonly { display:flex; gap:12px; align-items:flex-start; border:1px solid #e3dff0; background:#f8f6fd; padding:17px; border-radius:12px; }
+.onboarding-readonly p { margin:4px 0 0; color:#777f8b; font-size:12px; }
+.onboarding-resume { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:20px 24px; }
+.onboarding-resume > div { display:grid; gap:4px; }
+.onboarding-resume small { color:#777f8b; }
+@media(max-width:680px) {
+  .onboarding-wizard { padding:21px 17px; gap:18px; }
+  .onboarding-heading h2 { font-size:21px; }
+  .onboarding-heading p { font-size:12px; }
+  .onboarding-scope-grid, .onboarding-review, .onboarding-fields .form-row, .metric-fields { grid-template-columns:1fr; }
+  .onboarding-scope-grid button { grid-template-columns:auto 1fr; align-items:center; column-gap:10px; padding:13px; }
+  .onboarding-scope-grid button small { grid-column:2; }
+  .onboarding-preview { order:-1; }
+  .onboarding-actions { flex-wrap:wrap; }
+  .onboarding-actions .text-link { margin-right:0; order:3; width:100%; justify-content:center; }
+  .onboarding-resume { align-items:stretch; flex-direction:column; }
+}

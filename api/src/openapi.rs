@@ -60,6 +60,7 @@ pub fn document() -> Value {
         ("/v1/workspaces/{w}/actions/{id}/reopen", vec!["post"]),
         ("/v1/workspaces/{w}/actions/{id}/skip", vec!["post"]),
         ("/v1/workspaces/{w}/templates/{id}/apply", vec!["post"]),
+        ("/v1/workspaces/{w}/onboarding/complete", vec!["post"]),
         ("/v1/workspaces/{w}/changesets", vec!["get"]),
         ("/v1/workspaces/{w}/ai/suggestions/preview", vec!["post"]),
         ("/v1/workspaces/{w}/changesets/preview", vec!["post"]),

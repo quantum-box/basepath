@@ -353,6 +353,51 @@ async function openApp(page) {
   await expect(page.getByLabel("現在のワークスペース")).toHaveValue(/.+/);
 }
 
+test("empty workspace onboarding keeps a draft and saves only confirmed fields", async ({
+  page,
+  request,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openApp(page);
+  await expect(
+    page.getByRole("heading", { name: "最初の目標を、動ける形に" }),
+  ).toBeVisible();
+  const wizard = page.locator(".onboarding-wizard");
+
+  await wizard.getByRole("button", { name: /個人/ }).click();
+  await wizard.getByRole("button", { name: "次へ" }).click();
+  await wizard
+    .getByLabel("達成したいこと")
+    .fill("週に一度、本を読む時間をつくる");
+  await wizard.getByRole("button", { name: "次へ" }).click();
+  await expect(wizard.getByLabel("目標タイトル 必須")).toHaveValue(
+    "週に一度、本を読む時間をつくる",
+  );
+  await expect(wizard.getByText("設定しません")).toHaveCount(4);
+
+  await wizard.getByRole("button", { name: "戻る" }).click();
+  await expect(wizard.getByLabel("達成したいこと")).toHaveValue(
+    "週に一度、本を読む時間をつくる",
+  );
+  await wizard.getByRole("button", { name: "次へ" }).click();
+  await wizard.getByRole("button", { name: "この内容で作成" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "週に一度、本を読む時間をつくる" }),
+  ).toBeVisible();
+  const workspaceId = await page
+    .getByLabel("現在のワークスペース")
+    .inputValue();
+  const saved = await snapshot(request, workspaceId);
+  expect(saved.items).toHaveLength(1);
+  expect(saved.items[0]).toMatchObject({
+    title: "週に一度、本を読む時間をつくる",
+    due_date: null,
+    fields: { next_action_id: null },
+  });
+  expect(saved.metrics).toHaveLength(0);
+});
+
 async function snapshot(request, workspaceId) {
   const response = await request.get(
     `/api/v1/workspaces/${workspaceId}/snapshot`,

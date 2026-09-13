@@ -3,6 +3,10 @@ use crate::{
     model::{ApiError, Result},
     service::Actor,
 };
+use aes_gcm::{
+    aead::{rand_core::RngCore, Aead, KeyInit, OsRng, Payload},
+    Aes256Gcm, Nonce,
+};
 use axum::http::HeaderMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
@@ -107,10 +111,15 @@ pub struct Session {
     pub identity: Identity,
     pub access_token: String,
     pub selected_tenant: Option<String>,
-    refresh_token: Option<String>,
     expires_at: i64,
     session_expires_at: i64,
-    refresh_lock: Arc<tokio::sync::Mutex<()>>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct SessionEnvelope {
+    access_token: String,
+    selected_tenant: Option<String>,
+    expires_at: i64,
+    session_expires_at: i64,
 }
 #[derive(Clone)]
 struct Login {
@@ -124,7 +133,7 @@ pub struct TachyonAuth {
     pub client: Client,
     discovery: Discovery,
     logins: Arc<Mutex<HashMap<String, Login>>>,
-    sessions: Arc<Mutex<HashMap<String, Session>>>,
+    session_keys: Arc<Vec<[u8; 32]>>,
 }
 #[derive(Deserialize)]
 struct Claims {
@@ -135,7 +144,6 @@ struct Claims {
 struct TokenResponse {
     access_token: String,
     id_token: Option<String>,
-    refresh_token: Option<String>,
     expires_in: Option<i64>,
 }
 #[derive(Deserialize)]
@@ -193,7 +201,22 @@ impl TachyonAuth {
     /// OAuth2 endpoints are stable API routes; connectivity and discovery are
     /// validated separately by `--preflight`.
     pub fn for_runtime(config: AuthConfig) -> Result<Self> {
+        let mut key = [0_u8; 32];
+        OsRng.fill_bytes(&mut key);
+        Self::for_runtime_with_session_keys(config, vec![key])
+    }
+    pub fn for_runtime_with_session_keys(
+        config: AuthConfig,
+        session_keys: Vec<[u8; 32]>,
+    ) -> Result<Self> {
         config.validate()?;
+        if session_keys.is_empty() {
+            return Err(ApiError::new(
+                500,
+                "AUTH_CONFIGURATION",
+                "session key is required",
+            ));
+        }
         let issuer = config.issuer.trim_end_matches('/');
         let discovery = Discovery {
             issuer: config.issuer.clone(),
@@ -218,17 +241,58 @@ impl TachyonAuth {
             client,
             discovery,
             logins: Default::default(),
-            sessions: Default::default(),
+            session_keys: Arc::new(session_keys),
         })
     }
+    pub fn for_runtime_from_env(config: AuthConfig) -> Result<Self> {
+        Self::for_runtime_with_session_keys(config, session_keys_from_env()?)
+    }
+}
 
+pub fn session_keys_from_env() -> Result<Vec<[u8; 32]>> {
+    let raw = std::env::var("PATHBASE_SESSION_KEYS").map_err(|_| {
+        ApiError::new(
+            500,
+            "AUTH_CONFIGURATION",
+            "PATHBASE_SESSION_KEYSを設定してください",
+        )
+    })?;
+    raw.split(',')
+        .map(|value| {
+            let bytes = URL_SAFE_NO_PAD.decode(value.trim()).map_err(|_| {
+                ApiError::new(
+                    500,
+                    "AUTH_CONFIGURATION",
+                    "PATHBASE_SESSION_KEYSの形式が不正です",
+                )
+            })?;
+            bytes.try_into().map_err(|_| {
+                ApiError::new(500, "AUTH_CONFIGURATION", "session key must be 32 bytes")
+            })
+        })
+        .collect::<Result<Vec<[u8; 32]>>>()
+}
+
+impl TachyonAuth {
     pub async fn new(config: AuthConfig) -> Result<Self> {
         let mut auth = Self::for_runtime(config)?;
-        let r = auth
+        auth.discover().await?;
+        Ok(auth)
+    }
+    pub async fn new_with_session_keys(
+        config: AuthConfig,
+        session_keys: Vec<[u8; 32]>,
+    ) -> Result<Self> {
+        let mut auth = Self::for_runtime_with_session_keys(config, session_keys)?;
+        auth.discover().await?;
+        Ok(auth)
+    }
+    async fn discover(&mut self) -> Result<()> {
+        let r = self
             .client
             .get(format!(
                 "{}/.well-known/openid-configuration",
-                auth.config.issuer.trim_end_matches('/')
+                self.config.issuer.trim_end_matches('/')
             ))
             .send()
             .await
@@ -239,7 +303,7 @@ impl TachyonAuth {
             .json()
             .await
             .map_err(|_| unavailable())?;
-        if discovery.issuer != auth.config.issuer {
+        if discovery.issuer != self.config.issuer {
             return Err(ApiError::new(
                 500,
                 "AUTH_CONFIGURATION",
@@ -253,8 +317,8 @@ impl TachyonAuth {
         ] {
             validate_url(u)?;
         }
-        auth.discovery = discovery;
-        Ok(auth)
+        self.discovery = discovery;
+        Ok(())
     }
     pub async fn probe_verification_boundary(&self) -> Result<u16> {
         const INVALID_PROBE_TOKEN: &str = "pathbase-preflight-intentionally-invalid";
@@ -279,6 +343,58 @@ impl TachyonAuth {
             } else {
                 ""
             }
+        )
+    }
+    fn seal_session(&self, session: &SessionEnvelope) -> Result<String> {
+        let cipher = Aes256Gcm::new_from_slice(&self.session_keys[0]).map_err(|_| unavailable())?;
+        let mut nonce = [0_u8; 12];
+        OsRng.fill_bytes(&mut nonce);
+        let plaintext = serde_json::to_vec(session)?;
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext.as_ref(),
+                    aad: self.session_aad().as_bytes(),
+                },
+            )
+            .map_err(|_| unavailable())?;
+        let mut sealed = nonce.to_vec();
+        sealed.extend(ciphertext);
+        let encoded = URL_SAFE_NO_PAD.encode(sealed);
+        if encoded.len() > 3800 {
+            return Err(ApiError::new(
+                503,
+                "SESSION_TOO_LARGE",
+                "認証セッションを保存できません",
+            ));
+        }
+        Ok(encoded)
+    }
+    fn open_session(&self, value: &str) -> Result<SessionEnvelope> {
+        let sealed = URL_SAFE_NO_PAD.decode(value).map_err(|_| unauthorized())?;
+        if sealed.len() <= 12 {
+            return Err(unauthorized());
+        }
+        let (nonce, ciphertext) = sealed.split_at(12);
+        for key in self.session_keys.iter() {
+            let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| unavailable())?;
+            if let Ok(plaintext) = cipher.decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad: self.session_aad().as_bytes(),
+                },
+            ) {
+                return serde_json::from_slice(&plaintext).map_err(|_| unauthorized());
+            }
+        }
+        Err(unauthorized())
+    }
+    fn session_aad(&self) -> String {
+        format!(
+            "pathbase-session-v1\0{}\0{}",
+            self.config.client_id, self.config.public_url
         )
     }
     pub fn begin(&self) -> Result<(String, String)> {
@@ -525,99 +641,50 @@ impl TachyonAuth {
     async fn establish_session(&self, token: TokenResponse, nonce: &str) -> Result<String> {
         self.validate_id_token(token.id_token.as_deref().ok_or_else(unauthorized)?, nonce)
             .await?;
-        let identity = self.verify_identity(&token.access_token).await?;
+        self.verify_identity(&token.access_token).await?;
         // No Field tenant lookup, membership resolution or RBAC in authentication.
-        let id = random();
         let now = Utc::now().timestamp();
-        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
-        sessions.retain(|_, s| s.session_expires_at > now);
-        sessions.insert(
-            id.clone(),
-            Session {
-                identity,
-                access_token: token.access_token,
-                selected_tenant: None,
-                refresh_token: token.refresh_token,
-                expires_at: now + token.expires_in.unwrap_or(3600).min(86400),
-                session_expires_at: now + 8 * 3600,
-                refresh_lock: Default::default(),
-            },
-        );
-        Ok(self.cookie_header("pathbase_session", &id, 8 * 3600))
+        let expires_at = now + token.expires_in.unwrap_or(3600).min(8 * 3600);
+        let envelope = SessionEnvelope {
+            access_token: token.access_token,
+            selected_tenant: None,
+            expires_at,
+            session_expires_at: expires_at,
+        };
+        let value = self.seal_session(&envelope)?;
+        Ok(self.cookie_header("pathbase_session", &value, expires_at - now))
     }
     pub async fn session(&self, headers: &HeaderMap) -> Result<Session> {
-        let id = cookie(headers, "pathbase_session").ok_or_else(unauthorized)?;
-        let mut session = self
-            .sessions
-            .lock()
-            .map_err(|_| unavailable())?
-            .get(&id)
-            .cloned()
-            .ok_or_else(unauthorized)?;
-        if session.session_expires_at < Utc::now().timestamp() {
-            self.sessions.lock().map_err(|_| unavailable())?.remove(&id);
+        let value = cookie(headers, "pathbase_session").ok_or_else(unauthorized)?;
+        let envelope = self.open_session(&value)?;
+        if envelope.session_expires_at <= Utc::now().timestamp()
+            || envelope.expires_at <= Utc::now().timestamp() + 30
+        {
             return Err(unauthorized());
-        }
-        if session.expires_at <= Utc::now().timestamp() + 30 {
-            // Serialize refresh for this session, then re-read it: concurrent dashboard
-            // requests must not reuse a provider's rotating refresh token.
-            let lock = session.refresh_lock.clone();
-            let _guard = lock.lock().await;
-            session = self
-                .sessions
-                .lock()
-                .map_err(|_| unavailable())?
-                .get(&id)
-                .cloned()
-                .ok_or_else(unauthorized)?;
-            if session.expires_at <= Utc::now().timestamp() + 30 {
-                let token = self
-                    .tokens(vec![
-                        ("grant_type", "refresh_token".into()),
-                        ("client_id", self.config.client_id.clone()),
-                        (
-                            "refresh_token",
-                            session.refresh_token.clone().ok_or_else(unauthorized)?,
-                        ),
-                    ])
-                    .await?;
-                let identity = self.verify_identity(&token.access_token).await?;
-                if identity.id != session.identity.id {
-                    return Err(unauthorized());
-                }
-                session.access_token = token.access_token;
-                session.refresh_token = token.refresh_token.or(session.refresh_token);
-                session.expires_at =
-                    Utc::now().timestamp() + token.expires_in.unwrap_or(3600).min(86400);
-                let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
-                let existing = sessions.get_mut(&id).ok_or_else(unauthorized)?;
-                *existing = session.clone();
-            }
         }
         // Token revocation / authN changes are checked at the protected boundary.
-        let identity = self.verify_identity(&session.access_token).await?;
-        if identity.id != session.identity.id {
-            return Err(unauthorized());
-        }
-        if session
-            .selected_tenant
+        let identity = self.verify_identity(&envelope.access_token).await?;
+        let mut selected_tenant = envelope.selected_tenant;
+        if selected_tenant
             .as_ref()
             .is_some_and(|selected| !identity.tenants.iter().any(|tenant| &tenant.id == selected))
         {
-            session.selected_tenant = None;
+            selected_tenant = None;
         }
-        session.identity = identity;
-        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
-        let existing = sessions.get_mut(&id).ok_or_else(unauthorized)?;
-        *existing = session.clone();
-        Ok(session)
+        Ok(Session {
+            identity,
+            access_token: envelope.access_token,
+            selected_tenant,
+            expires_at: envelope.expires_at,
+            session_expires_at: envelope.session_expires_at,
+        })
     }
     pub async fn select_tenant(
         &self,
         headers: &HeaderMap,
         tenant_id: &str,
-    ) -> Result<TachyonTenant> {
-        let mut session = self.session(headers).await?;
+    ) -> Result<(TachyonTenant, String)> {
+        let session = self.session(headers).await?;
         let tenant = session
             .identity
             .tenants
@@ -631,17 +698,20 @@ impl TachyonAuth {
                     "このTachyonテナントは選択できません",
                 )
             })?;
-        session.selected_tenant = Some(tenant.id.clone());
-        let id = cookie(headers, "pathbase_session").ok_or_else(unauthorized)?;
-        let mut sessions = self.sessions.lock().map_err(|_| unavailable())?;
-        let existing = sessions.get_mut(&id).ok_or_else(unauthorized)?;
-        *existing = session;
-        Ok(tenant)
+        let envelope = SessionEnvelope {
+            access_token: session.access_token,
+            selected_tenant: Some(tenant.id.clone()),
+            expires_at: session.expires_at,
+            session_expires_at: session.session_expires_at,
+        };
+        let value = self.seal_session(&envelope)?;
+        let max_age = envelope.session_expires_at - Utc::now().timestamp();
+        Ok((
+            tenant,
+            self.cookie_header("pathbase_session", &value, max_age),
+        ))
     }
-    pub fn logout(&self, headers: &HeaderMap) -> Result<String> {
-        if let Some(id) = cookie(headers, "pathbase_session") {
-            self.sessions.lock().map_err(|_| unavailable())?.remove(&id);
-        }
+    pub fn logout(&self, _headers: &HeaderMap) -> Result<String> {
         Ok(self.cookie_header("pathbase_session", "", 0))
     }
     pub fn actor(session: &Session) -> Actor {
