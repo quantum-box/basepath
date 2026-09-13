@@ -32,6 +32,7 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: npm run test:sites
+      - run: npm run test:config
       - name: Verify build outputs
         run: |
           test -f dist/client/index.html
