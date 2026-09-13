@@ -27,20 +27,22 @@ async fn start_server(db: &Path) -> (Server, String) {
         .local_addr()
         .unwrap()
         .port();
-    let child = Command::new(env!("CARGO_BIN_EXE_pathbase-api"))
-        .env("PATHBASE_MODE", "local-preview")
-        .env("PATHBASE_DB", db)
-        .env("PATHBASE_SEED_DEMO", "0")
-        .env("PATHBASE_API_TOKEN", API_TOKEN)
-        .env("PATHBASE_MCP_TOKEN", MCP_TOKEN)
-        .env("PATHBASE_MCP_ACTOR_ID", "local-owner")
-        .env("PATHBASE_MCP_ALLOWED_HOSTS", "127.0.0.1")
-        .env("PATHBASE_API_PORT", port.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
+    let server = Server(
+        Command::new(env!("CARGO_BIN_EXE_pathbase-api"))
+            .env("PATHBASE_MODE", "local-preview")
+            .env("PATHBASE_DB", db)
+            .env("PATHBASE_SEED_DEMO", "0")
+            .env("PATHBASE_API_TOKEN", API_TOKEN)
+            .env("PATHBASE_MCP_TOKEN", MCP_TOKEN)
+            .env("PATHBASE_MCP_ACTOR_ID", "local-owner")
+            .env("PATHBASE_MCP_ALLOWED_HOSTS", "127.0.0.1")
+            .env("PATHBASE_API_PORT", port.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
     let base = format!("http://127.0.0.1:{port}");
     let client = HttpClient::new();
     for _ in 0..100 {
@@ -50,7 +52,7 @@ async fn start_server(db: &Path) -> (Server, String) {
             .await
             .is_ok_and(|response| response.status() == StatusCode::OK)
         {
-            return (Server(child), format!("{base}/mcp"));
+            return (server, format!("{base}/mcp"));
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
