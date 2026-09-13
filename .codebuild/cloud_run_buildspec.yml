@@ -58,11 +58,22 @@ phases:
         shred -u "${CREDENTIALS_FILE}" 2>/dev/null \
           || python3 -c 'import os; p="/tmp/pathbase-gcp-credentials.json"; open(p,"wb").write(b"0" * os.path.getsize(p)); os.unlink(p)'
       - |
-        echo "Reading revision diagnostics for compute-pathbase-00005-zzh"
-        gcloud run revisions describe compute-pathbase-00005-zzh \
+        echo "Reading sanitized revision configuration for compute-pathbase-00006-7b5"
+        gcloud run revisions describe compute-pathbase-00006-7b5 \
           --project=tachyon-403814 \
           --region=asia-northeast1 \
-          --format='yaml(metadata.name,spec.containers.image,spec.containers.ports,status.conditions)' \
+          --format=json \
+          | jq '(.spec.containers[0] // .spec.template.spec.containers[0]) as $container | {
+              command: $container.command,
+              args: $container.args,
+              ports: $container.ports,
+              startupProbe: $container.startupProbe,
+              env: [$container.env[] | {
+                name: (.name | if . == "TACHYON_OIDC_CLIENT_ID" then "AUTH_CLIENT_ID" elif startswith("TACHYON_") then sub("TACHYON_"; "APP_PLATFORM_") else . end),
+                hasValue: has("value"),
+                valueLength: (.value // "" | length)
+              }]
+            }' \
           || echo "Cloud Run revision diagnostics unavailable"
       - |
         MACHINE=$(uname -m)
