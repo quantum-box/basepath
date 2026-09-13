@@ -576,12 +576,15 @@ impl Service {
         } else {
             ""
         };
+        let suggestion_preview =
+            parts.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
         let notification_read = method == "PATCH"
             && parts.get(3) == Some(&"notifications")
             && parts.get(5) == Some(&"read");
         let workspace_write = method != "GET"
+            && parts.as_slice() != ["v1", "workspaces", w, "leave"]
             && !notification_read
-            && parts.as_slice() != ["v1", "workspaces", w, "leave"];
+            && !suggestion_preview;
         if !w.is_empty() {
             authorize(&db, &actor.id, w, workspace_write)?;
         }
@@ -706,8 +709,15 @@ pub fn dispatch(
     let col = p[3];
     let id = p.get(4).copied().unwrap_or("");
     let suffix = p.get(5).copied().unwrap_or("");
+    let suggestion_preview =
+        p.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
     let notification_read = method == "PATCH" && col == "notifications" && suffix == "read";
-    authorize(db, &actor.id, w, method != "GET" && !notification_read)?;
+    authorize(
+        db,
+        &actor.id,
+        w,
+        method != "GET" && !suggestion_preview && !notification_read,
+    )?;
     if actor.agent
         && method != "GET"
         && !(col == "changesets" && (id == "preview" || suffix == "apply"))
@@ -802,6 +812,9 @@ pub fn dispatch(
             put(db, w, "weekly_reviews", id, &review)?;
             value(review)
         }
+        ("POST", "ai", "suggestions", "preview") if !actor.agent => {
+            crate::suggestions::preview(db, w, body)
+        }
         ("GET", "snapshot", "", "") => {
             let cols = [
                 "items",
@@ -847,6 +860,83 @@ pub fn dispatch(
                 })
                 .collect();
             Ok(json!({"items":items,"relations":edges,"truncated":total>limit,"limit":limit}))
+        }
+        ("GET", "calendar", "", "") => {
+            let start = query
+                .get("start")
+                .ok_or_else(|| ApiError::invalid("startが必要です"))?;
+            let end = query
+                .get("end")
+                .ok_or_else(|| ApiError::invalid("endが必要です"))?;
+            date(&Some(start.clone()))?;
+            date(&Some(end.clone()))?;
+            let start_day = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
+            let end_day = NaiveDate::parse_from_str(end, "%Y-%m-%d").unwrap();
+            if end_day < start_day || (end_day - start_day).num_days() > 62 {
+                return Err(ApiError::invalid(
+                    "カレンダー期間は開始日以降62日以内にしてください",
+                ));
+            }
+            let timezone = query
+                .get("timezone")
+                .map(String::as_str)
+                .unwrap_or("Asia/Tokyo");
+            if timezone.parse::<chrono_tz::Tz>().is_err() {
+                return Err(ApiError::invalid("タイムゾーンを確認してください"));
+            }
+            let items: Vec<Item> = list(db, w, "items")?;
+            let records: Vec<Record> = list(db, w, "records")?;
+            let active: Vec<_> = items
+                .iter()
+                .filter(|item| item.archived_at.is_none())
+                .cloned()
+                .collect();
+            let unscheduled: Vec<_> = active
+                .iter()
+                .filter(|item| {
+                    item.start_date.is_none()
+                        && item.due_date.is_none()
+                        && item.scheduled_date.is_none()
+                        && item.fields.recurrence.is_none()
+                })
+                .cloned()
+                .collect();
+            let mut days = vec![];
+            let mut day = start_day;
+            while day <= end_day {
+                let key = day.to_string();
+                let weekday = day.weekday().num_days_from_monday() as u8;
+                let mut entries = vec![];
+                for item in &active {
+                    for (label, value) in [
+                        ("start", item.start_date.as_deref()),
+                        ("due", item.due_date.as_deref()),
+                        ("scheduled", item.scheduled_date.as_deref()),
+                    ] {
+                        if value == Some(key.as_str()) {
+                            entries.push(json!({"item":item,"label":label}));
+                        }
+                    }
+                    if let Some(rule) = &item.fields.recurrence {
+                        let in_range = item.start_date.as_ref().is_none_or(|value| value <= &key)
+                            && item.due_date.as_ref().is_none_or(|value| value >= &key);
+                        if in_range
+                            && (rule.mode == "period_quota" || rule.weekdays.contains(&weekday))
+                        {
+                            let occurrence = format!("{}:{key}", item.id);
+                            let latest = records.iter().rev().find(|record| {
+                                record.occurrence_key.as_deref() == Some(&occurrence)
+                            });
+                            entries.push(json!({"item":item,"label":"habit","occurrence_key":occurrence,"status":latest.map(|record| record.record_type.as_str()).unwrap_or("missed")}));
+                        }
+                    }
+                }
+                days.push(json!({"date":key,"entries":entries}));
+                day = day.succ_opt().unwrap();
+            }
+            Ok(
+                json!({"start":start,"end":end,"timezone":timezone,"days":days,"unscheduled":unscheduled}),
+            )
         }
         ("GET", "today", "", "") => {
             let d = query.get("local_date").cloned().unwrap_or_else(|| {
@@ -1415,6 +1505,7 @@ pub fn dispatch(
             )
         }
         ("POST", "templates", id, "apply") => apply_template(db, actor, w, id, body),
+        ("POST", "onboarding", "complete", "") => complete_onboarding(db, actor, w, body),
         ("POST", "changesets", "preview", "") => preview(db, actor, w, body),
         ("POST", "changesets", id, "approve") if !actor.agent => {
             let mut c: Value = get(db, w, col, id)?;
@@ -1485,6 +1576,115 @@ pub fn dispatch(
         ("POST", "imports", "", "") if !actor.agent => import(db, w, body),
         _ => Err(ApiError::missing()),
     }
+}
+
+fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) -> Result<Value> {
+    only(
+        body,
+        &[
+            "title",
+            "purpose",
+            "due_date",
+            "initiative_title",
+            "action_title",
+            "metric",
+        ],
+    )?;
+    let title = title(body, "title", 200)?;
+    let purpose = text(body, "purpose").trim();
+    if purpose.chars().count() > 10_000 {
+        return Err(ApiError::invalid(
+            "達成したいことは10000文字以内で入力してください",
+        ));
+    }
+    let due_date: Option<String> = serde_json::from_value(body["due_date"].clone())?;
+    date(&due_date)?;
+    if list::<Item>(db, w, "items")?
+        .iter()
+        .any(|item| item.archived_at.is_none())
+    {
+        return Err(ApiError::new(
+            409,
+            "ONBOARDING_CONFLICT",
+            "別の操作で項目が作成されました。入力を保持したまま最新の内容を確認してください",
+        ));
+    }
+
+    let base = format!("/v1/workspaces/{w}");
+    let mut goal = dispatch(
+        db,
+        actor,
+        "POST",
+        &format!("{base}/items"),
+        &HashMap::new(),
+        &json!({
+            "title": title,
+            "description": purpose,
+            "kind": "outcome",
+            "due_date": due_date,
+            "fields": { "icon": "target" }
+        }),
+    )?;
+
+    let initiative_title = text(body, "initiative_title").trim();
+    let action_title = text(body, "action_title").trim();
+    let mut initiative = Value::Null;
+    let mut action = Value::Null;
+    if !initiative_title.is_empty() {
+        if initiative_title.chars().count() > 200 {
+            return Err(ApiError::invalid("取り組みは200文字以内で入力してください"));
+        }
+        initiative = dispatch(
+            db,
+            actor,
+            "POST",
+            &format!("{base}/items"),
+            &HashMap::new(),
+            &json!({"title":initiative_title,"kind":"initiative","parent_id":goal["id"],"fields":{"icon":"flag"}}),
+        )?;
+    }
+    if !action_title.is_empty() {
+        if action_title.chars().count() > 200 {
+            return Err(ApiError::invalid("次の一歩は200文字以内で入力してください"));
+        }
+        let parent = initiative["id"].as_str().or_else(|| goal["id"].as_str());
+        action = dispatch(
+            db,
+            actor,
+            "POST",
+            &format!("{base}/items"),
+            &HashMap::new(),
+            &json!({"title":action_title,"kind":"action","parent_id":parent}),
+        )?;
+        goal = dispatch(
+            db,
+            actor,
+            "PATCH",
+            &format!("{base}/items/{}", text(&goal, "id")),
+            &HashMap::new(),
+            &json!({"expected_version":goal["version"],"fields":{"next_action_id":action["id"]}}),
+        )?;
+    }
+
+    let mut metric = Value::Null;
+    if !body["metric"].is_null() {
+        let candidate = &body["metric"];
+        only(
+            candidate,
+            &["name", "unit", "baseline", "target", "direction"],
+        )?;
+        let mut metric_body = candidate.clone();
+        metric_body["item_id"] = goal["id"].clone();
+        metric = dispatch(
+            db,
+            actor,
+            "POST",
+            &format!("{base}/metrics"),
+            &HashMap::new(),
+            &metric_body,
+        )?;
+    }
+    Ok(json!({"goal":goal,"initiative":initiative,"action":action,"metric":metric}))
 }
 fn validate_metric(m: &Metric) -> Result<()> {
     date(&m.period_start)?;

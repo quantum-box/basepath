@@ -158,6 +158,46 @@ export type ChangeSet = {
   expires_at: string;
   created_at: string;
 };
+export type SuggestionEvidence = {
+  goal: { id: string; title: string; version: number };
+  deadline: string | null;
+  latest_record: {
+    id: string;
+    type: string;
+    body: string;
+    happened_at: string;
+  } | null;
+};
+export type ActionSuggestion = {
+  id: string;
+  kind: "action";
+  title: string;
+  duration_minutes: number;
+  reason: string;
+  evidence: SuggestionEvidence;
+};
+export type ReflectionSuggestion = {
+  id: string;
+  kind: "reflection";
+  title: string;
+  fact: string[];
+  inference: string[];
+  questions: string[];
+  body: string;
+  evidence: SuggestionEvidence;
+};
+export type SuggestionPreview = {
+  id: string;
+  workspace_id: string;
+  goal_id: string;
+  goal_version: number;
+  created_at: string;
+  expires_at: string;
+  provider: "safe_local_fallback" | string;
+  provider_notice: string;
+  suggestions: ActionSuggestion[];
+  reflection: ReflectionSuggestion;
+};
 export type Snapshot = {
   workspace_id: string;
   items: Item[];

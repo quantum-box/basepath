@@ -215,9 +215,13 @@ pub async fn run_from_env() -> PreflightReport {
         "TACHYON_OIDC_CLIENT_ID",
         "TACHYON_OIDC_REDIRECT_URI",
         "TACHYON_API_URL",
+        "PATHBASE_SESSION_KEYS",
     ]);
     let auth_config = if missing_auth.is_empty() {
-        AuthConfig::from_env()
+        AuthConfig::from_env().and_then(|config| {
+            crate::auth::session_keys_from_env()?;
+            Ok(config)
+        })
     } else {
         Err(ApiError::invalid(&format!(
             "設定されていません: {}",

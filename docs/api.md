@@ -4,7 +4,7 @@ Rustルーター内のパスを記載しています。ブラウザからは先�
 
 ## 共通規則
 
-- 本番はTachyon認証済みの`pathbase_session` Cookieを使います。`POST /auth/login`は同一オリジンのPathBaseログインフォームから資格情報を受け取り、Tachyonの`POST /oauth2/login`とサーバー間のAuthorization Code + PKCE交換でセッションを確立します。共有Tachyonプラットフォームのユーザーであれば所属オペレーターテナントを問わず認証でき、正規ユーザーと所属テナントはTachyonの`GET /v1/me`から取得します。ログイン後は`GET /v1/tenants`の一覧から利用テナントを`POST /v1/tenant-selection`で明示的に選ぶ必要があり、それまではワークスペースAPIが428 `TENANT_SELECTION_REQUIRED`を返します。アクセス範囲は選択後もPathBaseワークスペースのメンバーシップで判定します。Cognito Hosted UIと独自のパスワード保存は使いません。本番HTTPサーバーはTachyonの既定OAuth2エンドポイントを使って外部通信前にlistenを開始し、`--preflight`はOIDC Discoveryと各認証境界への接続を検証します。`POST /auth/logout`でPathBaseからログアウトし、`GET /auth/status`と`GET /health`は公開の設定状況・ヘルス情報です。
+- 本番はTachyon認証済みの`pathbase_session` Cookieを使います。Cookieは`PATHBASE_SESSION_KEYS`で認証付き暗号化され、サーバー再起動や同じ鍵を持つ別インスタンスへのルーティングでも有効です。`POST /auth/login`は同一オリジンのPathBaseログインフォームから資格情報を受け取り、Tachyonの`POST /oauth2/login`とサーバー間のAuthorization Code + PKCE交換でセッションを確立します。共有Tachyonプラットフォームのユーザーであれば所属オペレーターテナントを問わず認証でき、正規ユーザーと所属テナントはTachyonの`GET /v1/me`から取得します。ログイン後は`GET /v1/tenants`の一覧から利用テナントを`POST /v1/tenant-selection`で明示的に選ぶ必要があり、それまではワークスペースAPIが428 `TENANT_SELECTION_REQUIRED`を返します。アクセス範囲は選択後もPathBaseワークスペースのメンバーシップで判定します。Cognito Hosted UIと独自のパスワード保存は使いません。本番HTTPサーバーはTachyonの既定OAuth2エンドポイントを使って外部通信前にlistenを開始し、`--preflight`はセッション鍵、OIDC Discovery、各認証境界を検証します。`POST /auth/logout`でCookieを消去し、`GET /auth/status`と`GET /health`は公開の設定状況・ヘルス情報です。
 - 変更には`Idempotency-Key`を指定します。同じ操作者・領域・キー・入力は同じ結果を返し、異なる入力は409。成功結果はDB内に保持し、履歴削除ポリシーはまだ設けていません。AI提案元と人の承認元でキーの名前空間を分けます。
 - ブラウザの変更には`X-PathBase-Request: 1`が必要です。設定した公開オリジン以外からのリクエストは拒否します。CORSは許可しません。ローカル確認モードだけは開発プロキシ内のBearer資格情報でアクセスします。
 - 更新は`expected_version`が必要です。競合は409 `VERSION_CONFLICT`、未指定は428。入力を保持して最新の内容を取得し、人が差分を確認してから再送してください。
@@ -30,6 +30,7 @@ Rustルーター内のパスを記載しています。ブラウザからは先�
 | `GET /v1/workspaces/{w}/metrics` | 成果指標一覧 |
 | `GET /v1/workspaces/{w}/observations` | 訂正前を含む観測一覧 |
 | `GET /v1/workspaces/{w}/today?local_date=2026-09-12` | その日の行動と実施状態 |
+| `GET /v1/workspaces/{w}/calendar?start=2026-09-01&end=2026-10-12&timezone=Asia/Tokyo` | 最大63日分の開始・期限・予定・習慣と未予定項目。習慣は訂正後の最新状態を返す |
 | `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影。最大200ノード、truncatedを確認 |
 | `GET /v1/workspaces/{w}/views` | 保存ビュー一覧 |
 | `GET /v1/workspaces/{w}/changesets` | 変更案一覧 |
@@ -117,6 +118,7 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 
 ## テンプレート・提案・入出力
 
+- `POST /v1/workspaces/{w}/ai/suggestions/preview`：`goal_id`と`expected_version`を指定。選択した目標・期限・同じワークスペースの直近記録だけから、30分以内の行動候補3件と、事実・推測・質問を分けた振り返り案を返します。AI接続が利用できない場合は安全なローカル候補へフォールバックします。この操作だけでは項目や記録を変更しません。採用時は下記changeset契約を使用します。
 - `POST /v1/workspaces/{w}/templates/{id}/apply`：titleと任意description / start_date / due_date。テンプレートが項目・関連・ビューを同じトランザクションで作ります。OKRの目標値は自動生成しません。
 - `POST /v1/workspaces/{w}/views`：name、type（list / map / timeline / okr / today）、filters。`POST …/views/{id}/query`で保存条件による項目検索を実行します。
 - `PATCH /v1/settings`：compact、notifications、timezoneをすべて指定。タイムゾーンはIANA識別子です。

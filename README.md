@@ -14,6 +14,7 @@
 - 共有ワークスペースの作成・名前変更、TachyonユーザーID宛ての期限付き招待、参加・辞退・取り消し、オーナー／編集／閲覧の権限管理と退出。複数ワークスペースを名前で選択
 - Fieldの権限付き組織一覧、営業タスクの参照、MRR / ARR / 受注残 / 売掛残 / DSOを成果指標へ記録
 - Rustの共通処理を呼ぶHTTP API、Tauri IPC、ローカルstdio MCP。AIの変更案は差分表示・人の承認を経て原子的に適用
+- 選択した目標・期限・直近記録に基づく30分以内の行動候補と、事実・推測・質問を分けた振り返り提案。編集・却下・差分承認に対応
 
 ## ローカル開発
 
@@ -32,13 +33,13 @@ Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理�
 
 [.env.example](.env.example)を参考に、PathBase用に登録されたOIDCクライアントと環境の接続情報を設定します。`npm run dev`は`.env` / `.env.local`の`PATHBASE_*`、`TACHYON_*`、`FIELD_*`を読みます。単独Rustプロセスには環境変数として渡してください。認証情報を`VITE_*`に置かないでください。
 
-`PATHBASE_MODE=tachyon`の場合、必要な認証設定がないと起動しません。コールバックは`PATHBASE_PUBLIC_URL/api/auth/callback`と完全一致させます。ブラウザにはアクセストークンを渡さず、HttpOnlyのセッションCookieを使用します。セッションはプロセスのメモリに保持し、上限8時間・サーバー再起動後は再ログインです。ログアウトはPathBaseのセッションを破棄します。
+`PATHBASE_MODE=tachyon`の場合、必要な認証設定がないと起動しません。コールバックは`PATHBASE_PUBLIC_URL/api/auth/callback`と完全一致させます。アクセストークンと選択テナントは`PATHBASE_SESSION_KEYS`でAES-256-GCM暗号化したHttpOnly Cookieに保持し、ブラウザーJavaScriptからは読めません。同じ鍵を設定したCloud Runインスタンス間でセッションを引き継げます。Cookieは上流アクセストークンと同時（最大8時間）に失効し、ログアウト時に消去します。
 
 実環境へ接続する前に`npm run preflight`を実行すると、設定形式、OIDC Discovery、Tachyonのトークン検証API、Fieldの権限付きテナント一覧APIへの到達性を確認できます。確認要求には意図的に無効な認証情報を使い、クライアントシークレット、トークン、テナント識別子は結果へ表示しません。成功後も、実ユーザーでログインしてFieldの許可・権限不足・期限切れを確認する必要があります。
 
-本番では同一オリジンの`/api/*`をRust APIへ転送し、`/api`プレフィックスを除きます。APIはループバック待受なので、同じホストにリバースプロキシを置く構成です。CookieとOriginヘッダーを保持してください。複数インスタンス向けの共有セッションストアは未実装です。
+本番では同一オリジンの`/api/*`をRust APIへ転送し、`/api`プレフィックスを除きます。CookieとOriginヘッダーを保持してください。セッション鍵はCloud Appのsecret/credentialとして設定し、`tachyon.yml`やソースへ書きません。
 
-Tachyon Cloud Appでは`Dockerfile`がWebとRust APIを一つのCloud Runコンテナへまとめ、`PATHBASE_WEB_ROOT`指定時だけRustサーバーがSPAと同一オリジンの`/api/*`を配信します。現在のSQLiteとセッションはコンテナローカルのため、このデプロイはプロトタイプ用途です。再起動・再デプロイでデータやログイン状態が失われる可能性があり、永続ストレージと共有セッションを導入するまでは本番データを保存しないでください。
+Tachyon Cloud Appでは`Dockerfile`がWebとRust APIを一つのCloud Runコンテナへまとめ、`PATHBASE_WEB_ROOT`指定時だけRustサーバーがSPAと同一オリジンの`/api/*`を配信します。セッションはインスタンス非依存ですが、SQLiteはコンテナローカルのままです。再起動・再デプロイで業務データが失われ、複数インスタンスでは内容が分岐するため、共有DB移行までは本番データを保存しないでください。境界・移行・障害時挙動は`docs/production-durability.md`に記載しています。
 
 Fieldは現在のユーザーのTachyonトークンと正規のテナント文脈で呼び、操作ごとに権限を確認します。FieldのタスクをPathBaseで完了しても元タスクは更新しません。タスク参照の重複取り込みを防止し、観測できない値は0に変換しません。実装根拠と設定項目は[連携契約](docs/integration-contracts.md)を参照してください。
 
@@ -52,7 +53,9 @@ Fieldは現在のユーザーのTachyonトークンと正規のテナント文�
 PATHBASE_MODE=local-preview PATHBASE_DB=/absolute/path/to/data/pathbase.sqlite3 npm run --silent api:mcp
 ```
 
-13個のツール、項目のResource Template、3個のPromptを提供します。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。ホスト型MCP、OAuth委譲、将来のMCP仕様用アダプタは含めていません。
+remote MCP は Streamable HTTP の `/mcp`（`PATHBASE_WEB_ROOT` 使用時は `/api/mcp`）で提供できます。`PATHBASE_MCP_TOKEN`（32文字以上）、`PATHBASE_MCP_ACTOR_ID`、`PATHBASE_MCP_ALLOWED_HOSTS` をサーバー環境に設定した場合だけ有効になります。MCPクライアントは `Authorization: Bearer ...` を送ります。actorは既存のPathBaseメンバーである必要があり、各操作でもワークスペース権限が再検証されます。この固定token方式は信頼できる単一クライアント向けで、ユーザーごとのOAuth委譲ではありません。
+
+13個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 
 ## 検証
 
@@ -82,7 +85,7 @@ GitHub ActionsではPRと`main`へのpushで、次の4ジョブを実行しま�
 
 ## 現在の範囲
 
-PathBase用のTachyonクライアント登録、issuer、コールバック登録、Field接続環境は未提供のため、実環境でのログイン・複数アカウントでの招待・Fieldデータ取得は未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB / 共有セッション、ホスト型MCPは別途実装が必要です。
+PathBase用のTachyonクライアント登録、issuer、コールバック登録、Field接続環境は未提供のため、実環境でのログイン・複数アカウントでの招待・Fieldデータ取得は未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB、ホスト型MCPは別途実装が必要です。
 
 `.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs`、`tests/sites-worker.test.mjs`は既存構成を維持しています。`npm run build`は`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`を生成します。Sites用workerは静的配信であり、それだけではRust APIは公開されません。外部へのデプロイは行っていません。
 

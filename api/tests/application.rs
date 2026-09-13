@@ -346,6 +346,23 @@ fn workspace_isolation_and_viewer_denial() {
         id: "outsider".into(),
         agent: false,
     };
+    let calendar_query = HashMap::from([
+        ("start".into(), "2026-09-01".into()),
+        ("end".into(), "2026-09-07".into()),
+    ]);
+    assert_eq!(
+        s.handle(
+            &actor,
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &calendar_query,
+            json!({}),
+            None
+        )
+        .unwrap_err()
+        .status,
+        404
+    );
     assert_eq!(
         s.handle(
             &actor,
@@ -376,6 +393,16 @@ fn workspace_isolation_and_viewer_denial() {
             None
         )
         .is_ok());
+    assert!(s
+        .handle(
+            &actor,
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &calendar_query,
+            json!({}),
+            None
+        )
+        .is_ok());
     assert_eq!(
         s.handle(
             &actor,
@@ -388,6 +415,136 @@ fn workspace_isolation_and_viewer_denial() {
         .unwrap_err()
         .status,
         403
+    );
+}
+
+#[test]
+fn onboarding_title_only_is_atomic_and_idempotent() {
+    let (_d, s) = setup();
+    let body = json!({
+        "title":"本を読む時間をつくる",
+        "purpose":"毎週、本を読む時間をつくりたい",
+        "due_date":null,
+        "initiative_title":"",
+        "action_title":"",
+        "metric":null
+    });
+    let first = s
+        .handle(
+            &Actor::local(),
+            "POST",
+            "/v1/workspaces/personal/onboarding/complete",
+            &HashMap::new(),
+            body.clone(),
+            Some("onboarding-once"),
+        )
+        .unwrap();
+    let replay = s
+        .handle(
+            &Actor::local(),
+            "POST",
+            "/v1/workspaces/personal/onboarding/complete",
+            &HashMap::new(),
+            body,
+            Some("onboarding-once"),
+        )
+        .unwrap();
+    assert_eq!(first, replay);
+    assert!(first["goal"]["due_date"].is_null());
+    assert!(first["metric"].is_null());
+    let snapshot = req(&s, "GET", "/v1/workspaces/personal/snapshot", json!({})).unwrap();
+    assert_eq!(snapshot["items"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn onboarding_builds_reviewed_graph_or_rolls_back_everything() {
+    let (_d, s) = setup();
+    let created = req(
+        &s,
+        "POST",
+        "/v1/workspaces/personal/onboarding/complete",
+        json!({
+            "title":"新しい習慣",
+            "purpose":"無理なく続ける",
+            "due_date":"2026-12-31",
+            "initiative_title":"環境を整える",
+            "action_title":"道具を用意する",
+            "metric":{"name":"実行回数","unit":"回","baseline":0.0,"target":12.0,"direction":"increase"}
+        }),
+    ).unwrap();
+    assert_eq!(
+        created["goal"]["fields"]["next_action_id"],
+        created["action"]["id"]
+    );
+    let snapshot = req(&s, "GET", "/v1/workspaces/personal/snapshot", json!({})).unwrap();
+    assert_eq!(snapshot["items"].as_array().unwrap().len(), 3);
+    assert_eq!(snapshot["relations"].as_array().unwrap().len(), 2);
+    assert_eq!(snapshot["metrics"].as_array().unwrap().len(), 1);
+
+    let (_d, failed) = setup();
+    assert!(req(
+        &failed,
+        "POST",
+        "/v1/workspaces/personal/onboarding/complete",
+        json!({
+            "title":"保存されない目標",
+            "purpose":"",
+            "due_date":null,
+            "initiative_title":"途中まで作れる候補",
+            "action_title":"",
+            "metric":{"name":"壊れた指標","unit":"回","baseline":1.0,"target":1.0,"direction":"increase"}
+        }),
+    ).is_err());
+    let snapshot = req(
+        &failed,
+        "GET",
+        "/v1/workspaces/personal/snapshot",
+        json!({}),
+    )
+    .unwrap();
+    assert!(snapshot["items"].as_array().unwrap().is_empty());
+    assert!(snapshot["relations"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn onboarding_rejects_viewers_and_non_empty_workspace_conflicts() {
+    let (_d, s) = setup();
+    s.db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO memberships VALUES('personal','viewer','viewer')",
+            [],
+        )
+        .unwrap();
+    let body = json!({"title":"目標","purpose":"","due_date":null,"initiative_title":"","action_title":"","metric":null});
+    let viewer = Actor {
+        id: "viewer".into(),
+        agent: false,
+    };
+    assert_eq!(
+        s.handle(
+            &viewer,
+            "POST",
+            "/v1/workspaces/personal/onboarding/complete",
+            &HashMap::new(),
+            body.clone(),
+            Some("viewer-onboarding")
+        )
+        .unwrap_err()
+        .status,
+        403
+    );
+    item(&s, "outcome");
+    assert_eq!(
+        req(
+            &s,
+            "POST",
+            "/v1/workspaces/personal/onboarding/complete",
+            body
+        )
+        .unwrap_err()
+        .code,
+        "ONBOARDING_CONFLICT"
     );
 }
 #[test]
@@ -512,6 +669,60 @@ fn habit_occurrences_do_not_complete_the_whole_habit() {
         )
         .unwrap();
     assert_eq!(today["items"][0]["completed"], false);
+}
+#[test]
+fn calendar_respects_boundaries_timezone_rules_and_corrections() {
+    let (_d, s) = setup();
+    let habit=req(&s,"POST","/v1/workspaces/personal/items",json!({"title":"DST habit","kind":"action","start_date":"2026-03-08","due_date":"2026-03-10","fields":{"recurrence":{"mode":"fixed_schedule","times_per_week":2,"timezone":"America/New_York","weekdays":[0,6]}}})).unwrap();
+    let path = format!("/v1/workspaces/personal/actions/{}/complete", id(&habit));
+    req(&s,"POST",&path,json!({"expected_version":1,"local_date":"2026-03-08","completed_at":"2026-03-08T01:30:00-05:00"})).unwrap();
+    req(
+        &s,
+        "POST",
+        &format!("/v1/workspaces/personal/actions/{}/skip", id(&habit)),
+        json!({"expected_version":2,"local_date":"2026-03-08"}),
+    )
+    .unwrap();
+    let mut query = HashMap::new();
+    query.insert("start".into(), "2026-03-07".into());
+    query.insert("end".into(), "2026-03-10".into());
+    query.insert("timezone".into(), "America/New_York".into());
+    let calendar = s
+        .handle(
+            &Actor::local(),
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &query,
+            json!({}),
+            None,
+        )
+        .unwrap();
+    assert_eq!(calendar["days"].as_array().unwrap().len(), 4);
+    let march_eighth = &calendar["days"][1]["entries"];
+    assert!(march_eighth
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["label"] == "habit" && entry["status"] == "skip"));
+    assert!(calendar["days"][3]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["label"] == "due"));
+    query.insert("timezone".into(), "Mars/Olympus".into());
+    assert_eq!(
+        s.handle(
+            &Actor::local(),
+            "GET",
+            "/v1/workspaces/personal/calendar",
+            &query,
+            json!({}),
+            None
+        )
+        .unwrap_err()
+        .code,
+        "VALIDATION_ERROR"
+    );
 }
 #[test]
 fn observation_units_corrections_and_missing_measurement() {
