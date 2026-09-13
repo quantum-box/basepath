@@ -683,19 +683,40 @@ export function ItemEditor({
   return (
     <div className="feature-editor">
       {item.fields.field_reference && (
-        <p className="empty-value">
-          Fieldの営業タスクを参照しています。元のタスクの更新・完了はFieldで行えます。
-          <br />
-          参照元の状態：
-          {item.fields.field_reference.source_status === "done"
-            ? "完了"
-            : "未完了"}{" "}
-          ·{" "}
-          {new Date(
-            item.fields.field_reference.source_updated_at,
-          ).toLocaleDateString("ja-JP")}
-          時点
-        </p>
+        <div className="empty-value">
+          <p>
+            Fieldの営業タスクを参照しています。元のタスクの更新・完了はFieldで行えます。
+            <br />
+            参照元の状態：
+            {item.fields.field_reference.source_status === "done"
+              ? "完了"
+              : "未完了"}{" "}
+            ·{" "}
+            {new Date(
+              item.fields.field_reference.source_updated_at,
+            ).toLocaleDateString("ja-JP")}
+            時点
+          </p>
+          <button
+            type="button"
+            className="text-link"
+            disabled={store.pending}
+            onClick={() =>
+              void store.run(() =>
+                store.write(
+                  "POST",
+                  `/v1/workspaces/${item.workspace_id}/field/refresh-task`,
+                  {
+                    tenant_id: item.fields.field_reference!.tenant_id,
+                    item_id: item.id,
+                  },
+                ),
+              )
+            }
+          >
+            Fieldから最新状態を取得
+          </button>
+        </div>
       )}
       <p className="modal-intro">
         {kindNames[item.kind]} · {stateNames[item.state]} ·{" "}

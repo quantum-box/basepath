@@ -137,5 +137,6 @@ Tachyonセッションを使用し、Field側の権限を毎回確認します�
 - `GET /v1/integrations/field/metrics?tenant_id=…`
 - `POST /v1/workspaces/{w}/field/attach-task`：tenant_id、task_id。Field参照情報付きのローカル行動を作成。同じ外部タスクは重複作成しません。
 - `POST /v1/workspaces/{w}/field/record-metric`：tenant_id、metric_id、field_key。mrr / arr / backlogAmount / receivableOutstandingは円、daysSalesOutstandingは日。単位不一致は422、欠測は422 UNOBSERVEDです。
+- `POST /v1/workspaces/{w}/field/refresh-task`：tenant_id、item_id。保存済みのField参照とテナント境界を検証し、Fieldからタイトル・状態・更新日時を明示的に再取得します。Field側のデータは変更しません。
 
 Fieldへの変更操作・バックグラウンド同期はありません。詳しい上流契約と権限の分離は[integration-contracts.md](integration-contracts.md)を参照してください。

@@ -401,6 +401,54 @@ async fn field_endpoint(
             })?;
             state.service.handle_derived(actor,path,&body,model::Operation{method:"POST".into(),path:format!("/v1/workspaces/{w}/observations"),body:json!({"metric_id":metric_id,"value":value,"unit":unit,"source":format!("Field API /v1/erp/sales-contracts/metrics · {tenant} · {field_key}"),"observed_at":service::now()})},key)
         }
+        "refresh-task" => {
+            let item_id = body["item_id"]
+                .as_str()
+                .ok_or_else(|| ApiError::invalid("item_idが必要です"))?;
+            let item: Item = {
+                let db = state
+                    .service
+                    .db
+                    .lock()
+                    .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "Storage unavailable"))?;
+                storage::get(&db, w, "items", item_id)?
+            };
+            let reference = item.fields.field_reference.as_ref().ok_or_else(|| {
+                ApiError::invalid("Fieldの営業タスクを参照している行動を指定してください")
+            })?;
+            if reference.tenant_id != tenant || reference.platform_id != field.platform_id {
+                return Err(ApiError::new(
+                    422,
+                    "FIELD_REFERENCE_MISMATCH",
+                    "Field参照のテナント境界が一致しません",
+                ));
+            }
+            let task = field
+                .task(&session.access_token, tenant, &reference.external_id)
+                .await?;
+            let refreshed_reference = FieldReference {
+                tenant_id: reference.tenant_id.clone(),
+                platform_id: reference.platform_id.clone(),
+                external_id: reference.external_id.clone(),
+                source_updated_at: task.updated_at,
+                source_status: task.status,
+            };
+            state.service.handle_derived(
+                actor,
+                path,
+                &body,
+                model::Operation {
+                    method: "PATCH".into(),
+                    path: format!("/v1/workspaces/{w}/items/{item_id}"),
+                    body: json!({
+                        "expected_version": item.version,
+                        "title": task.title,
+                        "fields": {"field_reference": refreshed_reference}
+                    }),
+                },
+                key,
+            )
+        }
         _ => Err(ApiError::missing()),
     }
 }

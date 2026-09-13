@@ -20,7 +20,7 @@ The authenticated API provisions an isolated personal PathBase workspace for the
 
 `api/src/field.rs` delegates authorized tenant discovery and narrowly selected read operations to Field. It forwards the current user's token and canonical tenant context, has a timeout, disables redirects, does not send `x-user-id`, does not use service-account fallback, and preserves 401 / 403 / missing / unavailable distinctions. Tenant discovery uses Field's production directory-root operator context (not PathBase's operator tenant), because Field forwards that context and the delegated bearer to Tachyon Auth for policy evaluation. Every operation rechecks the selected tenant and relies on the Field endpoint's own action authorization.
 
-UI settings can reference Field sales tasks as personal actions and record compatible Field metrics as sourced observations. Field remains the source of truth for its sales tasks. Importing an action or completing it in PathBase does not change the upstream task. Automated bidirectional sync, external notifications and background workers belong to the specification's later integration phase.
+UI settings can reference Field sales tasks as personal actions and record compatible Field metrics as sourced observations. Field remains the source of truth for its sales tasks. A user can explicitly refresh a referenced action's title and source status; the refresh revalidates the saved tenant and platform boundary before reading Field. Importing, refreshing, or completing an action in PathBase does not change the upstream task. Automated bidirectional sync, external notifications and background workers belong to the specification's later integration phase.
 
 ## Deployment / preview
 
