@@ -44,6 +44,8 @@ pub struct ItemFields {
     #[serde(default)]
     pub next_action_id: Option<String>,
     #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
     pub self_assessment: Option<f64>,
     #[serde(default)]
     pub assessed_at: Option<String>,
@@ -140,6 +142,30 @@ pub struct Observation {
     pub source: String,
     pub observed_at: String,
     pub created_at: String,
+    #[serde(default)]
+    pub supersedes_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WeeklyReview {
+    pub id: String,
+    pub workspace_id: String,
+    pub week_start: String,
+    pub week_end: String,
+    pub status: String,
+    #[serde(default)]
+    pub learnings: String,
+    #[serde(default)]
+    pub challenges: String,
+    #[serde(default)]
+    pub next_focus: String,
+    pub version: i64,
+    pub revision: i64,
+    pub author: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub finalized_at: Option<String>,
     #[serde(default)]
     pub supersedes_id: Option<String>,
 }

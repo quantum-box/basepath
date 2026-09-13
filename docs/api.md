@@ -21,7 +21,8 @@ Rustルーター内のパスを記載しています。ブラウザからは先�
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
 | `GET /v1/settings` | compact、notifications、timezone |
 | `GET /v1/templates` | free / okr / project / learning / habit、バージョン、作成予定 |
-| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets |
+| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews |
+| `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/items` | query / kind / state / archived / cursor / limitによる検索 |
 | `GET /v1/workspaces/{w}/items/{id}` | 版番号を含む項目 |
 | `GET /v1/workspaces/{w}/relations` | 関連一覧 |
@@ -76,7 +77,7 @@ kindは`idea | outcome | initiative | action | milestone`（既定outcome）、s
 {"expected_version":1,"description":"海外の人と会話する","fields":{"memo":"週末に見直す","self_assessment":40}}
 ```
 
-fieldsにはicon、subtitle、memo、next_action_id、self_assessment、recurrence、external_urlなどを保存します。自己評価の日時はサーバーが記録します。fieldsは部分更新で、nullは設定解除です。`archived_at`に日時を指定するとアーカイブ、nullで復元します。actionの完了は以下の専用操作を使います。
+fieldsにはicon、subtitle、memo、next_action_id、self_assessment、recurrence、external_url、同じワークスペースのメンバーIDを指定するassigneeなどを保存します。自己評価の日時はサーバーが記録します。fieldsは部分更新で、nullは設定解除です。`archived_at`に日時を指定するとアーカイブ、nullで復元します。actionの完了は以下の専用操作を使います。
 
 ```text
 POST /v1/workspaces/{w}/actions/{id}/complete
@@ -106,6 +107,15 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
 
+## 週次レビュー
+
+`week_start`はワークスペースのタイムゾーンにおける月曜日を`YYYY-MM-DD`で指定します。集計は完了・見送り・未完了の行動を自己評価と分け、成果指標には最新値、前週以前の最新値との差、未計測、14日超の古い観測を返します。数値の各行には元のitem / record / observation IDを含みます。チーム領域の担当者別集計は、そのワークスペースのmembershipに含まれるactorだけを返します。
+
+- `POST /v1/workspaces/{w}/weekly-reviews/draft`：`week_start`、`learnings`、`challenges`、`next_focus`。既存下書きの更新には`expected_version`が必要です。
+- `POST /v1/workspaces/{w}/weekly-reviews/{id}/finalize`：`expected_version`。確定済みレビューは変更せず、次の下書き保存で`supersedes_id`付きの訂正版を作ります。
+
+いずれの書き込みも通常の冪等キー、ワークスペース権限、監査ログを通ります。viewerは集計と確定済み内容を閲覧できますが、保存・確定はできません。
+
 ## テンプレート・提案・入出力
 
 - `POST /v1/workspaces/{w}/ai/suggestions/preview`：`goal_id`と`expected_version`を指定。選択した目標・期限・同じワークスペースの直近記録だけから、30分以内の行動候補3件と、事実・推測・質問を分けた振り返り案を返します。AI接続が利用できない場合は安全なローカル候補へフォールバックします。この操作だけでは項目や記録を変更しません。採用時は下記changeset契約を使用します。
@@ -113,7 +123,7 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 - `POST /v1/workspaces/{w}/views`：name、type（list / map / timeline / okr / today）、filters。`POST …/views/{id}/query`で保存条件による項目検索を実行します。
 - `PATCH /v1/settings`：compact、notifications、timezoneをすべて指定。タイムゾーンはIANA識別子です。
 - `POST /v1/workspaces/{w}/exports`：空オブジェクト。schema_version=1のJSONを返します。
-- `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビューを再検証して追加します。同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。
+- `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビューを再検証して追加します。同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。
 - `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。
 - `POST …/changesets/{id}/approve`：空オブジェクト。人のアプリ操作のみが承認できます。
 - `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。

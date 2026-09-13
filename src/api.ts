@@ -34,6 +34,7 @@ export type Item = {
     subtitle?: string;
     memo?: string;
     next_action_id?: string | null;
+    assignee?: string | null;
     self_assessment?: number | null;
     assessed_at?: string | null;
     template?: string | null;
@@ -130,6 +131,23 @@ export type Observation = {
   created_at: string;
   supersedes_id: string | null;
 };
+export type WeeklyReview = {
+  id: string;
+  workspace_id: string;
+  week_start: string;
+  week_end: string;
+  status: "draft" | "finalized";
+  learnings: string;
+  challenges: string;
+  next_focus: string;
+  version: number;
+  revision: number;
+  author: string;
+  created_at: string;
+  updated_at: string;
+  finalized_at: string | null;
+  supersedes_id: string | null;
+};
 export type Operation = { method: string; path: string; body: unknown };
 export type ChangeSet = {
   id: string;
@@ -189,6 +207,7 @@ export type Snapshot = {
   observations: Observation[];
   views: { id: string; type: string; name: string }[];
   changesets: ChangeSet[];
+  weekly_reviews?: WeeklyReview[];
   notifications: Notification[];
 };
 export type Settings = {
