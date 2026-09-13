@@ -10,8 +10,8 @@ pub mod service;
 pub mod storage;
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, OriginalUri, Query, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    extract::{DefaultBodyLimit, Query, State},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -68,7 +68,7 @@ async fn no_cache(request: axum::extract::Request, next: axum::middleware::Next)
 }
 async fn endpoint(
     State(state): State<HttpState>,
-    OriginalUri(uri): OriginalUri,
+    uri: Uri,
     Query(query): Query<HashMap<String, String>>,
     method: Method,
     headers: HeaderMap,
