@@ -1,5 +1,77 @@
 import { test, expect } from "@playwright/test";
 
+async function mockAuthenticatedTachyonApp(page, fieldFailure) {
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (status, value) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(value),
+      });
+
+    if (path === "/api/auth/status")
+      return respond(200, {
+        mode: "tachyon",
+        configured: true,
+        field_configured: true,
+      });
+    if (path === "/api/v1/me")
+      return respond(200, {
+        id: "user-1",
+        name: "Test user",
+        mode: "tachyon",
+      });
+    if (path === "/api/v1/settings")
+      return respond(200, {
+        compact: false,
+        notifications: true,
+        timezone: "Asia/Tokyo",
+      });
+    if (path === "/api/v1/workspaces")
+      return respond(200, [
+        {
+          id: "personal",
+          name: "Personal",
+          scope: "個人",
+          role: "owner",
+          timezone: "Asia/Tokyo",
+          local: false,
+          version: 1,
+        },
+      ]);
+    if (path === "/api/v1/workspaces/personal/snapshot")
+      return respond(200, {
+        workspace_id: "personal",
+        items: [],
+        relations: [],
+        records: [],
+        metrics: [],
+        observations: [],
+        views: [],
+        changesets: [],
+      });
+    if (path === "/api/v1/invitations") return respond(200, []);
+    if (path === "/api/v1/tenants")
+      return respond(200, {
+        tenants: [{ id: "tn_selected", name: "Selected tenant" }],
+        selected_tenant_id: "tn_selected",
+      });
+    if (path === "/api/v1/integrations/field/tenants")
+      return respond(fieldFailure.status, {
+        code: fieldFailure.code,
+        message: fieldFailure.message,
+        details: null,
+      });
+    return respond(404, {
+      code: "NOT_FOUND",
+      message: "Not found",
+      details: null,
+    });
+  });
+}
+
 test("tenant selection can return to the login screen", async ({ page }) => {
   let signedIn = true;
   let logoutRequests = 0;
@@ -57,6 +129,56 @@ test("tenant selection can return to the login screen", async ({ page }) => {
   ).toBeVisible();
   await expect(page).toHaveURL(/\/login$/);
   expect(logoutRequests).toBe(1);
+});
+
+test("forbidden tenant selection stays on the selection screen", async ({
+  page,
+}) => {
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const respond = (status, value) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(value),
+      });
+    if (path === "/api/auth/status")
+      return respond(200, {
+        mode: "tachyon",
+        configured: true,
+        field_configured: false,
+      });
+    if (path === "/api/v1/tenants")
+      return respond(200, {
+        tenants: [{ id: "tn_member", name: "Member tenant" }],
+        selected_tenant_id: null,
+      });
+    if (path === "/api/v1/tenant-selection")
+      return respond(403, {
+        code: "FORBIDDEN",
+        message: "このTachyonテナントを利用できません",
+        details: null,
+      });
+    return respond(428, {
+      code: "TENANT_SELECTION_REQUIRED",
+      message: "利用するTachyonテナントを選択してください",
+      details: null,
+    });
+  });
+
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "このテナントで始める", exact: true })
+    .click();
+
+  await expect(page.getByRole("alert")).toContainText(
+    "このTachyonテナントを利用できません",
+  );
+  await expect(
+    page.getByRole("heading", { name: "利用するテナント", exact: true }),
+  ).toBeVisible();
+  await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_member$/);
 });
 
 test("Tachyon home can open tenant selection and return", async ({ page }) => {
@@ -173,15 +295,58 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
   await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
   expect(selectedTenant).toBe("tn_second");
 
+  await page.reload();
+  await expect(switcher).toBeVisible();
+  await expect(page.getByText("Tachyonでログイン中")).toBeVisible();
+  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+
   await switcher.click();
   await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_second$/);
-  await page
-    .getByRole("button", { name: "ホームに戻る", exact: true })
-    .click();
+  await page.getByRole("button", { name: "ホームに戻る", exact: true }).click();
   await expect(switcher).toBeVisible();
   await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
   expect(logoutRequests).toBe(0);
 });
+
+for (const failure of [
+  {
+    status: 401,
+    code: "FIELD_AUTH_REJECTED",
+    message:
+      "Fieldが現在のTachyon認証を受け付けませんでした。テナントとField権限を確認してください",
+  },
+  {
+    status: 403,
+    code: "FORBIDDEN",
+    message: "Fieldのこの情報を閲覧する権限がありません",
+  },
+]) {
+  test(`Field ${failure.status} keeps the PathBase session`, async ({
+    page,
+  }) => {
+    await mockAuthenticatedTachyonApp(page, failure);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/");
+    await expect(page.getByText("Tachyonでログイン中")).toBeVisible();
+
+    await page.getByRole("button", { name: "設定", exact: true }).click();
+    await page
+      .getByText("Fieldの営業タスク・成果指標", { exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "アクセスできる組織を取得" })
+      .click();
+
+    await expect(page.getByRole("alert").first()).toContainText(
+      failure.message,
+    );
+    await expect(page.getByText("Tachyonでログイン中")).toBeVisible();
+    await expect(
+      page.getByLabel("Tachyonユーザー名またはメールアドレス"),
+    ).not.toBeVisible();
+    await expect(page).toHaveURL(/\/\?tenant_id=tn_selected$/);
+  });
+}
 
 async function openApp(page) {
   await page.goto("/");
