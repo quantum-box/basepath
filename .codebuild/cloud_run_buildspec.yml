@@ -1,0 +1,100 @@
+# Cloud Run buildspec for Tachyon Cloud Apps.
+#
+# Keeping this in the repository avoids AWS CodeBuild's inline buildspec size
+# limit while preserving Tachyon's image push and deployment callback contract.
+
+version: 0.2
+
+env:
+  variables:
+    LANG: C.UTF-8
+    LC_ALL: C.UTF-8
+
+phases:
+  install:
+    commands:
+      - echo "Using the PathBase Cloud Run buildspec"
+      - |
+        if ! command -v gcloud &>/dev/null; then
+          echo "Installing Google Cloud SDK..."
+          curl -sSL https://sdk.cloud.google.com \
+            | bash -s -- --disable-prompts
+          source "$HOME/google-cloud-sdk/path.bash.inc"
+        fi
+      - |
+        GAR_HOST=$(echo "${CONTAINER_REGISTRY}" | cut -d/ -f1)
+        echo "Authenticating to Artifact Registry: ${GAR_HOST}"
+        gcloud auth configure-docker "${GAR_HOST}" --quiet
+  pre_build:
+    commands:
+      - |
+        IMAGE_URI="${CONTAINER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+        echo "IMAGE_URI=${IMAGE_URI}" > /tmp/build_env.sh
+        if [ -n "${ROOT_DIRECTORY}" ] \
+            && [ -f "${CODEBUILD_SRC_DIR}/${ROOT_DIRECTORY}/Dockerfile" ]; then
+          echo "DOCKER_FILE=${CODEBUILD_SRC_DIR}/${ROOT_DIRECTORY}/Dockerfile" \
+            >> /tmp/build_env.sh
+          echo "DOCKER_CONTEXT=${CODEBUILD_SRC_DIR}" >> /tmp/build_env.sh
+          echo "Using Dockerfile from ${ROOT_DIRECTORY} with repo-root context"
+        elif [ -f "${CODEBUILD_SRC_DIR}/Dockerfile" ]; then
+          echo "DOCKER_FILE=${CODEBUILD_SRC_DIR}/Dockerfile" >> /tmp/build_env.sh
+          echo "DOCKER_CONTEXT=${CODEBUILD_SRC_DIR}" >> /tmp/build_env.sh
+          echo "Using repo-root Dockerfile"
+        else
+          echo "ERROR: No Dockerfile found. Set ROOT_DIRECTORY or place a Dockerfile at repo root."
+          exit 1
+        fi
+  build:
+    commands:
+      - |
+        source /tmp/build_env.sh
+        echo "Building Docker image: ${IMAGE_URI}"
+        docker build \
+          -t "${IMAGE_URI}" \
+          -f "${DOCKER_FILE}" \
+          "${DOCKER_CONTEXT}" \
+          2>&1 | tee -a /tmp/build.log
+  post_build:
+    commands:
+      - |
+        source /tmp/build_env.sh
+        docker push "${IMAGE_URI}" 2>&1 | tee -a /tmp/build.log
+        echo "Pushed ${IMAGE_URI}"
+    finally:
+      - |
+        if [ -n "${CALLBACK_URL}" ]; then
+          source /tmp/build_env.sh 2>/dev/null || true
+          STATUS="FAILURE"
+          ERROR_JSON="null"
+          IMAGE_URI_JSON="null"
+          if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+            STATUS="SUCCESS"
+            if [ -n "${IMAGE_URI}" ]; then
+              IMAGE_URI_JSON="\"${IMAGE_URI}\""
+            fi
+          else
+            if [ -f /tmp/build.log ]; then
+              ERROR_JSON=$(tail -50 /tmp/build.log \
+                | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))' \
+                2>/dev/null || echo '"Build failed (log capture error)"')
+            else
+              ERROR_JSON='"Build failed"'
+            fi
+          fi
+          curl -sf --retry 3 --max-time 10 \
+            -X POST "${CALLBACK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "{\
+              \"build_id\":\"${INTERNAL_BUILD_ID}\",\
+              \"status\":\"${STATUS}\",\
+              \"image_uri\":${IMAGE_URI_JSON},\
+              \"artifact_path\":null,\
+              \"error_message\":${ERROR_JSON},\
+              \"iac_plan_output\":null,\
+              \"iac_success\":null,\
+              \"d1_migrations\":null,\
+              \"cache_hit\":false,\
+              \"cache_key\":null\
+            }" \
+            || echo "Callback failed (non-fatal)"
+        fi
