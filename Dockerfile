@@ -12,7 +12,9 @@ RUN npm run build
 FROM --platform=$BUILDPLATFORM rust:1.95-bookworm AS api-builder
 WORKDIR /source
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu \
+    && apt-get install -y --no-install-recommends \
+      gcc-x86-64-linux-gnu \
+      libc6-dev-amd64-cross \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add x86_64-unknown-linux-gnu
 COPY api ./api
