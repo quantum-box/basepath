@@ -142,6 +142,28 @@ async fn auth(s: &MockState) -> TachyonAuth {
     .await
     .unwrap()
 }
+
+#[test]
+fn runtime_auth_uses_tachyon_oauth_routes_without_discovery() {
+    let auth = TachyonAuth::for_runtime(AuthConfig {
+        issuer: "https://api.example.com".into(),
+        client_id: "pathbase-test".into(),
+        client_secret: None,
+        redirect_uri: "https://pathbase.example.com/api/auth/callback".into(),
+        public_url: "https://pathbase.example.com".into(),
+        tachyon_api_url: "https://api.example.com".into(),
+    })
+    .unwrap();
+
+    let (login_url, _) = auth.begin().unwrap();
+    let login_url = url::Url::parse(&login_url).unwrap();
+    assert_eq!(
+        login_url.origin().ascii_serialization(),
+        "https://api.example.com"
+    );
+    assert_eq!(login_url.path(), "/oauth2/authorize");
+}
+
 #[tokio::test]
 async fn preflight_checks_configuration_and_unauthenticated_boundaries() {
     let (s, server) = upstream().await;

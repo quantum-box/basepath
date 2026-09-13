@@ -189,17 +189,46 @@ fn random() -> String {
     )
 }
 impl TachyonAuth {
-    pub async fn new(config: AuthConfig) -> Result<Self> {
+    /// Build the runtime auth client without making an upstream request. Tachyon's
+    /// OAuth2 endpoints are stable API routes; connectivity and discovery are
+    /// validated separately by `--preflight`.
+    pub fn for_runtime(config: AuthConfig) -> Result<Self> {
         config.validate()?;
+        let issuer = config.issuer.trim_end_matches('/');
+        let discovery = Discovery {
+            issuer: config.issuer.clone(),
+            authorization_endpoint: format!("{issuer}/oauth2/authorize"),
+            token_endpoint: format!("{issuer}/oauth2/token"),
+            jwks_uri: format!("{issuer}/oauth2/jwks"),
+        };
+        for u in [
+            &discovery.authorization_endpoint,
+            &discovery.token_endpoint,
+            &discovery.jwks_uri,
+        ] {
+            validate_url(u)?;
+        }
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|_| unavailable())?;
-        let r = client
+        Ok(Self {
+            config,
+            client,
+            discovery,
+            logins: Default::default(),
+            sessions: Default::default(),
+        })
+    }
+
+    pub async fn new(config: AuthConfig) -> Result<Self> {
+        let mut auth = Self::for_runtime(config)?;
+        let r = auth
+            .client
             .get(format!(
                 "{}/.well-known/openid-configuration",
-                config.issuer.trim_end_matches('/')
+                auth.config.issuer.trim_end_matches('/')
             ))
             .send()
             .await
@@ -210,7 +239,7 @@ impl TachyonAuth {
             .json()
             .await
             .map_err(|_| unavailable())?;
-        if discovery.issuer != config.issuer {
+        if discovery.issuer != auth.config.issuer {
             return Err(ApiError::new(
                 500,
                 "AUTH_CONFIGURATION",
@@ -224,13 +253,8 @@ impl TachyonAuth {
         ] {
             validate_url(u)?;
         }
-        Ok(Self {
-            config,
-            client,
-            discovery,
-            logins: Default::default(),
-            sessions: Default::default(),
-        })
+        auth.discovery = discovery;
+        Ok(auth)
     }
     pub async fn probe_verification_boundary(&self) -> Result<u16> {
         const INVALID_PROBE_TOKEN: &str = "pathbase-preflight-intentionally-invalid";
