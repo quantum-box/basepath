@@ -36,6 +36,7 @@ spec:
       dockerContext: "."
       framework: rust_server
       deploymentTarget: cloud_run
+      buildspecStrategy: repo:.codebuild/cloud_run_buildspec.yml
       build:
         # Docker-in-Docker requires the CodeBuild runner; the rootless k3s
         # runner cannot create the UID/GID map needed by BuildKit.
