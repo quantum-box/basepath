@@ -47,14 +47,21 @@ impl IntoResponse for ApiError {
     }
 }
 pub fn router(state: HttpState) -> Router {
-    Router::new()
-        .route(
-            "/health",
-            get(|| async {
-                Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite","storage_durability":"ephemeral-container"}))
-            }),
-        )
-        .fallback(endpoint)
+    router_with_mcp(state, None)
+}
+pub fn router_with_mcp(state: HttpState, mcp: Option<Router<HttpState>>) -> Router {
+    let app: Router<HttpState> = Router::new().route(
+        "/health",
+        get(|| async {
+            Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite","storage_durability":"ephemeral-container"}))
+        }),
+    );
+    let app = if let Some(mcp) = mcp {
+        app.nest("/mcp", mcp)
+    } else {
+        app
+    };
+    app.fallback(endpoint)
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .layer(axum::middleware::from_fn(no_cache))
         .with_state(state)
