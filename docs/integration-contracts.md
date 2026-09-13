@@ -24,11 +24,11 @@ UI settings can reference Field sales tasks as personal actions and record compa
 
 ## Deployment / preview
 
-The standalone Rust API defaults to Tachyon authentication and fails startup if required OIDC settings are absent. `npm run dev` explicitly selects `local-preview` unless a mode is already provided. This preview is loopback-only, has a generated per-process credential, and is visibly marked as a local preview. It cannot call Field on behalf of a user.
+The standalone Rust API defaults to Tachyon authentication and fails startup if required OIDC settings are absent. `npm run dev` explicitly selects `local-preview` unless a mode is already provided. This preview is loopback-only, has a generated per-process credential, and is visibly marked as a local preview. It cannot call Field on behalf of a user. The Tachyon Cloud App manifest deploys a combined Web + Rust API Cloud Run container at `pathbase.txcloud.app`; setting `PATHBASE_WEB_ROOT` makes the Rust server expose the SPA and `/api/*` on that one origin.
 
 Set the variables in `.env.example` through the deployment environment. Do not put credentials in `VITE_*` variables. Register the exact callback `PATHBASE_PUBLIC_URL/api/auth/callback` in Tachyon. Route `/api/*` to the Rust API with the `/api` prefix removed and serve the frontend from the same origin. The unchanged Sites worker is static-only; deploying the static artifact alone does not deploy the Rust API.
 
-Native debug builds use the same Rust service over Tauri IPC with a separate local preview database. Authenticated native builds load `PATHBASE_WEB_URL` so the same Tachyon session and same-origin API work in the webview. Release builds do not fall back to the local owner when that URL is absent.
+Native debug builds use the same Rust service over Tauri IPC with a separate local preview database. Authenticated native builds load `PATHBASE_WEB_URL` so the same Tachyon session and same-origin API work in the webview. Release builds do not fall back to the local owner when that URL is absent. Cloud App storage and sessions are currently container-local prototype state; restarts or deployments may discard them, so production persistence and horizontal scaling remain blocked until a shared store is implemented.
 
 ## Real-environment verification
 

@@ -1,5 +1,7 @@
+use axum::Router;
 use pathbase_api::{service::Service, HttpState};
 use rmcp::ServiceExt;
+use tower_http::services::{ServeDir, ServeFile};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -45,23 +47,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if local_preview && token.len() < 32 {
         return Err("PATHBASE_API_TOKEN must contain at least 32 characters".into());
     }
-    let port: u16 = std::env::var("PATHBASE_API_PORT")
-        .unwrap_or_else(|_| "1431".into())
+    let cloud_port = std::env::var("PORT").ok();
+    let port: u16 = cloud_port
+        .clone()
+        .or_else(|| std::env::var("PATHBASE_API_PORT").ok())
+        .unwrap_or_else(|| "1431".into())
         .parse()?;
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
-    eprintln!("PathBase Rust API listening on http://127.0.0.1:{port}");
-    axum::serve(
-        listener,
-        pathbase_api::router(HttpState {
-            service,
-            token,
-            auth,
-            field,
-        }),
-    )
-    .with_graceful_shutdown(async {
-        let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
+    let host = if cloud_port.is_some() {
+        std::net::Ipv4Addr::UNSPECIFIED
+    } else {
+        std::net::Ipv4Addr::LOCALHOST
+    };
+    let listener = tokio::net::TcpListener::bind((host, port)).await?;
+    let api = pathbase_api::router(HttpState {
+        service,
+        token,
+        auth,
+        field,
+    });
+    let app = if let Ok(web_root) = std::env::var("PATHBASE_WEB_ROOT") {
+        let index = std::path::Path::new(&web_root).join("index.html");
+        Router::new()
+            .nest("/api", api)
+            .fallback_service(ServeDir::new(web_root).fallback(ServeFile::new(index)))
+    } else {
+        api
+    };
+    eprintln!("PathBase listening on http://{host}:{port}");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
     Ok(())
 }
