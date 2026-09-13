@@ -18,7 +18,7 @@ phases:
         if ! command -v gcloud &>/dev/null; then
           echo "Installing Google Cloud SDK..."
           curl -sSL https://sdk.cloud.google.com \
-            | bash -s -- --disable-prompts
+            | bash -s -- --disable-prompts >/dev/null
           source "$HOME/google-cloud-sdk/path.bash.inc"
         fi
       - |
@@ -27,21 +27,16 @@ phases:
         echo "Authenticating to Artifact Registry: ${GAR_HOST}"
         CREDENTIALS_FILE=/tmp/pathbase-gcp-credentials.json
         SECRET_VALUE=""
-        # The CodeBuild service role may read tenant-scoped provider secrets.
-        # Try both historical and current AWS secret path forms without ever
-        # writing the provider payload to logs or the Cloud App runtime.
-        for SECRET_ID in \
-          tn_01jcjtqxah6mhyw4e5mahg02nd/providers/google_cloud \
-          /tn_01jcjtqxah6mhyw4e5mahg02nd/providers/google_cloud; do
-          if SECRET_VALUE=$(aws secretsmanager get-secret-value \
-            --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" \
-            --secret-id "${SECRET_ID}" \
-            --query SecretString \
-            --output text 2>/dev/null); then
-            break
-          fi
+        # The Google Cloud provider is stored in SSM Parameter Store. The
+        # CodeBuild service role may decrypt tenant-scoped parameters.
+        if ! SECRET_VALUE=$(aws ssm get-parameter \
+          --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" \
+          --name /tn_01jcjtqxah6mhyw4e5mahg02nd/providers/google_cloud \
+          --with-decryption \
+          --query Parameter.Value \
+          --output text 2>/dev/null); then
           SECRET_VALUE=""
-        done
+        fi
         if [ -z "${SECRET_VALUE}" ]; then
           echo "ERROR: Google Cloud build credentials are unavailable"
           exit 1
