@@ -115,7 +115,10 @@ phases:
         source /tmp/build_env.sh
         echo "Building Docker image: ${IMAGE_URI}"
         set -eo pipefail
+        # The CodeBuild runner is arm64 while Cloud Run executes linux/amd64.
+        # Pin the output platform so Cloud Run can start the pushed image.
         docker build \
+          --platform linux/amd64 \
           -t "${IMAGE_URI}" \
           -f "${DOCKER_FILE}" \
           "${BUILD_CONTEXT}" \
