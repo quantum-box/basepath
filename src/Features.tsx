@@ -5,12 +5,14 @@ import {
   dateLabel,
   itemPath,
   localDate,
+  request,
   uiId,
   type Item,
   type Metric,
   type Snapshot,
   type Observation,
   type Operation,
+  type Memberships,
 } from "./api";
 import type { WorkspaceStore } from "./useWorkspace";
 export const stateNames: Record<string, string> = {
@@ -74,7 +76,10 @@ export function MemoEditor({
       <textarea
         className="field-box memo-input"
         aria-label="目標のメモ"
-        readOnly={store.workspaces.find((w) => w.id === item.workspace_id)?.role === "viewer"}
+        readOnly={
+          store.workspaces.find((w) => w.id === item.workspace_id)?.role ===
+          "viewer"
+        }
         value={draft}
         placeholder="この目標についてメモを残す"
         onChange={(e) => {
@@ -100,7 +105,12 @@ export function MemoEditor({
       {dirty && (
         <button
           className="text-link"
-          disabled={store.pending || conflict || store.workspaces.find((w) => w.id === item.workspace_id)?.role === "viewer"}
+          disabled={
+            store.pending ||
+            conflict ||
+            store.workspaces.find((w) => w.id === item.workspace_id)?.role ===
+              "viewer"
+          }
           onClick={() =>
             void store.run(async () => {
               const saved = await store.write<Item>("PATCH", itemPath(item), {
@@ -609,6 +619,21 @@ export function ItemEditor({
   const [record, setRecord] = useState("");
   const [recordType, setRecordType] = useState("note");
   const [day, setDay] = useState(localDate(store.settings.timezone));
+  const [members, setMembers] = useState<string[]>([]);
+  useEffect(() => {
+    let active = true;
+    void request<Memberships>(
+      "GET",
+      `/v1/workspaces/${encodeURIComponent(item.workspace_id)}/members`,
+    ).then(
+      (result) =>
+        active && setMembers(result.members.map((member) => member.actor)),
+      () => active && setMembers([]),
+    );
+    return () => {
+      active = false;
+    };
+  }, [item.workspace_id, item.version]);
   const snapshot = store.snapshots.find(
     (s) => s.workspace_id === item.workspace_id,
   )!;
@@ -633,6 +658,8 @@ export function ItemEditor({
           scheduled_date: d.get("scheduled_date") || null,
           scheduled_time: d.get("scheduled_time") || null,
           fields: {
+            assignee_id: d.get("assignee_id") || null,
+            priority: d.get("priority") || null,
             self_assessment: assessment === "" ? null : Number(assessment),
             ...(item.kind === "action"
               ? {
@@ -720,6 +747,34 @@ export function ItemEditor({
                 ))}
             </select>
           </label>
+          <div className="form-columns">
+            <label>
+              担当者
+              <select
+                name="assignee_id"
+                defaultValue={item.fields.assignee_id || ""}
+              >
+                <option value="">担当者なし</option>
+                {members.map((member) => (
+                  <option key={member} value={member}>
+                    {member === store.me.id
+                      ? `${store.me.name}（あなた）`
+                      : member}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              優先度
+              <select name="priority" defaultValue={item.fields.priority || ""}>
+                <option value="">未設定</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+                <option value="urgent">緊急</option>
+              </select>
+            </label>
+          </div>
           <div className="form-columns">
             <label>
               開始日

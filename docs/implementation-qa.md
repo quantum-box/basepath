@@ -37,3 +37,15 @@ The invitation lifecycle is tested against the common Rust service using distinc
 Added a redacted `npm run preflight` check for the live Tachyon / Field setup. It validates the configured mode and callback contract, loads OIDC Discovery, and confirms that intentionally unauthenticated requests reach and are rejected by the Tachyon verification and Field tenant boundaries. The report lists missing variable names but never prints client secrets, tokens, client or tenant identifiers.
 
 The focused integration test passes against local OIDC, Tachyon, and Field mocks. The production build and the four unchanged Sites packaging tests also pass. With no local `.env`, the command exits unsuccessfully and reports all missing Tachyon and Field setting names as intended. Successful real-user login, Field authorization, expiry, and 401 / 403 behavior still require the deployment credentials and remain assigned to the live acceptance step.
+
+## Live authenticated check — 2026-09-13
+
+Production Tachyon login and tenant selection succeeded. Requesting the Field tenant list reached Field, but Field rejected the current upstream token with HTTP 401. PathBase previously reused the application-level `UNAUTHENTICATED` code for this upstream response, which incorrectly cleared the valid PathBase session and returned the user to the login screen. Field 401 responses now use `FIELD_AUTH_REJECTED`, keep the PathBase session intact, and show an actionable tenant/permission error. A focused integration assertion covers the distinction. Successful Field data access remains blocked on the upstream token/permission configuration.
+
+## Secret-free acceptance E2E — 2026-09-14
+
+The acceptance suite now exercises the browser-facing Tachyon and Field boundaries without user credentials or cloud secrets. It verifies the unauthenticated login screen, explicit tenant selection and URL state, a rejected tenant selection (403), selection persistence across reload, return-to-login logout, and that both Field upstream 401 and permission 403 errors remain visible without clearing the valid PathBase session. The Field 401 uses `FIELD_AUTH_REJECTED`; only PathBase/Tachyon `UNAUTHENTICATED` moves the UI to login.
+
+The existing browser tests continue to run against the real Rust HTTP API and an isolated temporary SQLite database for the principal persistence flows: title-only goal plus memo across a fresh browser context, idempotent action completion across reload, and workspace selection/data isolation across reload. Rust integration tests remain the source of truth for cookie, PKCE/OIDC, tenant membership, application RBAC, and Field header/tenant contracts; browser route fixtures cover only the UI response to those already-tested API contracts.
+
+No production token, password, client secret, tenant identifier, or developer database is read by these tests. Successful production Field reads still require an authorized real user and remain a live acceptance item rather than a CI claim.
