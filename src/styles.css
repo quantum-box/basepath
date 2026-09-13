@@ -144,10 +144,17 @@ input[type="checkbox"]:checked::after {
   color: #326abb;
 }
 .workspace-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   font-size: 12px;
   font-weight: 500;
   margin: 16px 8px 7px;
   color: #475c78;
+}
+.workspace-label .text-link {
+  font-size: 10px;
 }
 .workspace-switch {
   display: flex;
