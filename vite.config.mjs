@@ -35,6 +35,12 @@ export default defineConfig({
               proxyReq.removeHeader("authorization");
               return;
             }
+            // The Tachyon login endpoint validates the browser's exact Origin.
+            // Keep it intact and never attach the local-preview credential.
+            if (/\/auth\/login(?:\?|$)/.test(req.url || "")) {
+              proxyReq.removeHeader("authorization");
+              return;
+            }
             proxyReq.removeHeader("origin");
             proxyReq.setHeader(
               "authorization",

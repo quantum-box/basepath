@@ -1,13 +1,14 @@
 use axum::{
     body::Body,
     extract::{OriginalUri, State},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
 };
 use pathbase_api::{
     auth::{AuthConfig, TachyonAuth},
     field::FieldClient,
+    preflight,
     service::Service,
     HttpState,
 };
@@ -30,6 +31,7 @@ struct MockState {
 async fn mock(
     State(s): State<MockState>,
     OriginalUri(uri): OriginalUri,
+    method: Method,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -38,6 +40,23 @@ async fn mock(
     match path {
         "/.well-known/openid-configuration"=>Json(json!({"issuer":s.base,"authorization_endpoint":format!("{}/authorize",s.base),"token_endpoint":format!("{}/token",s.base),"jwks_uri":format!("{}/jwks",s.base)})).into_response(),
         "/jwks"=>Json(serde_json::from_str::<Value>(include_str!("fixtures/oidc-jwks.json")).unwrap()).into_response(),
+        "/oauth2/login"=> {
+            assert_eq!(method, Method::POST);
+            let credentials=serde_json::from_str::<Value>(&body).unwrap();
+            assert_eq!(credentials["username"],"test-user");
+            assert_eq!(credentials["password"],"test-password");
+            assert_eq!(credentials["client_id"],"pathbase-test");
+            Json(json!({"status":"authenticated","session_token":"test-session-token","user_id":"us_verified"})).into_response()
+        },
+        "/authorize"=> {
+            assert_eq!(method, Method::POST);
+            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-session-token");
+            let request=serde_json::from_str::<Value>(&body).unwrap();
+            assert_eq!(request["code_challenge_method"],"S256");
+            assert!(request["code_challenge"].as_str().unwrap().len()>32);
+            *s.nonce.lock().unwrap()=request["nonce"].as_str().unwrap().into();
+            Json(json!({"authorization_code":"code","redirect_uri":request["redirect_uri"],"state":request["state"]})).into_response()
+        },
         "/token"=> {
             assert!(body.contains("code_verifier=") || body.contains("refresh_token="));
             let mut header=jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);header.kid=Some("test-key".into());
@@ -46,12 +65,34 @@ async fn mock(
             Json(json!({"access_token":"test-access-token","refresh_token":"test-refresh-token","id_token":id_token,"expires_in":*s.token_lifetime.lock().unwrap()})).into_response()
         },
         "/auth/v1beta/verify"=> {
-            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");assert!(headers.get("x-user-id").is_none());
+            if headers.get("authorization").and_then(|value| value.to_str().ok()) != Some("Bearer test-access-token") {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            assert!(headers.get("x-user-id").is_none());
             assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["token"],"test-access-token");
             Json(json!({"user":{"id":"us_verified","name":"Verified user","email":null,"tenants":["do-not-trust-callback-memberships"]}})).into_response()
         },
+        "/v1/me"=> {
+            assert_eq!(method, Method::GET);
+            if headers.get("authorization").and_then(|value| value.to_str().ok()) != Some("Bearer test-access-token") {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            assert!(headers.get("x-user-id").is_none());
+            Json(json!({
+                "user":{"id":"us_verified","username":"verified-user","name":"Verified user","email":null},
+                "tenants":[
+                    {"id":"tn_allowed","name":"Allowed company"},
+                    {"id":"tn_other","name":"Other company"}
+                ]
+            })).into_response()
+        },
         "/get_tenants"=> {
-            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
+            assert_eq!(method, Method::POST);
+            assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
+            if headers.get("authorization").is_none() {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            assert_eq!(headers.get("authorization").unwrap(),"Bearer test-access-token");
             Json(json!([{"id":"tn_allowed","name":"Allowed company","environment":"sandbox","platformId":"tn_platform"}])).into_response()
         },
         "/v1/erp/sales-tasks"=> {
@@ -101,6 +142,36 @@ async fn auth(s: &MockState) -> TachyonAuth {
     .await
     .unwrap()
 }
+#[tokio::test]
+async fn preflight_checks_configuration_and_unauthenticated_boundaries() {
+    let (s, server) = upstream().await;
+    let report = preflight::run(
+        "tachyon".into(),
+        Ok(AuthConfig {
+            issuer: s.base.clone(),
+            client_id: "pathbase-test".into(),
+            client_secret: None,
+            redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+            public_url: "http://localhost:1420".into(),
+            tachyon_api_url: s.base.clone(),
+        }),
+        false,
+        Ok(Some(
+            FieldClient::new(s.base.clone(), "tn_platform".into(), "tn_root".into()).unwrap(),
+        )),
+    )
+    .await;
+    assert!(report.configuration_ready);
+    assert!(report.requires_authenticated_check);
+    assert!(report.checks.iter().all(|check| check.status != "error"));
+    let calls = s.calls.lock().unwrap();
+    assert!(calls
+        .iter()
+        .any(|path| path == "/.well-known/openid-configuration"));
+    assert!(calls.iter().any(|path| path == "/auth/v1beta/verify"));
+    assert!(calls.iter().any(|path| path == "/get_tenants"));
+    server.abort();
+}
 fn login(a: &TachyonAuth, s: &MockState) -> (HeaderMap, String) {
     let (url, cookie) = a.begin().unwrap();
     let u = url::Url::parse(&url).unwrap();
@@ -117,8 +188,7 @@ async fn concurrent_requests_refresh_session_once() {
     let (s, server) = upstream().await;
     *s.token_lifetime.lock().unwrap() = 0;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
+    let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
     *s.token_lifetime.lock().unwrap() = 3600;
@@ -143,8 +213,12 @@ async fn concurrent_requests_refresh_session_once() {
 async fn field_references_and_observations_are_idempotent_and_preserve_missing_values() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
+    let cookie = a.direct_login("test-user", "test-password").await.unwrap();
+    let mut session_headers = HeaderMap::new();
+    session_headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
+    a.select_tenant(&session_headers, "tn_allowed")
+        .await
+        .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let service = Service::open(&dir.path().join("db")).unwrap();
     let actor = pathbase_api::service::Actor {
@@ -256,18 +330,15 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
     server.abort();
 }
 #[tokio::test]
-async fn oidc_pkce_nonce_identity_and_authz_separation() {
+async fn direct_login_uses_tachyon_pkce_without_hosted_ui() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
+    let cookie = a.direct_login("test-user", "test-password").await.unwrap();
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Lax"));
     assert!(!s.calls.lock().unwrap().iter().any(|p| p == "/get_tenants"));
-    assert_eq!(
-        a.callback(&h, &state, "code").await.unwrap_err().status,
-        401
-    );
+    assert!(s.calls.lock().unwrap().iter().any(|p| p == "/oauth2/login"));
+    assert!(s.calls.lock().unwrap().iter().any(|p| p == "/authorize"));
     let mut h = HeaderMap::new();
     h.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
     let session = a.session(&h).await.unwrap();
@@ -366,8 +437,6 @@ async fn field_delegates_tenant_and_denies_cross_tenant_without_fetching_content
 async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
-    let (h, state) = login(&a, &s);
-    let cookie = a.callback(&h, &state, "code").await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let service = Service::open(&dir.path().join("db")).unwrap();
     service.initialize(true).unwrap();
@@ -377,6 +446,58 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
         auth: Some(Arc::new(a)),
         field: None,
     });
+    let hosted_ui = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/auth/callback?code=obsolete&state=obsolete")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hosted_ui.status(), 410);
+    let wrong_origin = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "https://example.invalid")
+                .body(Body::from(
+                    json!({"username":"test-user","password":"test-password"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong_origin.status(), 403);
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login")
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "http://localhost:1420")
+                .body(Body::from(
+                    json!({"username":"test-user","password":"test-password"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), 200);
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let unauthorized = app
         .clone()
         .oneshot(
@@ -389,6 +510,68 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
         .await
         .unwrap();
     assert_eq!(unauthorized.status(), 401);
+    let selection_required = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/workspaces")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selection_required.status(), 428);
+    let available = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/tenants")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(available.status(), 200);
+    let body = axum::body::to_bytes(available.into_body(), 10000)
+        .await
+        .unwrap();
+    let available: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(available["tenants"].as_array().unwrap().len(), 2);
+    assert!(available["selected_tenant_id"].is_null());
+    let forbidden_tenant = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tenant-selection")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "http://localhost:1420")
+                .body(Body::from(json!({"tenant_id":"tn_unknown"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden_tenant.status(), 403);
+    let selected = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/tenant-selection")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .header("content-type", "application/json")
+                .header("x-pathbase-request", "1")
+                .header("origin", "http://localhost:1420")
+                .body(Body::from(json!({"tenant_id":"tn_allowed"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected.status(), 200);
     let response = app
         .clone()
         .oneshot(

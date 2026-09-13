@@ -3,7 +3,7 @@ use crate::{
     auth::validate_url,
     model::{ApiError, Result},
 };
-use reqwest::Client;
+use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
@@ -73,7 +73,28 @@ impl FieldClient {
             root_operator_id,
         })
     }
-    async fn get(&self, path: &str, token: &str, operator: &str, platform: &str) -> Result<Value> {
+    pub async fn probe_auth_boundary(&self) -> Result<u16> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/get_tenants?required_action=field%3AViewSalesAnalytics",
+                self.base_url.trim_end_matches('/')
+            ))
+            .header("x-operator-id", &self.root_operator_id)
+            .header("x-platform-id", &self.platform_id)
+            .send()
+            .await
+            .map_err(|_| upstream())?;
+        Ok(response.status().as_u16())
+    }
+    async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        operator: &str,
+        platform: &str,
+    ) -> Result<Value> {
         if token.is_empty() {
             return Err(ApiError::new(
                 401,
@@ -83,7 +104,10 @@ impl FieldClient {
         }
         let r = self
             .client
-            .get(format!("{}{}", self.base_url.trim_end_matches('/'), path))
+            .request(
+                method,
+                format!("{}{}", self.base_url.trim_end_matches('/'), path),
+            )
             .bearer_auth(token)
             .header("x-operator-id", operator)
             .header("x-platform-id", platform)
@@ -127,7 +151,8 @@ impl FieldClient {
     pub async fn tenants(&self, token: &str) -> Result<Vec<FieldTenant>> {
         // Field currently permits only this action for /get_tenants. Do not invent a PathBase action here.
         let v = self
-            .get(
+            .request(
+                Method::POST,
                 "/get_tenants?required_action=field%3AViewSalesAnalytics",
                 token,
                 &self.root_operator_id,
@@ -166,7 +191,8 @@ impl FieldClient {
     pub async fn tasks(&self, token: &str, tenant: &str, offset: u32) -> Result<Vec<FieldTask>> {
         self.authorized_tenant(token, tenant).await?;
         let v = self
-            .get(
+            .request(
+                Method::GET,
                 &format!("/v1/erp/sales-tasks?limit=50&offset={offset}"),
                 token,
                 tenant,
@@ -191,7 +217,8 @@ impl FieldClient {
         }
         self.authorized_tenant(token, tenant).await?;
         let v = self
-            .get(
+            .request(
+                Method::GET,
                 &format!("/v1/erp/sales-tasks/{id}"),
                 token,
                 tenant,
@@ -213,7 +240,8 @@ impl FieldClient {
     pub async fn metrics(&self, token: &str, tenant: &str) -> Result<Value> {
         self.authorized_tenant(token, tenant).await?;
         let data = self
-            .get(
+            .request(
+                Method::GET,
                 "/v1/erp/sales-contracts/metrics",
                 token,
                 tenant,

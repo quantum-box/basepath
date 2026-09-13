@@ -1,0 +1,80 @@
+apiVersion: apps.tachy.one/v1alpha
+kind: OAuth2Client
+metadata:
+  name: pathbase-local
+  # The shared Tachyon platform tenant admits authenticated users from every
+  # operator tenant; PathBase applies its own workspace authorization later.
+  tenantId: tn_01hjjn348rn3t49zz6hvmfq67p
+spec:
+  clientType: public
+  redirectUris:
+    - http://localhost:1420/api/auth/callback
+    - https://pathbase.txcloud.app/api/auth/callback
+  allowedScopes:
+    - openid
+    - profile
+    - email
+  grantTypes:
+    - authorization_code
+    - refresh_token
+  useTachyonUserPool: true
+---
+apiVersion: apps.tachy.one/v1alpha
+kind: CloudApps
+metadata:
+  name: pathbase
+  tenantId: tn_01hjjn348rn3t49zz6hvmfq67p
+spec:
+  apps:
+    - name: pathbase
+      repository:
+        url: https://github.com/quantum-box/basepath
+        owner: quantum-box
+        name: basepath
+        defaultBranch: main
+      rootDirectory: ""
+      dockerContext: "."
+      framework: docker
+      deploymentTarget: cloud_run
+      readinessProof:
+        path: /api/health
+        expectedStatus: 200
+        expectedBody: '"status":"ok"'
+      watchPaths:
+        - api/**
+        - public/**
+        - scripts/**
+        - src/**
+        - Dockerfile
+        - index.html
+        - package-lock.json
+        - package.json
+        - tsconfig.json
+        - vite.config.mjs
+      envVars:
+        - name: PATHBASE_MODE
+          value: tachyon
+        - name: PATHBASE_PUBLIC_URL
+          value: https://pathbase.txcloud.app
+        - name: PATHBASE_WEB_ROOT
+          value: /app/web
+        - name: PATHBASE_DB
+          value: /app/data/pathbase.sqlite3
+        - name: TACHYON_OIDC_ISSUER
+          value: https://api.n1.tachy.one
+        - name: TACHYON_OIDC_CLIENT_ID
+          type: credential
+          valueFrom:
+            oauth2ClientRef:
+              name: pathbase-local
+              field: clientId
+        - name: TACHYON_OIDC_REDIRECT_URI
+          value: https://pathbase.txcloud.app/api/auth/callback
+        - name: TACHYON_API_URL
+          value: https://api.n1.tachy.one
+        - name: FIELD_API_URL
+          value: https://tachyon-field-api.txcloud.app
+        - name: FIELD_PLATFORM_ID
+          value: tn_01hjjn348rn3t49zz6hvmfq67p
+        - name: FIELD_OPERATOR_ID
+          value: tn_01m2a6ztfmd95p70gwgyshbevq
