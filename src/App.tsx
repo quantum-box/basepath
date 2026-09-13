@@ -30,6 +30,8 @@ import {
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { OnboardingWizard } from "./OnboardingWizard";
+import { AiSuggestions } from "./AiSuggestions";
 import { CalendarView } from "./CalendarView";
 import {
   MemoEditor,
@@ -53,6 +55,7 @@ type ModalState =
   | { kind: "initiativeDetail"; id: string }
   | { kind: "metrics" }
   | { kind: "relations" }
+  | { kind: "aiSuggestions" }
   | null;
 const navigation = [
   { label: "ホーム", icon: "home" },
@@ -435,6 +438,9 @@ export function App() {
     store.workspaces.find((s) => s.id === w)?.scope || "個人";
   const currentWorkspace =
     store.workspaces.find((w) => w.id === workspaceId) || store.workspaces[0];
+  const currentSnapshot = store.snapshots.find(
+    (snapshot) => snapshot.workspace_id === currentWorkspace?.id,
+  );
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
@@ -794,7 +800,9 @@ export function App() {
         } else if (modal?.kind === "task") {
           const frequency = Number(data.get("frequency") || 0);
           const weekdays = data.getAll("weekdays").map(Number);
-          const recurrenceMode = String(data.get("recurrence_mode") || "period_quota");
+          const recurrenceMode = String(
+            data.get("recurrence_mode") || "period_quota",
+          );
           await store.write("POST", `${base}/items`, {
             title,
             kind: "action",
@@ -808,7 +816,10 @@ export function App() {
               recurrence: frequency || weekdays.length
                 ? {
                     mode: recurrenceMode,
-                    times_per_week: recurrenceMode === "fixed_schedule" ? weekdays.length : frequency,
+                    times_per_week:
+                      recurrenceMode === "fixed_schedule"
+                        ? weekdays.length
+                        : frequency,
                     timezone: store.settings.timezone,
                     weekdays,
                   }
@@ -1251,6 +1262,26 @@ export function App() {
             {store.loading && (
               <p className="empty-value">保存した目標を読み込んでいます…</p>
             )}
+            {!store.loading &&
+              currentWorkspace &&
+              currentSnapshot &&
+              currentSnapshot.items.every((item) => item.archived_at) && (
+                <OnboardingWizard
+                  store={store}
+                  workspaces={
+                    currentWorkspace.role === "viewer"
+                      ? [currentWorkspace]
+                      : store.workspaces
+                  }
+                  onComplete={(goalId, actionId) => {
+                    setSelectedId(goalId);
+                    setScope("すべて");
+                    routeTo({ item: goalId, scope: "すべて" });
+                    navigate(actionId ? "今日の行動" : "目標マップ");
+                    notify("最初の目標を作成しました");
+                  }}
+                />
+              )}
             <section className="panel templates-panel" id="templates">
               <div className="section-header">
                 <h2>テンプレートからはじめる</h2>
@@ -1585,6 +1616,14 @@ export function App() {
                           次の行動を関連付ける
                         </button>
                       )}
+                      <button
+                        className="ai-suggest-link"
+                        disabled={!canWrite(selectedRaw.workspace_id)}
+                        onClick={() => setModal({ kind: "aiSuggestions" })}
+                      >
+                        <Icon name="sparkle" size={15} weight="duotone" />
+                        AIと次の一歩を考える
+                      </button>
                     </DetailRow>
                     <DetailRow icon="graduation" label="関連する取り組み">
                       <div className="related-list">
@@ -1701,7 +1740,9 @@ export function App() {
             scope={scope}
             workspace={workspace}
             calendarItems={visibleItems}
-            calendarRecords={allRecords.filter((record) => workspaceMatches(record.workspace_id))}
+            calendarRecords={allRecords.filter((record) =>
+              workspaceMatches(record.workspace_id),
+            )}
             timezone={store.settings.timezone}
             reflection={reflection}
             savedReflection={savedReflection}
@@ -1795,6 +1836,8 @@ export function App() {
                               ? "成果と手応えを記録"
                               : modal.kind === "relations"
                                 ? "項目のつながり"
+                                : modal.kind === "aiSuggestions"
+                                  ? "AIによる次の行動・振り返り提案"
                                 : "項目の詳細"
           }
         >
@@ -2041,7 +2084,10 @@ export function App() {
                     </label>
                     <label>
                       習慣ルール
-                      <select name="recurrence_mode" defaultValue="period_quota">
+                      <select
+                        name="recurrence_mode"
+                        defaultValue="period_quota"
+                      >
                         <option value="period_quota">週の回数で決める</option>
                         <option value="fixed_schedule">曜日を固定する</option>
                       </select>
@@ -2059,9 +2105,18 @@ export function App() {
                     </label>
                     <fieldset className="weekday-picker">
                       <legend>固定する曜日（曜日固定を選んだ場合）</legend>
-                      {["月", "火", "水", "木", "金", "土", "日"].map((label, index) => (
-                        <label key={label}><input type="checkbox" name="weekdays" value={index} />{label}</label>
-                      ))}
+                      {["月", "火", "水", "木", "金", "土", "日"].map(
+                        (label, index) => (
+                          <label key={label}>
+                            <input
+                              type="checkbox"
+                              name="weekdays"
+                              value={index}
+                            />
+                            {label}
+                          </label>
+                        ),
+                      )}
                     </fieldset>
                   </>
                 )}
@@ -2166,6 +2221,16 @@ export function App() {
             <fieldset disabled={!canWrite(selectedRaw.workspace_id)}>
               <RelationsEditor item={selectedRaw} store={store} />
             </fieldset>
+          )}
+          {modal.kind === "aiSuggestions" && selectedRaw && (
+            <AiSuggestions
+              goal={selectedRaw}
+              store={store}
+              onApplied={() => {
+                setModal(null);
+                notify("AI提案を確認して採用しました");
+              }}
+            />
           )}
           {modal.kind === "learnings" && (
             <ul className="learning-modal-list">
@@ -2380,7 +2445,13 @@ function DedicatedScreen({
     return (
       <div className="page-content timeline-screen">
         <section className="panel screen-primary-card calendar-card">
-          <CalendarView items={calendarItems} records={calendarRecords} timezone={timezone} onOpen={onEditTask} onToday={onCalendarToday} />
+          <CalendarView
+            items={calendarItems}
+            records={calendarRecords}
+            timezone={timezone}
+            onOpen={onEditTask}
+            onToday={onCalendarToday}
+          />
         </section>
       </div>
     );
