@@ -165,6 +165,48 @@ fn runtime_auth_uses_tachyon_oauth_routes_without_discovery() {
 }
 
 #[tokio::test]
+async fn auth_status_uses_the_path_below_the_cloudapp_api_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Service::open(&dir.path().join("db")).unwrap();
+    let auth = TachyonAuth::for_runtime(AuthConfig {
+        issuer: "https://api.example.com".into(),
+        client_id: "pathbase-test".into(),
+        client_secret: None,
+        redirect_uri: "https://pathbase.example.com/api/auth/callback".into(),
+        public_url: "https://pathbase.example.com".into(),
+        tachyon_api_url: "https://api.example.com".into(),
+    })
+    .unwrap();
+    let app = Router::new().nest(
+        "/api",
+        pathbase_api::router(HttpState {
+            service,
+            token: String::new(),
+            auth: Some(Arc::new(auth)),
+            field: None,
+        }),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["mode"], "tachyon");
+    assert_eq!(body["configured"], true);
+}
+
+#[tokio::test]
 async fn preflight_checks_configuration_and_unauthenticated_boundaries() {
     let (s, server) = upstream().await;
     let report = preflight::run(
