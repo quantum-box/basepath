@@ -58,39 +58,55 @@ phases:
         shred -u "${CREDENTIALS_FILE}" 2>/dev/null \
           || python3 -c 'import os; p="/tmp/pathbase-gcp-credentials.json"; open(p,"wb").write(b"0" * os.path.getsize(p)); os.unlink(p)'
       - |
-        echo "Reading sanitized Cloud Run service state"
-        gcloud run services describe compute-pathbase \
+        set -euo pipefail
+        echo "Repairing PathBase public serving after the Cloud Run IAM API mismatch"
+        SERVICE_URL=$(gcloud run services describe compute-pathbase \
           --project=tachyon-403814 \
           --region=asia-northeast1 \
-          --format=json \
-          | jq '{
-              name: .metadata.name,
-              generation: .metadata.generation,
-              observedGeneration: .status.observedGeneration,
-              latestCreatedRevision: .status.latestCreatedRevisionName,
-              latestReadyRevision: .status.latestReadyRevisionName,
-              url: .status.url,
-              conditions: [.status.conditions[] | {
-                type,
-                status,
-                reason,
-                message,
-                lastTransitionTime
-              }]
-            }'
-        gcloud run revisions list \
-          --service=compute-pathbase \
+          --format='value(status.url)')
+        ORIGIN_HOST=${SERVICE_URL#https://}
+        test -n "${ORIGIN_HOST}"
+        gcloud run services add-iam-policy-binding compute-pathbase \
           --project=tachyon-403814 \
           --region=asia-northeast1 \
-          --limit=5 \
-          --format=json \
-          | jq 'map({
-              name: .metadata.name,
-              created: .metadata.creationTimestamp,
-              service: .metadata.labels["serving.knative.dev/service"],
-              conditions: [.status.conditions[] | {type,status,reason,message}]
-            })'
-        echo "Stopping after read-only Cloud Run diagnostics"
+          --member=allUsers \
+          --role=roles/run.invoker \
+          --quiet >/dev/null
+
+        CF_CONFIG=$(aws ssm get-parameter \
+          --region "${AWS_DEFAULT_REGION:-ap-northeast-1}" \
+          --name /tn_01jcjtqxah6mhyw4e5mahg02nd/providers/cloudflare_dns \
+          --with-decryption \
+          --query Parameter.Value \
+          --output text 2>/dev/null)
+        CF_API_TOKEN=$(printf '%s' "${CF_CONFIG}" | jq -er .api_token)
+        CF_ACCOUNT_ID=fef3f6ef891ab3e121deb43eeb57318a
+        CF_NAMESPACE_ID=2e29df0d78f34779b9c73ff7b3f56f2f
+        ROUTE=$(jq -nc --arg host "${ORIGIN_HOST}" \
+          '{schema_version:1,type:"http",host:$host}')
+        CF_RESPONSE=$(curl -fsS --max-time 20 \
+          -X PUT \
+          "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${CF_NAMESPACE_ID}/values/pathbase" \
+          -H "Authorization: Bearer ${CF_API_TOKEN}" \
+          -H 'Content-Type: application/json' \
+          --data-binary "${ROUTE}")
+        printf '%s' "${CF_RESPONSE}" | jq -e '.success == true' >/dev/null
+        unset CF_CONFIG CF_API_TOKEN ROUTE CF_RESPONSE
+
+        SERVING_OK=0
+        for _ in $(seq 1 20); do
+          if curl -fsS --max-time 10 https://pathbase.txcloud.app/api/health \
+            | jq -e '.status == "ok"' >/dev/null; then
+            SERVING_OK=1
+            break
+          fi
+          sleep 2
+        done
+        if [ "${SERVING_OK}" != "1" ]; then
+          echo "ERROR: PathBase public health check did not become ready"
+          exit 1
+        fi
+        echo "PathBase public route is healthy"
         exit 1
       - |
         MACHINE=$(uname -m)
