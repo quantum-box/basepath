@@ -776,6 +776,7 @@ export function App() {
         <nav className="utility-nav" aria-label="ユーティリティ">
           <button
             onClick={() => {
+              setSidebar(false);
               setNotifications(!notifications);
             }}
           >
@@ -784,6 +785,7 @@ export function App() {
           </button>
           <button
             onClick={() => {
+              setSidebar(false);
               searchRef.current?.focus();
               setSearchOpen(true);
             }}
@@ -858,8 +860,6 @@ export function App() {
                             navigate("目標マップ");
                           } else if (result.type === "メンバー") {
                             navigate("メンバー");
-                          } else if (result.type === "行動") {
-                            navigate("今日の行動");
                           } else {
                             setModal({
                               kind: "initiativeDetail",
@@ -995,22 +995,22 @@ export function App() {
           )}
         </header>
 
+        {store.error && (
+          <div className="save-error global-save-error" role="alert">
+            <span>{store.error.message}</span>
+            <button
+              onClick={() => void store.refresh()}
+              disabled={store.pending}
+            >
+              最新を読み込む
+            </button>
+            <button aria-label="エラーを閉じる" onClick={store.clearError}>
+              ×
+            </button>
+          </div>
+        )}
         {activeNav === "ホーム" ? (
         <div className="dashboard">
-          {store.error && (
-            <div className="save-error" role="alert">
-              <span>{store.error.message}</span>
-              <button
-                onClick={() => void store.refresh()}
-                disabled={store.pending}
-              >
-                最新を読み込む
-              </button>
-              <button aria-label="エラーを閉じる" onClick={store.clearError}>
-                ×
-              </button>
-            </div>
-          )}
           {store.loading && (
             <p className="empty-value">保存した目標を読み込んでいます…</p>
           )}
@@ -1468,7 +1468,10 @@ export function App() {
                 onSelect={selectWorkspace}
               />
             }
-            onSelectGoal={selectGoal}
+            onSelectGoal={(id) => {
+              selectGoal(id);
+              if (activeNav === "タイムライン") navigate("目標マップ");
+            }}
             onChangeScope={changeScope}
             onOpenInitiative={openInitiative}
             onSetQuarter={setQuarter}

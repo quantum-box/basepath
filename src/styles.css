@@ -1796,6 +1796,9 @@ input[type="checkbox"]:checked::after {
   background: #f7f9fc;
   animation: appear 0.18s ease;
 }
+.global-save-error {
+  margin: 12px 24px 0;
+}
 .screen-main-grid,
 .goal-map-screen-grid {
   display: grid;
@@ -1947,7 +1950,7 @@ input[type="checkbox"]:checked::after {
   margin-top: auto;
 }
 .dedicated-timeline-card {
-  overflow: hidden;
+  overflow: auto;
 }
 .dedicated-timeline-card .timeline-header {
   margin: 0 0 25px;
@@ -3341,6 +3344,9 @@ input[type="checkbox"]:checked::after {
   .page-content {
     min-height: calc(100vh - 160px);
     padding: 13px 12px 22px;
+  }
+  .global-save-error {
+    margin: 10px 12px 0;
   }
   .screen-primary-card,
   .screen-side-card,
