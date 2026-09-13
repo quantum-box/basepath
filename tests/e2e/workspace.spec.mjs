@@ -551,4 +551,21 @@ test("mobile navigation opens the workspace manager page and returns home", asyn
   await expect(
     page.getByRole("button", { name: "メニューを開く", exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "メインメニュー" }),
+  ).toBeHidden();
+  await expect(page.locator("main")).toBeFocused();
+});
+
+test("closing settings returns keyboard focus to its trigger", async ({ page }) => {
+  await openApp(page);
+  const settings = page
+    .getByRole("navigation", { name: "ユーティリティ" })
+    .getByRole("button", { name: "設定", exact: true });
+  await settings.focus();
+  await settings.press("Enter");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeHidden();
+  await expect(settings).toBeFocused();
 });

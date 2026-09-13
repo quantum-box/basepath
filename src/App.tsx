@@ -421,6 +421,7 @@ export function App() {
   const [reflection, setReflection] = useState("");
   const [savedReflection, setSavedReflection] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
   const compact = store.settings.compact;
   const allItems = store.snapshots.flatMap((s) => s.items);
   const allRelations = store.snapshots.flatMap((s) => s.relations);
@@ -724,6 +725,7 @@ export function App() {
     }
     setActiveNav(label);
     setSidebar(false);
+    window.requestAnimationFrame(() => mainRef.current?.focus());
     setModal(null);
     setMenu(false);
     setNotifications(false);
@@ -920,7 +922,10 @@ export function App() {
           onClick={() => setSidebar(false)}
         />
       )}
-      <aside className={`sidebar ${sidebar ? "is-open" : ""}`}>
+      <aside
+        className={`sidebar ${sidebar ? "is-open" : ""}`}
+        id="app-navigation"
+      >
         <button
           className="brand"
           onClick={() => navigate("ホーム")}
@@ -1017,7 +1022,12 @@ export function App() {
             <Icon name="search" size={22} />
             検索
           </button>
-          <button onClick={() => setModal({ kind: "settings" })}>
+          <button
+            onClick={() => {
+              setSidebar(false);
+              setModal({ kind: "settings" });
+            }}
+          >
             <Icon name="settings" size={22} />
             設定
           </button>
@@ -1041,12 +1051,14 @@ export function App() {
         </button>
       </aside>
 
-      <main className="main-content" id="home">
+      <main className="main-content" id="home" ref={mainRef} tabIndex={-1}>
         <header className={activeNav === "ホーム" ? "hero" : "subpage-header"}>
           <div className="topbar">
             <button
               className="icon-button mobile-menu"
               aria-label="メニューを開く"
+              aria-controls="app-navigation"
+              aria-expanded={sidebar}
               onClick={() => setSidebar(true)}
             >
               <Icon name="menu" />
@@ -2848,10 +2860,24 @@ function Modal({
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const element = dialog.current;
+    returnFocus.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
     element?.showModal();
-    return () => element?.close();
+    return () => {
+      element?.close();
+      window.requestAnimationFrame(() => {
+        const target = returnFocus.current;
+        if (target && window.getComputedStyle(target).visibility !== "hidden")
+          target.focus();
+        else
+          document.querySelector<HTMLButtonElement>(".mobile-menu")?.focus();
+      });
+    };
   }, []);
   return (
     <dialog
