@@ -22,6 +22,10 @@ export type Task = {
   date?: string | null;
   recurring?: boolean;
   state?: string;
+  dueDate?: string | null;
+  assigneeId?: string | null;
+  priority?: "low" | "medium" | "high" | "urgent" | null;
+  dueStatus?: "overdue" | "today" | "soon" | null;
 };
 export type Initiative = {
   id: string;
