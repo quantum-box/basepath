@@ -185,7 +185,7 @@ async fn endpoint(
         let tenant = state
             .auth
             .as_ref()
-            .ok_or_else(|| ApiError::missing())?
+            .ok_or_else(ApiError::missing)?
             .select_tenant(&headers, &selection.tenant_id)
             .await?;
         return Ok(Json(json!({"selected_tenant":tenant})).into_response());
