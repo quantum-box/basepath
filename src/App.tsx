@@ -40,7 +40,36 @@ const navigation = [
   { label: "振り返り", icon: "book" },
   { label: "テンプレート", icon: "stack" },
   { label: "メンバー", icon: "users" },
-];
+] as const;
+type NavigationLabel = (typeof navigation)[number]["label"];
+
+const navigationRoutes: Record<NavigationLabel, string> = {
+  ホーム: "home",
+  目標マップ: "goals",
+  タイムライン: "timeline",
+  今日の行動: "today",
+  振り返り: "reflection",
+  テンプレート: "templates",
+  メンバー: "members",
+};
+
+const navigationDescriptions: Record<NavigationLabel, string> = {
+  ホーム: "目標・計画・行動・学びを、ひとつの場所で見渡せます。",
+  目標マップ: "目標と取り組みのつながりを見ながら、次の一歩を整えます。",
+  タイムライン: "これからの予定と目標の進み方を、時間軸で確認します。",
+  今日の行動: "今日やることに集中して、小さな前進を積み重ねます。",
+  振り返り: "できたことや気づきを残し、次の行動につなげます。",
+  テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
+  メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
+};
+
+function navigationFromHash(): NavigationLabel {
+  const route = window.location.hash.replace(/^#\/?/, "");
+  return (
+    navigation.find((item) => navigationRoutes[item.label] === route)?.label ??
+    "ホーム"
+  );
+}
 function Badge({ scope }: { scope: Scope }) {
   return <span className={`scope-badge ${scopeClass[scope]}`}>{scope}</span>;
 }
@@ -106,7 +135,8 @@ export function App() {
   const [selectedId, setSelectedId] = useState("event");
   const [scope, setScope] = useState<Scope | "すべて">("すべて");
   const [workspace, setWorkspace] = useState<Scope>("個人");
-  const [activeNav, setActiveNav] = useState("ホーム");
+  const [activeNav, setActiveNav] =
+    useState<NavigationLabel>(navigationFromHash);
   const [activeTab, setActiveTab] = useState("タイムライン");
   const [quarter, setQuarter] = useState(0);
   const [modal, setModal] = useState<ModalState>(null);
@@ -153,6 +183,19 @@ export function App() {
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);
   }, []);
+  useEffect(() => {
+    const handleHistory = () => {
+      setActiveNav(navigationFromHash());
+      setSidebar(false);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    window.addEventListener("popstate", handleHistory);
+    return () => window.removeEventListener("popstate", handleHistory);
+  }, []);
+  useEffect(() => {
+    document.title =
+      activeNav === "ホーム" ? "PathBase" : `${activeNav} | PathBase`;
+  }, [activeNav]);
   function toggleTask(id: string) {
     setTasks((items) =>
       items.map((item) =>
@@ -160,32 +203,18 @@ export function App() {
       ),
     );
   }
-  function navigate(label: string) {
+  function navigate(label: NavigationLabel) {
+    const nextHash = `#/${navigationRoutes[label]}`;
+    if (window.location.hash !== nextHash) {
+      window.history.pushState(null, "", nextHash);
+    }
     setActiveNav(label);
     setSidebar(false);
-    if (label === "メンバー") {
-      setModal({ kind: "members" });
-      return;
-    }
-    if (
-      label === "今日の行動" ||
-      label === "振り返り" ||
-      label === "タイムライン"
-    ) {
-      setActiveTab(label);
-      document
-        .getElementById("workspace-panels")
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    } else
-      document
-        .getElementById(
-          label === "目標マップ"
-            ? "goal-map"
-            : label === "テンプレート"
-              ? "templates"
-              : "home",
-        )
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setModal(null);
+    setMenu(false);
+    setNotifications(false);
+    setSearchOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function changeScope(value: Scope | "すべて") {
     setScope(value);
@@ -380,7 +409,7 @@ export function App() {
       </aside>
 
       <main className="main-content" id="home">
-        <header className="hero">
+        <header className={activeNav === "ホーム" ? "hero" : "subpage-header"}>
           <div className="topbar">
             <button
               className="icon-button mobile-menu"
@@ -419,9 +448,12 @@ export function App() {
                           if (result.type === "目標") {
                             setSelectedId(result.id);
                             setScope("すべて");
-                          } else if (result.type === "メンバー")
-                            setModal({ kind: "members" });
-                          else navigate("今日の行動");
+                            navigate("目標マップ");
+                          } else if (result.type === "メンバー") {
+                            navigate("メンバー");
+                          } else {
+                            navigate("今日の行動");
+                          }
                           setSearch("");
                           setSearchOpen(false);
                         }}
@@ -488,370 +520,430 @@ export function App() {
               <Avatar size={34} />
             </button>
           </div>
-          <div className="hero-copy">
-            <h1>やりたいことを、動ける形に。</h1>
-            <p>
-              目標・計画・行動・学びをつなげて、人生も仕事も、前に進めるプラットフォームです。
-            </p>
-          </div>
-          <p className="hero-note">
-            今日の一歩が、
-            <br />
-            <span>未来をつくる。</span>
-          </p>
-        </header>
-
-        <div className="dashboard">
-          <section className="panel templates-panel" id="templates">
-            <div className="section-header">
-              <h2>テンプレートからはじめる</h2>
-              <TextLink
-                onClick={() =>
-                  setModal({ kind: "template", template: "自由形式" })
-                }
-              >
-                すべてのテンプレート
-              </TextLink>
-            </div>
-            <div className="template-grid">
-              {templates.map((template) => (
-                <button
-                  key={template.title}
-                  className={`template-card ${template.color}`}
-                  onClick={() =>
-                    setModal({ kind: "template", template: template.title })
-                  }
-                >
-                  <Icon name={template.icon} size={36} />
-                  <span>
-                    <strong>{template.title}</strong>
-                    <small>{template.description}</small>
-                  </span>
-                  <Icon name="arrow" size={16} className="template-arrow" />
-                </button>
-              ))}
-            </div>
-          </section>
-          <div className="dashboard-grid">
-            <div className="left-column">
-              <GoalMap
-                goals={goals}
-                initiatives={initiatives}
-                selected={selectedId}
-                onSelect={selectGoal}
-                scope={scope}
-                setScope={changeScope}
-                onInitiative={openInitiative}
-              />
-              <section className="panel bottom-panel" id="workspace-panels">
-                <div
-                  className="bottom-tabs"
-                  role="tablist"
-                  aria-label="計画と振り返り"
-                >
-                  {["タイムライン", "今日の行動", "振り返り"].map((tab) => (
-                    <button
-                      role="tab"
-                      aria-selected={activeTab === tab}
-                      key={tab}
-                      className={activeTab === tab ? "active" : ""}
-                      onClick={() => setActiveTab(tab)}
-                    >
-                      {tab}
-                    </button>
-                  ))}
-                </div>
-                <div className="bottom-grid">
-                  <div className="timeline-card">
-                    {activeTab === "タイムライン" ? (
-                      <Timeline
-                        quarter={quarter}
-                        setQuarter={setQuarter}
-                        goals={goals}
-                        onSelect={selectGoal}
-                      />
-                    ) : activeTab === "今日の行動" ? (
-                      <>
-                        <div className="section-header">
-                          <h3>
-                            今日の行動{" "}
-                            <small>
-                              {tasks.filter((t) => t.done).length}/
-                              {tasks.length} 完了
-                            </small>
-                          </h3>
-                          <button
-                            className="icon-button"
-                            aria-label="行動を追加"
-                            onClick={() => setModal({ kind: "task" })}
-                          >
-                            <Icon name="plus" />
-                          </button>
-                        </div>
-                        <TaskList
-                          tasks={tasks}
-                          toggleTask={toggleTask}
-                          expanded
-                        />
-                      </>
-                    ) : (
-                      <>
-                        <div className="section-header">
-                          <h3>今週の振り返り</h3>
-                          <span className="week-label">4/21 – 4/27</span>
-                        </div>
-                        <div className="reflection-summary">
-                          <span className="reflection-icon">
-                            <Icon name="leaf" size={28} weight="duotone" />
-                          </span>
-                          <div>
-                            <strong>小さな一歩を、積み重ねる。</strong>
-                            <p>今週できたこと、気づいたことを残しましょう。</p>
-                          </div>
-                        </div>
-                        <textarea
-                          className="reflection-input"
-                          value={reflection}
-                          onChange={(e) => setReflection(e.target.value)}
-                          aria-label="今週の振り返り"
-                          placeholder="今週はどんな一歩を踏み出しましたか？"
-                        />
-                        <button
-                          className="text-link"
-                          disabled={
-                            !reflection.trim() || reflection === savedReflection
-                          }
-                          onClick={() => {
-                            setSavedReflection(reflection);
-                            notify("振り返りを記録しました");
-                          }}
-                        >
-                          {savedReflection && reflection === savedReflection
-                            ? "記録しました"
-                            : "振り返りを記録"}
-                          <Icon name="check" size={15} />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  <div className="today-card">
-                    <div className="section-header">
-                      <h3>
-                        <Icon
-                          name="shield"
-                          size={18}
-                          className="green-text"
-                          weight="duotone"
-                        />
-                        今日の行動
-                      </h3>
-                      <TextLink onClick={() => setActiveTab("今日の行動")} />
-                    </div>
-                    <TaskList tasks={tasks} toggleTask={toggleTask} />
-                    <button
-                      className="add-link"
-                      onClick={() => setModal({ kind: "task" })}
-                    >
-                      <Icon name="plus" size={16} />
-                      行動を追加
-                    </button>
-                    <div className="quote-card">
-                      <Icon name="quote" size={25} weight="fill" />
-                      <p>
-                        小さな行動の積み重ねが、
-                        <br />
-                        大きな変化をつくる。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="learning-card">
-                    <div className="section-header">
-                      <h3>
-                        <Icon
-                          name="bulb"
-                          className="orange-text"
-                          size={18}
-                          weight="duotone"
-                        />
-                        最近の学び
-                      </h3>
-                      <TextLink
-                        onClick={() => setModal({ kind: "learnings" })}
-                      />
-                    </div>
-                    <ul>
-                      {learnings.map((learning) => (
-                        <li key={learning}>{learning}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </section>
-            </div>
-            <aside
-              className={`panel detail-panel ${scopeClass[selected.scope]}`}
-              aria-label="選択した目標の詳細"
-            >
-              <div className="detail-heading">
-                <span className={`detail-icon ${scopeClass[selected.scope]}`}>
-                  <Icon name={selected.icon} size={30} weight="duotone" />
-                </span>
-                <div>
-                  <Badge scope={selected.scope} />
-                  <h2>{selected.title}</h2>
-                  <p>{selected.subtitle}</p>
-                </div>
-                <div className="goal-menu">
-                  <button
-                    className="icon-button"
-                    aria-label="目標のメニュー"
-                    onClick={() => setMenu(!menu)}
-                  >
-                    <Icon name="more" size={25} weight="bold" />
-                  </button>
-                  {menu && (
-                    <div className="context-menu">
-                      <button
-                        onClick={() => {
-                          setModal({ kind: "editGoal" });
-                          setMenu(false);
-                        }}
-                      >
-                        <Icon name="note" size={17} />
-                        目標を編集
-                      </button>
-                      <button
-                        onClick={() => {
-                          setNextDone({ ...nextDone, [selected.id]: false });
-                          setMenu(false);
-                          notify("次の一歩を未完了に戻しました");
-                        }}
-                      >
-                        <Icon name="repeat" size={17} />
-                        次の一歩をリセット
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="detail-fields">
-                <DetailRow icon="flag" label="目的">
-                  <div className="field-box">{selected.purpose}</div>
-                </DetailRow>
-                <DetailRow icon="chart" label="進捗">
-                  <Progress
-                    value={selected.progress}
-                    color={scopeClass[selected.scope]}
-                  />
-                </DetailRow>
-                <DetailRow icon="rocket" label="次の一歩">
-                  <label
-                    className={`next-step ${nextDone[selected.id] ? "done" : ""}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={!!nextDone[selected.id]}
-                      onChange={(e) => {
-                        setNextDone({
-                          ...nextDone,
-                          [selected.id]: e.target.checked,
-                        });
-                        if (e.target.checked) {
-                          notify("一歩前進しました！");
-                          setActivity((items) => [
-                            "次の一歩を完了しました",
-                            ...items,
-                          ]);
-                        }
-                      }}
-                    />
-                    <span>
-                      {selected.next}
-                      <small className="date-chip">4月25日（金）</small>
-                    </span>
-                  </label>
-                </DetailRow>
-                <DetailRow icon="graduation" label="関連する取り組み">
-                  <div className="related-list">
-                    {initiatives
-                      .filter((i) => i.goalId === selected.id)
-                      .map((i) => (
-                        <button
-                          key={i.id}
-                          onClick={() =>
-                            setModal({ kind: "initiativeDetail", id: i.id })
-                          }
-                        >
-                          <span
-                            className={`related-icon ${i.icon === "calendar" ? "pink" : "blue"}`}
-                          >
-                            <Icon name={i.icon} size={17} weight="duotone" />
-                          </span>
-                          {i.title.replace("\n", "")}
-                        </button>
-                      ))}
-                    {selected.id === "event" && (
-                      <button onClick={() => setModal({ kind: "initiative" })}>
-                        <span className="related-icon blue">
-                          <Icon name="link" size={17} />
-                        </span>
-                        地域の協力パートナーを探す
-                      </button>
-                    )}
-                    <button
-                      className="add-link"
-                      onClick={() => setModal({ kind: "initiative" })}
-                    >
-                      <Icon name="plus" size={16} />
-                      取り組みを追加
-                    </button>
-                  </div>
-                </DetailRow>
-                <DetailRow icon="note" label="メモ">
-                  <textarea
-                    key={selected.id}
-                    className="field-box memo-input"
-                    aria-label="目標のメモ"
-                    value={selected.memo}
-                    placeholder="この目標についてメモを残す"
-                    onChange={(e) =>
-                      setGoals(
-                        goals.map((g) =>
-                          g.id === selected.id
-                            ? { ...g, memo: e.target.value }
-                            : g,
-                        ),
-                      )
-                    }
-                  />
-                </DetailRow>
-              </div>
-              <div className="activity-section">
-                <div className="section-header">
-                  <h3>
-                    <Icon name="shield" size={19} />
-                    アクティビティ
-                  </h3>
-                  <TextLink onClick={() => setModal({ kind: "activity" })} />
-                </div>
-                <ActivityList activity={activity} />
-              </div>
-              <div className="detail-quote">
-                <Icon
-                  name="leaf"
-                  size={25}
-                  className="green-text"
-                  weight="duotone"
-                />
+          {activeNav === "ホーム" ? (
+            <>
+              <div className="hero-copy">
+                <h1>やりたいことを、動ける形に。</h1>
                 <p>
-                  やってみたからこそ、わかったことがある。
-                  <br />
-                  それが、次の一歩につながる。
+                  目標・計画・行動・学びをつなげて、人生も仕事も、前に進めるプラットフォームです。
                 </p>
               </div>
-            </aside>
+              <p className="hero-note">
+                今日の一歩が、
+                <br />
+                <span>未来をつくる。</span>
+              </p>
+            </>
+          ) : (
+            <div className="subpage-heading">
+              <span className="subpage-heading-icon">
+                <Icon
+                  name={
+                    navigation.find((item) => item.label === activeNav)?.icon ??
+                    "home"
+                  }
+                  size={26}
+                  weight="duotone"
+                />
+              </span>
+              <div>
+                <small>PathBase / {workspace}</small>
+                <h1>{activeNav}</h1>
+                <p>{navigationDescriptions[activeNav]}</p>
+              </div>
+            </div>
+          )}
+        </header>
+
+        {activeNav === "ホーム" ? (
+          <div className="dashboard">
+            <section className="panel templates-panel" id="templates">
+              <div className="section-header">
+                <h2>テンプレートからはじめる</h2>
+                <TextLink
+                  onClick={() =>
+                    setModal({ kind: "template", template: "自由形式" })
+                  }
+                >
+                  すべてのテンプレート
+                </TextLink>
+              </div>
+              <div className="template-grid">
+                {templates.map((template) => (
+                  <button
+                    key={template.title}
+                    className={`template-card ${template.color}`}
+                    onClick={() =>
+                      setModal({ kind: "template", template: template.title })
+                    }
+                  >
+                    <Icon name={template.icon} size={36} />
+                    <span>
+                      <strong>{template.title}</strong>
+                      <small>{template.description}</small>
+                    </span>
+                    <Icon name="arrow" size={16} className="template-arrow" />
+                  </button>
+                ))}
+              </div>
+            </section>
+            <div className="dashboard-grid">
+              <div className="left-column">
+                <GoalMap
+                  goals={goals}
+                  initiatives={initiatives}
+                  selected={selectedId}
+                  onSelect={selectGoal}
+                  scope={scope}
+                  setScope={changeScope}
+                  onInitiative={openInitiative}
+                />
+                <section className="panel bottom-panel" id="workspace-panels">
+                  <div
+                    className="bottom-tabs"
+                    role="tablist"
+                    aria-label="計画と振り返り"
+                  >
+                    {["タイムライン", "今日の行動", "振り返り"].map((tab) => (
+                      <button
+                        role="tab"
+                        aria-selected={activeTab === tab}
+                        key={tab}
+                        className={activeTab === tab ? "active" : ""}
+                        onClick={() => setActiveTab(tab)}
+                      >
+                        {tab}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="bottom-grid">
+                    <div className="timeline-card">
+                      {activeTab === "タイムライン" ? (
+                        <Timeline
+                          quarter={quarter}
+                          setQuarter={setQuarter}
+                          goals={goals}
+                          onSelect={selectGoal}
+                        />
+                      ) : activeTab === "今日の行動" ? (
+                        <>
+                          <div className="section-header">
+                            <h3>
+                              今日の行動{" "}
+                              <small>
+                                {tasks.filter((t) => t.done).length}/
+                                {tasks.length} 完了
+                              </small>
+                            </h3>
+                            <button
+                              className="icon-button"
+                              aria-label="行動を追加"
+                              onClick={() => setModal({ kind: "task" })}
+                            >
+                              <Icon name="plus" />
+                            </button>
+                          </div>
+                          <TaskList
+                            tasks={tasks}
+                            toggleTask={toggleTask}
+                            expanded
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <div className="section-header">
+                            <h3>今週の振り返り</h3>
+                            <span className="week-label">4/21 – 4/27</span>
+                          </div>
+                          <div className="reflection-summary">
+                            <span className="reflection-icon">
+                              <Icon name="leaf" size={28} weight="duotone" />
+                            </span>
+                            <div>
+                              <strong>小さな一歩を、積み重ねる。</strong>
+                              <p>
+                                今週できたこと、気づいたことを残しましょう。
+                              </p>
+                            </div>
+                          </div>
+                          <textarea
+                            className="reflection-input"
+                            value={reflection}
+                            onChange={(e) => setReflection(e.target.value)}
+                            aria-label="今週の振り返り"
+                            placeholder="今週はどんな一歩を踏み出しましたか？"
+                          />
+                          <button
+                            className="text-link"
+                            disabled={
+                              !reflection.trim() ||
+                              reflection === savedReflection
+                            }
+                            onClick={() => {
+                              setSavedReflection(reflection);
+                              notify("振り返りを記録しました");
+                            }}
+                          >
+                            {savedReflection && reflection === savedReflection
+                              ? "記録しました"
+                              : "振り返りを記録"}
+                            <Icon name="check" size={15} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    <div className="today-card">
+                      <div className="section-header">
+                        <h3>
+                          <Icon
+                            name="shield"
+                            size={18}
+                            className="green-text"
+                            weight="duotone"
+                          />
+                          今日の行動
+                        </h3>
+                        <TextLink onClick={() => setActiveTab("今日の行動")} />
+                      </div>
+                      <TaskList tasks={tasks} toggleTask={toggleTask} />
+                      <button
+                        className="add-link"
+                        onClick={() => setModal({ kind: "task" })}
+                      >
+                        <Icon name="plus" size={16} />
+                        行動を追加
+                      </button>
+                      <div className="quote-card">
+                        <Icon name="quote" size={25} weight="fill" />
+                        <p>
+                          小さな行動の積み重ねが、
+                          <br />
+                          大きな変化をつくる。
+                        </p>
+                      </div>
+                    </div>
+                    <div className="learning-card">
+                      <div className="section-header">
+                        <h3>
+                          <Icon
+                            name="bulb"
+                            className="orange-text"
+                            size={18}
+                            weight="duotone"
+                          />
+                          最近の学び
+                        </h3>
+                        <TextLink
+                          onClick={() => setModal({ kind: "learnings" })}
+                        />
+                      </div>
+                      <ul>
+                        {learnings.map((learning) => (
+                          <li key={learning}>{learning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <aside
+                className={`panel detail-panel ${scopeClass[selected.scope]}`}
+                aria-label="選択した目標の詳細"
+              >
+                <div className="detail-heading">
+                  <span className={`detail-icon ${scopeClass[selected.scope]}`}>
+                    <Icon name={selected.icon} size={30} weight="duotone" />
+                  </span>
+                  <div>
+                    <Badge scope={selected.scope} />
+                    <h2>{selected.title}</h2>
+                    <p>{selected.subtitle}</p>
+                  </div>
+                  <div className="goal-menu">
+                    <button
+                      className="icon-button"
+                      aria-label="目標のメニュー"
+                      onClick={() => setMenu(!menu)}
+                    >
+                      <Icon name="more" size={25} weight="bold" />
+                    </button>
+                    {menu && (
+                      <div className="context-menu">
+                        <button
+                          onClick={() => {
+                            setModal({ kind: "editGoal" });
+                            setMenu(false);
+                          }}
+                        >
+                          <Icon name="note" size={17} />
+                          目標を編集
+                        </button>
+                        <button
+                          onClick={() => {
+                            setNextDone({ ...nextDone, [selected.id]: false });
+                            setMenu(false);
+                            notify("次の一歩を未完了に戻しました");
+                          }}
+                        >
+                          <Icon name="repeat" size={17} />
+                          次の一歩をリセット
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="detail-fields">
+                  <DetailRow icon="flag" label="目的">
+                    <div className="field-box">{selected.purpose}</div>
+                  </DetailRow>
+                  <DetailRow icon="chart" label="進捗">
+                    <Progress
+                      value={selected.progress}
+                      color={scopeClass[selected.scope]}
+                    />
+                  </DetailRow>
+                  <DetailRow icon="rocket" label="次の一歩">
+                    <label
+                      className={`next-step ${nextDone[selected.id] ? "done" : ""}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!nextDone[selected.id]}
+                        onChange={(e) => {
+                          setNextDone({
+                            ...nextDone,
+                            [selected.id]: e.target.checked,
+                          });
+                          if (e.target.checked) {
+                            notify("一歩前進しました！");
+                            setActivity((items) => [
+                              "次の一歩を完了しました",
+                              ...items,
+                            ]);
+                          }
+                        }}
+                      />
+                      <span>
+                        {selected.next}
+                        <small className="date-chip">4月25日（金）</small>
+                      </span>
+                    </label>
+                  </DetailRow>
+                  <DetailRow icon="graduation" label="関連する取り組み">
+                    <div className="related-list">
+                      {initiatives
+                        .filter((i) => i.goalId === selected.id)
+                        .map((i) => (
+                          <button
+                            key={i.id}
+                            onClick={() =>
+                              setModal({ kind: "initiativeDetail", id: i.id })
+                            }
+                          >
+                            <span
+                              className={`related-icon ${i.icon === "calendar" ? "pink" : "blue"}`}
+                            >
+                              <Icon name={i.icon} size={17} weight="duotone" />
+                            </span>
+                            {i.title.replace("\n", "")}
+                          </button>
+                        ))}
+                      {selected.id === "event" && (
+                        <button
+                          onClick={() => setModal({ kind: "initiative" })}
+                        >
+                          <span className="related-icon blue">
+                            <Icon name="link" size={17} />
+                          </span>
+                          地域の協力パートナーを探す
+                        </button>
+                      )}
+                      <button
+                        className="add-link"
+                        onClick={() => setModal({ kind: "initiative" })}
+                      >
+                        <Icon name="plus" size={16} />
+                        取り組みを追加
+                      </button>
+                    </div>
+                  </DetailRow>
+                  <DetailRow icon="note" label="メモ">
+                    <textarea
+                      key={selected.id}
+                      className="field-box memo-input"
+                      aria-label="目標のメモ"
+                      value={selected.memo}
+                      placeholder="この目標についてメモを残す"
+                      onChange={(e) =>
+                        setGoals(
+                          goals.map((g) =>
+                            g.id === selected.id
+                              ? { ...g, memo: e.target.value }
+                              : g,
+                          ),
+                        )
+                      }
+                    />
+                  </DetailRow>
+                </div>
+                <div className="activity-section">
+                  <div className="section-header">
+                    <h3>
+                      <Icon name="shield" size={19} />
+                      アクティビティ
+                    </h3>
+                    <TextLink onClick={() => setModal({ kind: "activity" })} />
+                  </div>
+                  <ActivityList activity={activity} />
+                </div>
+                <div className="detail-quote">
+                  <Icon
+                    name="leaf"
+                    size={25}
+                    className="green-text"
+                    weight="duotone"
+                  />
+                  <p>
+                    やってみたからこそ、わかったことがある。
+                    <br />
+                    それが、次の一歩につながる。
+                  </p>
+                </div>
+              </aside>
+            </div>
           </div>
-        </div>
+        ) : (
+          <DedicatedScreen
+            page={activeNav}
+            goals={goals}
+            tasks={tasks}
+            initiatives={initiatives}
+            selected={selected}
+            selectedId={selectedId}
+            scope={scope}
+            workspace={workspace}
+            quarter={quarter}
+            reflection={reflection}
+            savedReflection={savedReflection}
+            activity={activity}
+            onSelectGoal={selectGoal}
+            onChangeScope={changeScope}
+            onOpenInitiative={openInitiative}
+            onSetQuarter={setQuarter}
+            onToggleTask={toggleTask}
+            onAddTask={() => setModal({ kind: "task" })}
+            onChooseTemplate={(template) =>
+              setModal({ kind: "template", template })
+            }
+            onEditGoal={() => setModal({ kind: "editGoal" })}
+            onAddInitiative={() => setModal({ kind: "initiative" })}
+            onReflectionChange={setReflection}
+            onSaveReflection={() => {
+              setSavedReflection(reflection);
+              notify("振り返りを記録しました");
+            }}
+          />
+        )}
       </main>
       {toast && (
         <div className="toast" role="status">
@@ -1093,6 +1185,435 @@ export function App() {
       )}
     </div>
   );
+}
+
+type DedicatedScreenProps = {
+  page: NavigationLabel;
+  goals: Goal[];
+  tasks: Task[];
+  initiatives: Initiative[];
+  selected: Goal;
+  selectedId: string;
+  scope: Scope | "すべて";
+  workspace: Scope;
+  quarter: number;
+  reflection: string;
+  savedReflection: string;
+  activity: string[];
+  onSelectGoal: (id: string) => void;
+  onChangeScope: (scope: Scope | "すべて") => void;
+  onOpenInitiative: (id: string) => void;
+  onSetQuarter: (value: number) => void;
+  onToggleTask: (id: string) => void;
+  onAddTask: () => void;
+  onChooseTemplate: (template: string) => void;
+  onEditGoal: () => void;
+  onAddInitiative: () => void;
+  onReflectionChange: (value: string) => void;
+  onSaveReflection: () => void;
+};
+
+function DedicatedScreen({
+  page,
+  goals,
+  tasks,
+  initiatives,
+  selected,
+  selectedId,
+  scope,
+  workspace,
+  quarter,
+  reflection,
+  savedReflection,
+  activity,
+  onSelectGoal,
+  onChangeScope,
+  onOpenInitiative,
+  onSetQuarter,
+  onToggleTask,
+  onAddTask,
+  onChooseTemplate,
+  onEditGoal,
+  onAddInitiative,
+  onReflectionChange,
+  onSaveReflection,
+}: DedicatedScreenProps) {
+  const selectedInitiatives = initiatives.filter(
+    (item) => item.goalId === selected.id,
+  );
+  const doneCount = tasks.filter((task) => task.done).length;
+  const completion = tasks.length
+    ? Math.round((doneCount / tasks.length) * 100)
+    : 0;
+
+  if (page === "目標マップ") {
+    return (
+      <div className="page-content goal-map-screen">
+        <div className="goal-map-screen-grid">
+          <GoalMap
+            goals={goals}
+            initiatives={initiatives}
+            selected={selectedId}
+            onSelect={onSelectGoal}
+            scope={scope}
+            setScope={onChangeScope}
+            onInitiative={onOpenInitiative}
+          />
+          <section
+            className={`panel goal-overview ${scopeClass[selected.scope]}`}
+          >
+            <div className="goal-overview-heading">
+              <span className={`detail-icon ${scopeClass[selected.scope]}`}>
+                <Icon name={selected.icon} size={28} weight="duotone" />
+              </span>
+              <div>
+                <Badge scope={selected.scope} />
+                <h2>{selected.title}</h2>
+                <p>{selected.subtitle}</p>
+              </div>
+            </div>
+            <div className="goal-overview-progress">
+              <span>現在の進捗</span>
+              <Progress
+                value={selected.progress}
+                color={scopeClass[selected.scope]}
+              />
+            </div>
+            <div className="goal-overview-block">
+              <small>この目標の目的</small>
+              <p>{selected.purpose}</p>
+            </div>
+            <div className="goal-overview-block">
+              <small>次の一歩</small>
+              <strong>
+                <Icon name="rocket" size={18} weight="duotone" />
+                {selected.next}
+              </strong>
+            </div>
+            <div className="goal-overview-block">
+              <div className="section-header">
+                <small>関連する取り組み</small>
+                <button className="text-link" onClick={onAddInitiative}>
+                  <Icon name="plus" size={14} />
+                  追加
+                </button>
+              </div>
+              <div className="goal-initiative-list">
+                {selectedInitiatives.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => onOpenInitiative(item.id)}
+                  >
+                    <span
+                      className={`related-icon ${scopeClass[selected.scope]}`}
+                    >
+                      <Icon name={item.icon} size={18} weight="duotone" />
+                    </span>
+                    <span>
+                      <strong>{item.title.replace("\n", "")}</strong>
+                      <small>{item.progress}% 完了</small>
+                    </span>
+                    <Icon name="right" size={15} />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              className="secondary-button goal-edit-button"
+              onClick={onEditGoal}
+            >
+              <Icon name="note" size={17} />
+              この目標を編集
+            </button>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "タイムライン") {
+    return (
+      <div className="page-content timeline-screen">
+        <div className="screen-main-grid">
+          <section className="panel screen-primary-card dedicated-timeline-card">
+            <Timeline
+              quarter={quarter}
+              setQuarter={onSetQuarter}
+              goals={goals}
+              onSelect={onSelectGoal}
+            />
+          </section>
+          <aside className="panel screen-side-card milestone-panel">
+            <div className="section-header">
+              <h2>目標の進捗</h2>
+              <span className="eyebrow">全{goals.length}件</span>
+            </div>
+            <div className="milestone-list">
+              {goals.map((goal) => (
+                <button key={goal.id} onClick={() => onSelectGoal(goal.id)}>
+                  <span className={`milestone-icon ${scopeClass[goal.scope]}`}>
+                    <Icon name={goal.icon} size={20} weight="duotone" />
+                  </span>
+                  <span>
+                    <strong>{goal.title}</strong>
+                    <Progress
+                      value={goal.progress}
+                      color={scopeClass[goal.scope]}
+                    />
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "今日の行動") {
+    const orderedTasks = [...tasks].sort(compareTasksByDone);
+    return (
+      <div className="page-content today-screen">
+        <div className="metric-grid" aria-label="今日の進捗">
+          <section className="panel metric-card blue">
+            <span className="metric-icon">
+              <Icon name="tasks" size={23} weight="duotone" />
+            </span>
+            <span>
+              <small>今日の行動</small>
+              <strong>{tasks.length}件</strong>
+            </span>
+          </section>
+          <section className="panel metric-card green">
+            <span className="metric-icon">
+              <Icon name="check" size={23} weight="bold" />
+            </span>
+            <span>
+              <small>完了</small>
+              <strong>{doneCount}件</strong>
+            </span>
+          </section>
+          <section className="panel metric-card purple">
+            <span className="metric-icon">
+              <Icon name="chart" size={23} weight="duotone" />
+            </span>
+            <span>
+              <small>達成率</small>
+              <strong>{completion}%</strong>
+            </span>
+          </section>
+        </div>
+        <section className="panel screen-primary-card action-list-panel">
+          <div className="screen-card-header">
+            <div>
+              <span className="eyebrow">{workspace}ワークスペース</span>
+              <h2>今日やること</h2>
+              <p>未完了の行動から順に表示しています。</p>
+            </div>
+            <button className="primary-button" onClick={onAddTask}>
+              <Icon name="plus" size={18} />
+              行動を追加
+            </button>
+          </div>
+          <TaskList tasks={orderedTasks} toggleTask={onToggleTask} expanded />
+          <div className="action-progress-footer">
+            <span>
+              {doneCount} / {tasks.length}件を完了
+            </span>
+            <Progress value={completion} color="green" />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (page === "振り返り") {
+    return (
+      <div className="page-content reflection-screen">
+        <div className="screen-main-grid reflection-grid">
+          <section className="panel screen-primary-card reflection-editor-card">
+            <div className="reflection-lead">
+              <span className="reflection-icon">
+                <Icon name="leaf" size={30} weight="duotone" />
+              </span>
+              <div>
+                <span className="eyebrow">今週の振り返り · 4/21 – 4/27</span>
+                <h2>小さな一歩を、次の力に。</h2>
+                <p>
+                  できたこと、気づいたこと、次に試したいことを自由に残しましょう。
+                </p>
+              </div>
+            </div>
+            <label
+              className="reflection-editor-label"
+              htmlFor="weekly-reflection"
+            >
+              今週はどんな一歩を踏み出しましたか？
+            </label>
+            <textarea
+              id="weekly-reflection"
+              className="reflection-page-input"
+              value={reflection}
+              onChange={(event) => onReflectionChange(event.target.value)}
+              placeholder="例：会場候補を3つまで絞れた。次は実際に現地を見て、参加する人が過ごしやすい場所か確かめたい。"
+            />
+            <div className="reflection-actions">
+              <span>
+                {savedReflection && reflection === savedReflection
+                  ? "保存済みです"
+                  : "内容はこのセッション中保存されます"}
+              </span>
+              <button
+                className="primary-button"
+                disabled={!reflection.trim() || reflection === savedReflection}
+                onClick={onSaveReflection}
+              >
+                <Icon name="check" size={18} />
+                振り返りを記録
+              </button>
+            </div>
+          </section>
+          <aside className="panel screen-side-card learning-history-panel">
+            <div className="section-header">
+              <h2>最近の学び</h2>
+              <Icon name="bulb" size={21} className="orange-text" />
+            </div>
+            <ul>
+              {learnings.map((learning, index) => (
+                <li key={learning}>
+                  <span>{index + 1}</span>
+                  <p>{learning}</p>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "テンプレート") {
+    return (
+      <div className="page-content template-screen">
+        <div className="screen-card-header template-screen-heading">
+          <div>
+            <span className="eyebrow">5つのスタート地点</span>
+            <h2>どんな形で始めますか？</h2>
+            <p>
+              あとから自由に編集できるので、今の目的に近いものを選んでください。
+            </p>
+          </div>
+        </div>
+        <div className="template-screen-grid">
+          {templates.map((template, index) => (
+            <button
+              key={template.title}
+              className={`panel template-screen-card ${template.color}`}
+              onClick={() => onChooseTemplate(template.title)}
+            >
+              <span className="template-number">0{index + 1}</span>
+              <span className="template-screen-icon">
+                <Icon name={template.icon} size={31} weight="duotone" />
+              </span>
+              <span className="template-screen-copy">
+                <strong>{template.title}</strong>
+                <small>{template.description}</small>
+              </span>
+              <span className="template-start">
+                このテンプレートで始める
+                <Icon name="arrow" size={16} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (page === "メンバー") {
+    return (
+      <div className="page-content members-screen">
+        <div className="metric-grid member-metrics">
+          <section className="panel metric-card purple">
+            <span className="metric-icon">
+              <Icon name="users" size={23} weight="duotone" />
+            </span>
+            <span>
+              <small>メンバー</small>
+              <strong>2名</strong>
+            </span>
+          </section>
+          <section className="panel metric-card blue">
+            <span className="metric-icon">
+              <Icon name="target" size={23} weight="duotone" />
+            </span>
+            <span>
+              <small>共有目標</small>
+              <strong>
+                {goals.filter((goal) => goal.scope === "チーム").length}件
+              </strong>
+            </span>
+          </section>
+          <section className="panel metric-card green">
+            <span className="metric-icon">
+              <Icon name="check" size={23} weight="bold" />
+            </span>
+            <span>
+              <small>今週の前進</small>
+              <strong>{activity.length + 3}件</strong>
+            </span>
+          </section>
+        </div>
+        <section className="panel screen-primary-card members-panel">
+          <div className="screen-card-header">
+            <div>
+              <span className="eyebrow">{workspace}ワークスペース</span>
+              <h2>一緒に進めるメンバー</h2>
+              <p>それぞれが担当している目標と、最近の状況を確認できます。</p>
+            </div>
+          </div>
+          <div className="member-card-grid">
+            <article className="member-card">
+              <div className="member-identity">
+                <Avatar size={58} />
+                <span>
+                  <strong>やまだ はるか</strong>
+                  <small>haruka@pathbase.io</small>
+                </span>
+                <span className="you-chip">あなた</span>
+              </div>
+              <div className="member-focus">
+                <small>担当している目標</small>
+                <strong>地域イベントを開催する</strong>
+                <Progress value={40} color="purple" />
+              </div>
+            </article>
+            <article className="member-card">
+              <div className="member-identity">
+                <Avatar male size={58} />
+                <span>
+                  <strong>佐藤 健太</strong>
+                  <small>kenta@pathbase.io</small>
+                </span>
+                <Badge scope="チーム" />
+              </div>
+              <div className="member-focus">
+                <small>担当している取り組み</small>
+                <strong>広報・集客を行う</strong>
+                <Progress value={40} color="purple" />
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function compareTasksByDone(a: Task, b: Task) {
+  return Number(a.done) - Number(b.done);
 }
 
 function DetailRow({
