@@ -118,8 +118,8 @@ impl FieldClient {
             401 => {
                 return Err(ApiError::new(
                     401,
-                    "UNAUTHENTICATED",
-                    "Tachyonの認証期限が切れています",
+                    "FIELD_AUTH_REJECTED",
+                    "Fieldが現在のTachyon認証を受け付けませんでした。テナントとField権限を確認してください",
                 ))
             }
             403 => {

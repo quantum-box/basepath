@@ -408,6 +408,151 @@ fn invitations_are_targeted_expiring_revocable_and_not_agent_controlled() {
 }
 
 #[test]
+fn revoked_or_expired_invitation_creation_replay_never_looks_pending() {
+    let (_dir, s, w) = setup();
+    let base = format!("/v1/workspaces/{w}");
+    let body = json!({
+        "target_actor":"us_guest",
+        "role":"editor",
+        "expected_version":revision(&s,&w,"us_owner")
+    });
+    let first = s
+        .handle(
+            &actor("us_owner"),
+            "POST",
+            &format!("{base}/invitations"),
+            &HashMap::new(),
+            body.clone(),
+            Some("create-guest-invite"),
+        )
+        .unwrap();
+    req(
+        &s,
+        "us_owner",
+        "DELETE",
+        &format!("{base}/invitations/{}", first["id"].as_str().unwrap()),
+        json!({"expected_version":revision(&s,&w,"us_owner")}),
+    )
+    .unwrap();
+    assert_eq!(
+        s.handle(
+            &actor("us_owner"),
+            "POST",
+            &format!("{base}/invitations"),
+            &HashMap::new(),
+            body,
+            Some("create-guest-invite"),
+        )
+        .unwrap_err()
+        .code,
+        "INVITATION_UNAVAILABLE"
+    );
+
+    let expired_body = json!({
+        "target_actor":"us_future",
+        "role":"viewer",
+        "expected_version":revision(&s,&w,"us_owner")
+    });
+    let expired = s
+        .handle(
+            &actor("us_owner"),
+            "POST",
+            &format!("{base}/invitations"),
+            &HashMap::new(),
+            expired_body.clone(),
+            Some("create-future-invite"),
+        )
+        .unwrap();
+    s.db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE invitations SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?1",
+            [expired["id"].as_str().unwrap()],
+        )
+        .unwrap();
+    assert_eq!(
+        s.handle(
+            &actor("us_owner"),
+            "POST",
+            &format!("{base}/invitations"),
+            &HashMap::new(),
+            expired_body,
+            Some("create-future-invite"),
+        )
+        .unwrap_err()
+        .code,
+        "INVITATION_UNAVAILABLE"
+    );
+    // A fresh key can replace an expired invitation, while the old invitation
+    // remains unavailable to its recipient.
+    assert!(req(
+        &s,
+        "us_owner",
+        "POST",
+        &format!("{base}/invitations"),
+        json!({
+            "target_actor":"us_future",
+            "role":"viewer",
+            "expected_version":revision(&s,&w,"us_owner")
+        }),
+    )
+    .is_ok());
+    assert_eq!(
+        accept(&s, &expired, "us_future").unwrap_err().code,
+        "INVITATION_UNAVAILABLE"
+    );
+}
+
+#[test]
+fn invitation_ids_cannot_cross_workspace_management_boundaries() {
+    let (_dir, s, first_workspace) = setup();
+    let second_workspace = req(
+        &s,
+        "us_owner",
+        "POST",
+        "/v1/workspaces",
+        json!({"name":"別のチーム","scope":"チーム"}),
+    )
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invitation = invite(&s, &second_workspace, "us_owner", "us_guest", "viewer");
+
+    assert_eq!(
+        req(
+            &s,
+            "us_owner",
+            "DELETE",
+            &format!(
+                "/v1/workspaces/{first_workspace}/invitations/{}",
+                invitation["id"].as_str().unwrap()
+            ),
+            json!({"expected_version":revision(&s,&first_workspace,"us_owner")}),
+        )
+        .unwrap_err()
+        .status,
+        404
+    );
+    assert_eq!(
+        accept(&s, &invitation, "us_guest").unwrap()["workspace_id"],
+        second_workspace
+    );
+    assert_eq!(
+        req(
+            &s,
+            "us_guest",
+            "GET",
+            &format!("/v1/workspaces/{first_workspace}/members"),
+            json!({}),
+        )
+        .unwrap_err()
+        .status,
+        404
+    );
+}
+
+#[test]
 fn local_and_personal_workspaces_cannot_be_shared_and_creation_is_idempotent() {
     let (dir, s, _w) = setup();
     let workspaces = req(&s, "us_owner", "GET", "/v1/workspaces", json!({})).unwrap();

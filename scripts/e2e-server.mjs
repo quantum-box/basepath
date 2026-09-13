@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const apiPort = process.env.PATHBASE_E2E_API_PORT || "1435";
+const webPort = Number(process.env.PATHBASE_E2E_WEB_PORT || "1425");
 const binary = path.resolve(
   process.env.PATHBASE_E2E_API_BIN ||
     path.join(root, "api/target/debug/pathbase-api"),
@@ -26,7 +28,7 @@ Object.assign(process.env, {
   PATHBASE_MODE: "local-preview",
   PATHBASE_DB: path.join(directory, "test.sqlite3"),
   PATHBASE_API_TOKEN: randomBytes(32).toString("hex"),
-  PATHBASE_API_PORT: "1435",
+  PATHBASE_API_PORT: apiPort,
   PATHBASE_SEED_DEMO: "0",
 });
 
@@ -70,7 +72,7 @@ try {
   let ready = false;
   for (let attempt = 0; attempt < 100 && !stopping; attempt++) {
     try {
-      const response = await fetch("http://127.0.0.1:1435/v1/me", {
+      const response = await fetch(`http://127.0.0.1:${apiPort}/v1/me`, {
         headers: { Authorization: `Bearer ${process.env.PATHBASE_API_TOKEN}` },
         signal: AbortSignal.timeout(500),
       });
@@ -87,10 +89,10 @@ try {
   vite = await createServer({
     root,
     envDir: directory,
-    server: { host: "127.0.0.1", port: 1425, strictPort: true },
+    server: { host: "127.0.0.1", port: webPort, strictPort: true },
   });
   await vite.listen();
-  console.log("Isolated E2E app ready at http://127.0.0.1:1425");
+  console.log(`Isolated E2E app ready at http://127.0.0.1:${webPort}`);
 } catch (error) {
   console.error(error.message);
   await stop(1);

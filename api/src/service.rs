@@ -101,6 +101,43 @@ fn validate_item(db: &Connection, item: &Item) -> Result<()> {
     if !["draft", "active", "paused", "done", "abandoned"].contains(&item.state.as_str()) {
         return Err(ApiError::invalid("不明な状態です"));
     }
+    if item
+        .fields
+        .priority
+        .as_deref()
+        .is_some_and(|priority| !["low", "medium", "high", "urgent"].contains(&priority))
+    {
+        return Err(ApiError::invalid("優先度を確認してください"));
+    }
+    if let Some(assignee) = &item.fields.assignee_id {
+        let member: Option<String> = db
+            .query_row(
+                "SELECT actor FROM memberships WHERE workspace_id=?1 AND actor=?2",
+                params![item.workspace_id, assignee],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if member.is_none() {
+            return Err(ApiError::invalid(
+                "担当者は現在のワークスペースメンバーから選択してください",
+            ));
+        }
+        let workspace: Workspace = serde_json::from_str(&db.query_row(
+            "SELECT body FROM workspaces WHERE id=?1",
+            [&item.workspace_id],
+            |row| row.get::<_, String>(0),
+        )?)?;
+        if workspace.scope == "個人" {
+            let owner: String = db.query_row(
+                "SELECT actor FROM memberships WHERE workspace_id=?1 AND role='owner' LIMIT 1",
+                [&item.workspace_id],
+                |row| row.get(0),
+            )?;
+            if assignee != &owner {
+                return Err(ApiError::invalid("個人領域では本人だけを担当者にできます"));
+            }
+        }
+    }
     date(&item.start_date)?;
     date(&item.due_date)?;
     date(&item.scheduled_date)?;
@@ -150,6 +187,73 @@ fn validate_item(db: &Connection, item: &Item) -> Result<()> {
         if next.kind != "action" {
             return Err(ApiError::invalid("次の一歩には行動を指定してください"));
         }
+    }
+    Ok(())
+}
+
+fn create_notification(
+    db: &Connection,
+    item: &Item,
+    recipient: &str,
+    kind: &str,
+    discriminator: &str,
+    title: String,
+) -> Result<()> {
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(format!(
+            "{}\n{}\n{}\n{}\n{}",
+            item.workspace_id, item.id, recipient, kind, discriminator
+        ))
+    );
+    let notification = Notification {
+        id: format!("notification_{}", &digest[..24]),
+        workspace_id: item.workspace_id.clone(),
+        recipient: recipient.into(),
+        item_id: item.id.clone(),
+        kind: kind.into(),
+        title,
+        created_at: now(),
+        read_at: None,
+    };
+    db.execute(
+        "INSERT OR IGNORE INTO documents(workspace_id,collection,id,body) VALUES(?1,'notifications',?2,?3)",
+        params![item.workspace_id, notification.id, serde_json::to_string(&notification)?],
+    )?;
+    Ok(())
+}
+
+fn sync_due_notifications(db: &Connection, workspace_id: &str, actor: &str) -> Result<()> {
+    let workspace: Workspace = serde_json::from_str(&db.query_row(
+        "SELECT body FROM workspaces WHERE id=?1",
+        [workspace_id],
+        |row| row.get::<_, String>(0),
+    )?)?;
+    let timezone: chrono_tz::Tz = workspace
+        .timezone
+        .parse()
+        .map_err(|_| ApiError::invalid("ワークスペースのタイムゾーンが不正です"))?;
+    let today = Utc::now().with_timezone(&timezone).date_naive();
+    for item in list::<Item>(db, workspace_id, "items")? {
+        if item.archived_at.is_some()
+            || item.state == "done"
+            || item.fields.assignee_id.as_deref() != Some(actor)
+        {
+            continue;
+        }
+        let Some(raw_due) = item.due_date.as_deref() else {
+            continue;
+        };
+        let due = NaiveDate::parse_from_str(raw_due, "%Y-%m-%d")
+            .map_err(|_| ApiError::invalid("期限の日付が不正です"))?;
+        let days = (due - today).num_days();
+        let (kind, title) = match days {
+            value if value < 0 => ("overdue", format!("期限超過: 「{}」", item.title)),
+            0 => ("due_today", format!("今日が期限です: 「{}」", item.title)),
+            1..=7 => ("due_soon", format!("7日以内が期限です: 「{}」", item.title)),
+            _ => continue,
+        };
+        create_notification(db, &item, actor, kind, raw_due, title)?;
     }
     Ok(())
 }
@@ -312,12 +416,19 @@ impl Service {
         } else {
             ""
         };
-        let workspace_write =
-            method != "GET" && parts.as_slice() != ["v1", "workspaces", w, "leave"];
+        let notification_read = method == "PATCH"
+            && parts.get(3) == Some(&"notifications")
+            && parts.get(5) == Some(&"read");
+        let workspace_write = method != "GET"
+            && !notification_read
+            && parts.as_slice() != ["v1", "workspaces", w, "leave"];
         if !w.is_empty() {
             authorize(&db, &actor.id, w, workspace_write)?;
         }
         if method == "GET" {
+            if parts.get(3) == Some(&"snapshot") && !w.is_empty() {
+                sync_due_notifications(&db, w, &actor.id)?;
+            }
             let tx = db.transaction()?;
             return dispatch(&tx, actor, method, path, query, &body);
         }
@@ -357,7 +468,9 @@ impl Service {
                     "この再送キーは別の入力で使用されています",
                 ));
             }
-            return Ok(serde_json::from_str(&response)?);
+            let response = serde_json::from_str(&response)?;
+            crate::collaboration::authorize_replay(&tx, method, &parts, &response)?;
+            return Ok(response);
         }
         let result = dispatch(&tx, actor, method, path, query, &body)?;
         tx.execute(
@@ -433,7 +546,8 @@ pub fn dispatch(
     let col = p[3];
     let id = p.get(4).copied().unwrap_or("");
     let suffix = p.get(5).copied().unwrap_or("");
-    authorize(db, &actor.id, w, method != "GET")?;
+    let notification_read = method == "PATCH" && col == "notifications" && suffix == "read";
+    authorize(db, &actor.id, w, method != "GET" && !notification_read)?;
     if actor.agent
         && method != "GET"
         && !(col == "changesets" && (id == "preview" || suffix == "apply"))
@@ -459,6 +573,12 @@ pub fn dispatch(
             for col in cols {
                 result[col] = value(list::<Value>(db, w, col)?)?;
             }
+            result["notifications"] = value(
+                list::<Notification>(db, w, "notifications")?
+                    .into_iter()
+                    .filter(|notification| notification.recipient == actor.id)
+                    .collect::<Vec<_>>(),
+            )?;
             Ok(result)
         }
         ("GET", "graph", "", "") => {
@@ -648,6 +768,16 @@ pub fn dispatch(
                 }
             }
             put(db, w, "items", &item.id, &item)?;
+            if let Some(assignee) = &item.fields.assignee_id {
+                create_notification(
+                    db,
+                    &item,
+                    assignee,
+                    "assignment",
+                    &item.version.to_string(),
+                    format!("「{}」の担当になりました", item.title),
+                )?;
+            }
             if let Some(parent) = body["parent_id"].as_str() {
                 let r = Relation {
                     id: new_id("rel"),
@@ -718,8 +848,50 @@ pub fn dispatch(
                 let rec = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],"record_type":"recurrence_change","body":serde_json::to_string(&old.fields.recurrence)?,"happened_at":now(),"created_at":now(),"author":actor.id});
                 put(db, w, "records", text(&rec, "id"), &rec)?;
             }
+            if old.fields.assignee_id != item.fields.assignee_id {
+                let record = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],"record_type":"assignment_change","body":json!({"from":old.fields.assignee_id,"to":item.fields.assignee_id}).to_string(),"happened_at":now(),"created_at":now(),"author":actor.id});
+                put(db, w, "records", text(&record, "id"), &record)?;
+                if let Some(assignee) = &item.fields.assignee_id {
+                    create_notification(
+                        db,
+                        &item,
+                        assignee,
+                        "assignment",
+                        &item.version.to_string(),
+                        format!("「{}」の担当になりました", item.title),
+                    )?;
+                }
+            }
+            if old.start_date != item.start_date || old.due_date != item.due_date {
+                let record = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],"record_type":"schedule_change","body":json!({"start_date":{"from":old.start_date,"to":item.start_date},"due_date":{"from":old.due_date,"to":item.due_date}}).to_string(),"happened_at":now(),"created_at":now(),"author":actor.id});
+                put(db, w, "records", text(&record, "id"), &record)?;
+                if let Some(assignee) = &item.fields.assignee_id {
+                    create_notification(
+                        db,
+                        &item,
+                        assignee,
+                        "due_date",
+                        item.due_date.as_deref().unwrap_or("none"),
+                        format!("「{}」の期限が更新されました", item.title),
+                    )?;
+                }
+            }
             put(db, w, "items", id, &item)?;
             value(item)
+        }
+        ("PATCH", "notifications", id, "read") if !id.is_empty() => {
+            only(body, &["read"])?;
+            let mut notification: Notification = get(db, w, "notifications", id)?;
+            if notification.recipient != actor.id {
+                return Err(ApiError::missing());
+            }
+            notification.read_at = if body["read"].as_bool() == Some(false) {
+                None
+            } else {
+                Some(now())
+            };
+            put(db, w, "notifications", id, &notification)?;
+            value(notification)
         }
         ("POST", "actions", id, "complete" | "reopen" | "skip") => {
             only(
@@ -797,6 +969,18 @@ pub fn dispatch(
             };
             put(db, w, "items", id, &item)?;
             put(db, w, "records", &rec.id, &rec)?;
+            if suffix == "complete" {
+                if let Some(assignee) = item.fields.assignee_id.clone() {
+                    create_notification(
+                        db,
+                        &item,
+                        &assignee,
+                        "completion",
+                        rec.occurrence_key.as_deref().unwrap_or(&rec.id),
+                        format!("「{}」が完了しました", item.title),
+                    )?;
+                }
+            }
             Ok(json!({"item":item,"record":rec,"outcome_updated":false}))
         }
         ("POST", "relations", "", "") => {
