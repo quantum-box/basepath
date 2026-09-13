@@ -5,7 +5,7 @@ User decisions (2026-09-12): preserve the existing UI; API in Rust; reuse Field 
 ## Runtime contracts
 
 - Tachyon canonical identity: `POST /auth/v1beta/verify` with the current bearer token and `{ token }`; the verified `user.id` identifies the user.
-- Tenant discovery: `GET /get_tenants?required_action=field:ViewSalesAnalytics`, with `x-operator-id` and `x-platform-id`.
+- Tenant discovery: `POST /get_tenants?required_action=field:ViewSalesAnalytics`, with `x-operator-id` and `x-platform-id`.
 - Field tasks: `GET /v1/erp/sales-tasks?limit=50&offset=N` and `GET /v1/erp/sales-tasks/{id}`, using camelCase response fields and the user's task permissions.
 - Field metrics: `GET /v1/erp/sales-contracts/metrics`. Missing observations remain missing.
 - Configure the registered OIDC issuer and client explicitly. Authentication failures return 401; permission failures return 403.
@@ -28,8 +28,10 @@ Set the variables in `.env.example` through the deployment environment. Do not p
 
 Native debug builds use the same Rust service over Tauri IPC with a separate local preview database. Authenticated native builds load `PATHBASE_WEB_URL` so the same Tachyon session and same-origin API work in the webview. Release builds do not fall back to the local owner when that URL is absent.
 
-## Pending real-environment verification
+## Real-environment verification
 
-Tachyon client registration, registered callback, issuer and Field deployment context have not been provided for this app. Local contract tests can verify the adapters, but do not establish successful login or live access to production Field. No existing upstream app credentials or user tokens are reused implicitly.
+`tachyon.yml` declares the `pathbase-local` public PKCE client for the PathBase tenant. Its exact localhost callback is registered with Tachyon, and `.env.example` records the non-secret client identifier plus the canonical Tachyon and Field endpoints. Apply the manifest with an authenticated Tachyon CLI profile before using a fresh tenant; the generated client has no secret. No existing upstream app credentials or user tokens are reused implicitly.
+
+The unauthenticated preflight has reached OIDC Discovery, Tachyon token verification and the production Field tenant-discovery boundary. A successful user login and that user's authorized production Field data still require an interactive sign-in and must be verified separately.
 
 設定を登録したら`npm run preflight`で、値そのものを表示せずに設定形式と公開認証境界への到達性を確認する。プリフライトが成功しても利用者の権限は証明しないため、続けて実ユーザーでログインし、許可されたFieldデータ、401、403、期限切れを確認する。

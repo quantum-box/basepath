@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{OriginalUri, State},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode},
     response::{IntoResponse, Response},
     Json, Router,
 };
@@ -31,6 +31,7 @@ struct MockState {
 async fn mock(
     State(s): State<MockState>,
     OriginalUri(uri): OriginalUri,
+    method: Method,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -55,6 +56,7 @@ async fn mock(
             Json(json!({"user":{"id":"us_verified","name":"Verified user","email":null,"tenants":["do-not-trust-callback-memberships"]}})).into_response()
         },
         "/get_tenants"=> {
+            assert_eq!(method, Method::POST);
             assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
             if headers.get("authorization").is_none() {
                 return StatusCode::UNAUTHORIZED.into_response();

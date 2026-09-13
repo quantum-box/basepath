@@ -1,0 +1,17 @@
+apiVersion: apps.tachy.one/v1alpha
+kind: OAuth2Client
+metadata:
+  name: pathbase-local
+  tenantId: tn_01m2a6ztfmd95p70gwgyshbevq
+spec:
+  clientType: public
+  redirectUris:
+    - http://localhost:1420/api/auth/callback
+  allowedScopes:
+    - openid
+    - profile
+    - email
+  grantTypes:
+    - authorization_code
+    - refresh_token
+  useTachyonUserPool: true

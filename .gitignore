@@ -15,3 +15,5 @@ data/
 test-results/
 playwright-report/
 .cache/
+*.tfstate
+*.tfstate.backup
