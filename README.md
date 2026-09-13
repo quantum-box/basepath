@@ -51,7 +51,9 @@ Fieldは現在のユーザーのTachyonトークンと正規のテナント文�
 PATHBASE_MODE=local-preview PATHBASE_DB=/absolute/path/to/data/pathbase.sqlite3 npm run --silent api:mcp
 ```
 
-13個のツール、項目のResource Template、3個のPromptを提供します。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。ホスト型MCP、OAuth委譲、将来のMCP仕様用アダプタは含めていません。
+remote MCP は Streamable HTTP の `/mcp`（`PATHBASE_WEB_ROOT` 使用時は `/api/mcp`）で提供できます。`PATHBASE_MCP_TOKEN`（32文字以上）、`PATHBASE_MCP_ACTOR_ID`、`PATHBASE_MCP_ALLOWED_HOSTS` をサーバー環境に設定した場合だけ有効になります。MCPクライアントは `Authorization: Bearer ...` を送ります。actorは既存のPathBaseメンバーである必要があり、各操作でもワークスペース権限が再検証されます。この固定token方式は信頼できる単一クライアント向けで、ユーザーごとのOAuth委譲ではありません。
+
+13個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 
 ## 検証
 
