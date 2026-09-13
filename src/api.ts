@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 export type Recurrence = {
   mode: "period_quota" | "fixed_schedule";
   times_per_week: number;
@@ -175,7 +175,7 @@ export async function request<T>(
   key: string = crypto.randomUUID(),
 ): Promise<T> {
   if (
-    "__TAURI_INTERNALS__" in window &&
+    isTauri() &&
     (location.protocol === "tauri:" ||
       location.hostname === "tauri.localhost" ||
       location.port === "1420")
