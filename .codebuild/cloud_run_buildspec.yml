@@ -67,11 +67,11 @@ phases:
             && [ -f "${CODEBUILD_SRC_DIR}/${ROOT_DIRECTORY}/Dockerfile" ]; then
           echo "DOCKER_FILE=${CODEBUILD_SRC_DIR}/${ROOT_DIRECTORY}/Dockerfile" \
             >> /tmp/build_env.sh
-          echo "DOCKER_CONTEXT=${CODEBUILD_SRC_DIR}" >> /tmp/build_env.sh
+          echo "BUILD_CONTEXT=${CODEBUILD_SRC_DIR}" >> /tmp/build_env.sh
           echo "Using Dockerfile from ${ROOT_DIRECTORY} with repo-root context"
         elif [ -f "${CODEBUILD_SRC_DIR}/Dockerfile" ]; then
           echo "DOCKER_FILE=${CODEBUILD_SRC_DIR}/Dockerfile" >> /tmp/build_env.sh
-          echo "DOCKER_CONTEXT=${CODEBUILD_SRC_DIR}" >> /tmp/build_env.sh
+          echo "BUILD_CONTEXT=${CODEBUILD_SRC_DIR}" >> /tmp/build_env.sh
           echo "Using repo-root Dockerfile"
         else
           echo "ERROR: No Dockerfile found. Set ROOT_DIRECTORY or place a Dockerfile at repo root."
@@ -86,7 +86,7 @@ phases:
         docker build \
           -t "${IMAGE_URI}" \
           -f "${DOCKER_FILE}" \
-          "${DOCKER_CONTEXT}" \
+          "${BUILD_CONTEXT}" \
           2>&1 | tee -a /tmp/build.log
   post_build:
     commands:
