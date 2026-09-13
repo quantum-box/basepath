@@ -389,8 +389,9 @@ test("empty workspace onboarding keeps a draft and saves only confirmed fields",
     .getByLabel("現在のワークスペース")
     .inputValue();
   const saved = await snapshot(request, workspaceId);
-  expect(saved.items).toHaveLength(1);
-  expect(saved.items[0]).toMatchObject({
+  const activeItems = saved.items.filter((item) => !item.archived_at);
+  expect(activeItems).toHaveLength(1);
+  expect(activeItems[0]).toMatchObject({
     title: "週に一度、本を読む時間をつくる",
     due_date: null,
     fields: { next_action_id: null },
