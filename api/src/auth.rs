@@ -39,7 +39,9 @@ impl AuthConfig {
         let config = Self {
             issuer: required("TACHYON_OIDC_ISSUER")?,
             client_id: required("TACHYON_OIDC_CLIENT_ID")?,
-            client_secret: std::env::var("TACHYON_OIDC_CLIENT_SECRET").ok(),
+            client_secret: std::env::var("TACHYON_OIDC_CLIENT_SECRET")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
             redirect_uri: required("TACHYON_OIDC_REDIRECT_URI")?,
             public_url: required("PATHBASE_PUBLIC_URL")?,
             tachyon_api_url: required("TACHYON_API_URL")?,

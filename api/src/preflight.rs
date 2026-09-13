@@ -65,11 +65,17 @@ fn classify_auth_boundary(
             "ok",
             format!("{label}へ到達し、未認証要求が拒否されました"),
         ),
-        400 | 405 | 422 => check(
+        400 | 422 => check(
             checks,
             name,
             "warning",
             format!("{label}へ到達しましたが、未認証要求への応答はHTTP {status}でした"),
+        ),
+        405 => check(
+            checks,
+            name,
+            "error",
+            format!("{label}が必要なHTTPメソッドを受け付けません"),
         ),
         200..=299 => check(
             checks,
@@ -229,4 +235,16 @@ pub async fn run_from_env() -> PreflightReport {
         )))
     };
     run(mode, auth_config, client_secret_configured, field_config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_not_allowed_is_a_preflight_error() {
+        let mut checks = Vec::new();
+        classify_auth_boundary(&mut checks, "boundary", "Upstream", 405);
+        assert_eq!(checks[0].status, "error");
+    }
 }
