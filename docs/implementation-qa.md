@@ -52,6 +52,14 @@ No production token, password, client secret, tenant identifier, or developer da
 
 ## Production connection recheck — 2026-09-14
 
-The shared-platform Cloud App has the Tachyon OAuth client, Field endpoint and canonical Field platform/root context configured. Its production session key is stored as a secret app environment variable, and the manifest now references that server-side secret without containing key material. Builds from `main` complete successfully.
+The shared-platform Cloud App has the Tachyon OAuth client, Field endpoint and canonical Field platform/root context configured. Its production session key is stored out of band as the encrypted `PATHBASE_SESSION_KEYS` app environment variable on `pathbase-api`; it is intentionally not declared in `tachyon.yml`, so applying the manifest never commits or replaces key material. Provision or rotate it through Tachyon CLI's stdin-only secret path (with shell history/command tracing disabled):
+
+```sh
+<session-key-generator> | tachyon compute env set pathbase-api \
+  --secret PATHBASE_SESSION_KEYS --value - --target all \
+  --tenant-id <tenant-id>
+```
+
+Never place the value in the command line, manifest, logs, issue, or pull request. Confirm only that `tachyon compute env list pathbase-api --tenant-id <tenant-id>` reports the masked secret, then trigger a new `pathbase-api` build. Builds from `main` complete successfully when this app secret exists.
 
 The live URL cannot yet be used for an authenticated Tachyon/Field acceptance pass: every current Cloud Run deployment fails in the provider with `404 Not Found`, and `https://pathbase.txcloud.app/api/health` consequently returns the routing-layer response `No route for: pathbase`. This is a deployment-provider failure after a successful image build, not evidence of a Tachyon or Field authorization result. Do not mark live Field access verified until a deployment has a public URL, `/api/health` returns 200, and an authenticated user can select a current Tachyon tenant and read an authorized Field resource.
