@@ -301,20 +301,36 @@ async fn field_endpoint(
         .map(String::as_str)
         .or(body["tenant_id"].as_str())
         .unwrap_or("");
+    let selected_tenant = session.selected_tenant.as_deref().ok_or_else(|| {
+        ApiError::new(
+            428,
+            "TENANT_SELECTION_REQUIRED",
+            "利用するTachyonテナントを選択してください",
+        )
+    })?;
     if method == "GET" {
         return match path {
-            "/v1/integrations/field/tenants" => {
-                storage::value(field.tenants(&session.access_token).await?)
-            }
+            "/v1/integrations/field/tenants" => storage::value(
+                field
+                    .tenants(&session.access_token)
+                    .await?
+                    .into_iter()
+                    .filter(|candidate| candidate.id == selected_tenant)
+                    .collect::<Vec<_>>(),
+            ),
             "/v1/integrations/field/tasks" => {
+                require_selected_field_tenant(selected_tenant, tenant)?;
                 let offset = q.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0);
                 Ok(
                     json!({"items":field.tasks(&session.access_token,tenant,offset).await?,"offset":offset,"limit":50}),
                 )
             }
-            "/v1/integrations/field/metrics" => Ok(
-                json!({"values":field.metrics(&session.access_token,tenant).await?,"observed_at":service::now(),"source":"Field API /v1/erp/sales-contracts/metrics","tenant_id":tenant}),
-            ),
+            "/v1/integrations/field/metrics" => {
+                require_selected_field_tenant(selected_tenant, tenant)?;
+                Ok(
+                    json!({"values":field.metrics(&session.access_token,tenant).await?,"observed_at":service::now(),"source":"Field API /v1/erp/sales-contracts/metrics","tenant_id":tenant}),
+                )
+            }
             _ => Err(ApiError::missing()),
         };
     }
@@ -323,6 +339,7 @@ async fn field_endpoint(
         return Err(ApiError::missing());
     }
     let w = p[2];
+    require_selected_field_tenant(selected_tenant, tenant)?;
     {
         let db = state
             .service
@@ -333,30 +350,11 @@ async fn field_endpoint(
     }
     match p[4] {
         "attach-task" => {
+            service::only(&body, &["tenant_id", "task_id"])?;
             let id = body["task_id"]
                 .as_str()
                 .ok_or_else(|| ApiError::invalid("task_idが必要です"))?;
             let task = field.task(&session.access_token, tenant, id).await?;
-            {
-                let db = state
-                    .service
-                    .db
-                    .lock()
-                    .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "Storage unavailable"))?;
-                if let Some(existing) =
-                    storage::list::<Item>(&db, w, "items")?
-                        .into_iter()
-                        .find(|i| {
-                            i.fields.field_reference.as_ref().is_some_and(|r| {
-                                r.tenant_id == tenant
-                                    && r.external_id == id
-                                    && r.platform_id == field.platform_id
-                            })
-                        })
-                {
-                    return storage::value(existing);
-                }
-            }
             let reference = FieldReference {
                 tenant_id: tenant.into(),
                 platform_id: field.platform_id.clone(),
@@ -367,6 +365,7 @@ async fn field_endpoint(
             state.service.handle(actor,"POST",&format!("/v1/workspaces/{w}/items"),&HashMap::new(),json!({"title":task.title,"kind":"action","description":"Fieldの営業タスクを参照する行動。元のタスクの状態はFieldで管理します。","fields":{"field_reference":reference}}),key)
         }
         "record-metric" => {
+            service::only(&body, &["tenant_id", "metric_id", "field_key"])?;
             let metric_id = body["metric_id"]
                 .as_str()
                 .ok_or_else(|| ApiError::invalid("metric_idが必要です"))?;
@@ -402,6 +401,7 @@ async fn field_endpoint(
             state.service.handle_derived(actor,path,&body,model::Operation{method:"POST".into(),path:format!("/v1/workspaces/{w}/observations"),body:json!({"metric_id":metric_id,"value":value,"unit":unit,"source":format!("Field API /v1/erp/sales-contracts/metrics · {tenant} · {field_key}"),"observed_at":service::now()})},key)
         }
         "refresh-task" => {
+            service::only(&body, &["tenant_id", "item_id"])?;
             let item_id = body["item_id"]
                 .as_str()
                 .ok_or_else(|| ApiError::invalid("item_idが必要です"))?;
@@ -451,4 +451,18 @@ async fn field_endpoint(
         }
         _ => Err(ApiError::missing()),
     }
+}
+
+fn require_selected_field_tenant(selected: &str, requested: &str) -> model::Result<()> {
+    if requested.is_empty() {
+        return Err(ApiError::invalid("tenant_idが必要です"));
+    }
+    if requested != selected {
+        return Err(ApiError::new(
+            403,
+            "FIELD_TENANT_MISMATCH",
+            "選択中のTachyonテナント以外のFieldデータにはアクセスできません",
+        ));
+    }
+    Ok(())
 }
