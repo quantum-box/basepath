@@ -2,9 +2,8 @@ apiVersion: apps.tachy.one/v1alpha
 kind: OAuth2Client
 metadata:
   name: pathbase-local
-  # The shared Tachyon platform tenant admits authenticated users from every
-  # operator tenant; PathBase applies its own workspace authorization later.
-  tenantId: tn_01hjjn348rn3t49zz6hvmfq67p
+  # Keep the OAuth client with the Cloud App so tenant ownership is explicit.
+  tenantId: tn_01m2a6ztfmd95p70gwgyshbevq
 spec:
   clientType: public
   redirectUris:
@@ -23,7 +22,7 @@ apiVersion: apps.tachy.one/v1alpha
 kind: CloudApps
 metadata:
   name: pathbase
-  tenantId: tn_01hjjn348rn3t49zz6hvmfq67p
+  tenantId: tn_01m2a6ztfmd95p70gwgyshbevq
 spec:
   apps:
     - name: pathbase
