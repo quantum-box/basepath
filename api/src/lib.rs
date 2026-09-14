@@ -54,7 +54,7 @@ pub fn router_with_mcp(state: HttpState, mcp: Option<Router<HttpState>>) -> Rout
     let app: Router<HttpState> = Router::new().route(
         "/health",
         get(|| async {
-            Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite","storage_durability":"ephemeral-container"}))
+            Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite","storage_durability":"ephemeral-runtime"}))
         }),
     );
     let app = if let Some(mcp) = mcp {

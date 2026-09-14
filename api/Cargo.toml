@@ -24,6 +24,11 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 jsonwebtoken = "9.3"
 base64 = "0.22"
 url = "2"
+lambda_http = "0.13"
+
+[[bin]]
+name = "lambda-pathbase-api"
+path = "src/bin/lambda.rs"
 
 [dev-dependencies]
 tempfile = "3"
