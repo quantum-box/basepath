@@ -142,7 +142,7 @@ phases:
           # checked-out manifest has no drift without mutating its own app.
           IAC_PLAN_OUTPUT=$(tachyon-build manifest apply \
             -f "${CODEBUILD_SRC_DIR}/tachyon.yml" \
-            --app pathbase \
+            --app pathbase-v2 \
             --environment production \
             --dry-run \
             2>&1)

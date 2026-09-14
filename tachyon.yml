@@ -8,7 +8,7 @@ spec:
   clientType: public
   redirectUris:
     - http://localhost:1420/api/auth/callback
-    - https://pathbase.txcloud.app/api/auth/callback
+    - https://pathbase-v2.txcloud.app/api/auth/callback
   allowedScopes:
     - openid
     - profile
@@ -21,11 +21,11 @@ spec:
 apiVersion: apps.tachy.one/v1alpha
 kind: CloudApps
 metadata:
-  name: pathbase
+  name: pathbase-v2
   tenantId: tn_01m2a6ztfmd95p70gwgyshbevq
 spec:
   apps:
-    - name: pathbase
+    - name: pathbase-v2
       repository:
         url: https://github.com/quantum-box/basepath
         owner: quantum-box
@@ -60,7 +60,7 @@ spec:
         - name: PATHBASE_MODE
           value: tachyon
         - name: PATHBASE_PUBLIC_URL
-          value: https://pathbase.txcloud.app
+          value: https://pathbase-v2.txcloud.app
         - name: PATHBASE_WEB_ROOT
           value: /app/web
         - name: PATHBASE_DB
@@ -80,7 +80,7 @@ spec:
               name: pathbase-local
               field: clientId
         - name: TACHYON_OIDC_REDIRECT_URI
-          value: https://pathbase.txcloud.app/api/auth/callback
+          value: https://pathbase-v2.txcloud.app/api/auth/callback
         - name: TACHYON_API_URL
           value: https://api.n1.tachy.one
         - name: FIELD_API_URL
