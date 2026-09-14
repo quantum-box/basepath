@@ -102,10 +102,8 @@ spec:
           value: https://pathbase-v2.txcloud.app
         - name: PATHBASE_DB
           value: /tmp/pathbase.sqlite3
-        - name: PATHBASE_SESSION_KEYS
-          type: credential
-          valueFrom:
-            secret: pathbase/PATHBASE_SESSION_KEYS
+        # Provision PATHBASE_SESSION_KEYS as an encrypted app environment
+        # variable; key material must never be committed to this manifest.
         - name: TACHYON_OIDC_ISSUER
           value: https://api.n1.tachy.one
         - name: TACHYON_OIDC_CLIENT_ID
