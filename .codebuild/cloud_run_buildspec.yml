@@ -134,7 +134,7 @@ phases:
           IAC_PLAN_OUTPUT="ERROR: TACHYON_AUTH_TOKEN is unavailable"
         else
           export TACHYON_API_KEY="${TACHYON_AUTH_TOKEN}"
-          export TACHYON_TENANT_ID=tn_01hjjn348rn3t49zz6hvmfq67p
+          export TACHYON_TENANT_ID=tn_01m2a6ztfmd95p70gwgyshbevq
           export TACHYON_API_URL=https://api.n1.tachy.one
           set +e
           # Production desired state is applied by the release command before
