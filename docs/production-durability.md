@@ -7,11 +7,11 @@ PathBase has two independent state classes:
 | State | Current implementation | Restart | Horizontal scale |
 | --- | --- | --- | --- |
 | Tachyon login session | AES-256-GCM `HttpOnly` cookie | survives when the same key is configured | safe; no affinity required |
-| Workspaces, memberships, documents, audit, idempotency | `/app/data/pathbase.sqlite3` in the Cloud Run container | **may be lost** | **not safe**; instances diverge |
+| Workspaces, memberships, documents, audit, idempotency | `/tmp/pathbase.sqlite3` in the Lambda execution environment | **may be lost** | **not safe**; execution environments diverge |
 
-`GET /api/health` deliberately reports `storage_durability: ephemeral-container`. Do not use a successful health check as evidence that application records are durable.
+`GET /api/health` deliberately reports `storage_durability: ephemeral-runtime`. Do not use a successful health check as evidence that application records are durable.
 
-Tachyon Storage/R2 is an object store for files. Copying a live SQLite database or its WAL to R2 is not a safe database: Cloud Run shutdown is not a commit protocol, and multiple instances cannot coordinate writes through object snapshots. No bucket or external database is created by this repository change.
+Tachyon Storage/R2 is an object store for files. Copying a live SQLite database or its WAL to R2 is not a safe database: Lambda shutdown is not a commit protocol, and multiple execution environments cannot coordinate writes through object snapshots. No bucket or external database is created by this repository change.
 
 ## Session configuration and rotation
 

@@ -61,6 +61,8 @@ spec:
         - tsconfig.json
         - vite.config.mjs
       envVars:
+        - name: PATHBASE_API_ORIGIN
+          value: https://pathbase-api.txcloud.app
         - name: PATHBASE_PUBLIC_URL
           value: https://pathbase-v2.txcloud.app
         - name: FIELD_API_URL
@@ -71,4 +73,54 @@ spec:
           # Field's production tenant-directory root. This is deliberately not
           # the PathBase operator: Field forwards this context to Tachyon Auth
           # when evaluating the caller's delegated access token.
+          value: tn_01j91h09tpj5ehwbwfwfxpak2b
+    - name: pathbase-api
+      repository:
+        url: https://github.com/quantum-box/basepath
+        owner: quantum-box
+        name: basepath
+        defaultBranch: main
+      rootDirectory: api
+      framework: cargo_lambda
+      deploymentTarget: lambda
+      build:
+        package: pathbase-api
+        binary: lambda-pathbase-api
+        release: true
+        arch: arm64
+      readinessProof:
+        path: /health
+        expectedStatus: 200
+        expectedBody: '"status":"ok"'
+      watchPaths:
+        - api/**
+        - tachyon.yml
+      envVars:
+        - name: PATHBASE_MODE
+          value: tachyon
+        - name: PATHBASE_PUBLIC_URL
+          value: https://pathbase-v2.txcloud.app
+        - name: PATHBASE_DB
+          value: /tmp/pathbase.sqlite3
+        - name: PATHBASE_SESSION_KEYS
+          type: credential
+          valueFrom:
+            secret: pathbase/PATHBASE_SESSION_KEYS
+        - name: TACHYON_OIDC_ISSUER
+          value: https://api.n1.tachy.one
+        - name: TACHYON_OIDC_CLIENT_ID
+          type: credential
+          valueFrom:
+            oauth2ClientRef:
+              name: pathbase-local
+              field: clientId
+        - name: TACHYON_OIDC_REDIRECT_URI
+          value: https://pathbase-v2.txcloud.app/api/auth/callback
+        - name: TACHYON_API_URL
+          value: https://api.n1.tachy.one
+        - name: FIELD_API_URL
+          value: https://tachyon-field-api.txcloud.app
+        - name: FIELD_PLATFORM_ID
+          value: tn_01hjjn348rn3t49zz6hvmfq67p
+        - name: FIELD_OPERATOR_ID
           value: tn_01j91h09tpj5ehwbwfwfxpak2b

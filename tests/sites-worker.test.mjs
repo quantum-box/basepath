@@ -42,10 +42,7 @@ test("falls back to index.html for an unknown app route", async () => {
 });
 
 test("does not turn missing API or write requests into the app shell", async () => {
-  for (const request of [
-    new Request("https://example.test/api/missing", { headers: { accept: "application/json" } }),
-    new Request("https://example.test/flow", { method: "POST", headers: { accept: "text/html" } }),
-  ]) {
+  for (const request of [new Request("https://example.test/flow", { method: "POST", headers: { accept: "text/html" } })]) {
     let calls = 0;
     const response = await worker.fetch(request, {
       ASSETS: {
@@ -59,6 +56,40 @@ test("does not turn missing API or write requests into the app shell", async () 
     assert.equal(response.status, 404);
     assert.equal(calls, 1);
   }
+});
+
+test("proxies same-origin API requests to the Lambda origin without the /api prefix", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (request) => {
+    forwarded = request;
+    return Response.json({ status: "ok" });
+  };
+
+  try {
+    const response = await worker.fetch(
+      new Request("https://pathbase-v2.txcloud.app/api/v1/items?limit=5", {
+        method: "POST",
+        headers: { cookie: "pathbase_session=test", "x-pathbase-request": "1" },
+        body: "{}",
+      }),
+      { PATHBASE_API_ORIGIN: "https://pathbase-api.txcloud.app" },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(forwarded.url, "https://pathbase-api.txcloud.app/v1/items?limit=5");
+    assert.equal(forwarded.method, "POST");
+    assert.equal(forwarded.headers.get("cookie"), "pathbase_session=test");
+    assert.equal(await forwarded.text(), "{}");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("returns a service error when the Lambda origin is missing", async () => {
+  const response = await worker.fetch(new Request("https://example.test/api/health"), {});
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "API_ORIGIN_MISSING");
 });
 
 test("emits the files required by Sites packaging", async () => {

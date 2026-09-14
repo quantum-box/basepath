@@ -1,6 +1,6 @@
 # PathBase API contract
 
-Rustルーター内のパスを記載しています。ブラウザからは先頭に`/api`を付けます。JSONの日時はRFC3339、日付は`YYYY-MM-DD`、時刻は`HH:MM`です。識別子は作成レスポンスから取得してください。`w`はアクセス可能なワークスペースIDです。
+Rustルーター内のパスを記載しています。本番ではRust APIをAWS Lambdaで実行し、Cloudflare Workerが同一オリジンの`/api/*`からLambdaの`/*`へ転送します。ブラウザからは先頭に`/api`を付けます。JSONの日時はRFC3339、日付は`YYYY-MM-DD`、時刻は`HH:MM`です。識別子は作成レスポンスから取得してください。`w`はアクセス可能なワークスペースIDです。
 
 ## 共通規則
 
