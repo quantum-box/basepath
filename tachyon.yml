@@ -31,20 +31,24 @@ spec:
         owner: quantum-box
         name: basepath
         defaultBranch: main
-      rootDirectory: api
-      dockerContext: "."
-      framework: rust_server
-      deploymentTarget: cloud_run
-      buildspecStrategy: repo:.codebuild/cloud_run_buildspec.yml
+      rootDirectory: ""
+      framework: worker
+      deploymentTarget: cloudflare_workers
       build:
-        # Docker-in-Docker requires the CodeBuild runner; the rootless k3s
-        # runner cannot create the UID/GID map needed by BuildKit.
-        runnerBackend: codebuild
-        command: cargo build --locked --release
+        installCommand: npm ci --no-audit --no-fund
+        command: npm run build
+        nodeVersion: "22"
       readinessProof:
-        path: /api/health
+        path: /
         expectedStatus: 200
-        expectedBody: '"status":"ok"'
+      worker:
+        generateConfig: true
+        main: worker/index.js
+        compatibilityDate: "2026-09-14"
+        assets:
+          directory: dist/client
+          binding: ASSETS
+          notFoundHandling: none
       watchPaths:
         - api/**
         - public/**
@@ -57,32 +61,8 @@ spec:
         - tsconfig.json
         - vite.config.mjs
       envVars:
-        - name: PATHBASE_MODE
-          value: tachyon
         - name: PATHBASE_PUBLIC_URL
           value: https://pathbase-v2.txcloud.app
-        - name: PATHBASE_WEB_ROOT
-          value: /app/web
-        - name: PATHBASE_DB
-          value: /app/data/pathbase.sqlite3
-        - name: PATHBASE_SESSION_KEYS
-          type: credential
-          # Provision with `tachyon compute env set pathbase --secret
-          # PATHBASE_SESSION_KEYS --value -`; never commit the key material.
-          valueFrom:
-            secret: pathbase/PATHBASE_SESSION_KEYS
-        - name: TACHYON_OIDC_ISSUER
-          value: https://api.n1.tachy.one
-        - name: TACHYON_OIDC_CLIENT_ID
-          type: credential
-          valueFrom:
-            oauth2ClientRef:
-              name: pathbase-local
-              field: clientId
-        - name: TACHYON_OIDC_REDIRECT_URI
-          value: https://pathbase-v2.txcloud.app/api/auth/callback
-        - name: TACHYON_API_URL
-          value: https://api.n1.tachy.one
         - name: FIELD_API_URL
           value: https://tachyon-field-api.txcloud.app
         - name: FIELD_PLATFORM_ID
