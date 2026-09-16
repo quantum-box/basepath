@@ -1,117 +1,268 @@
 {
   "goals": [
     {
-      "id": "english",
-      "title": "英語で話せるようになる",
-      "subtitle": "海外の人と自由に会話できる",
-      "scope": "個人",
-      "icon": "airplane",
-      "purpose": "言葉の壁を越えて、世界中の人とつながる。\n自分の考えを、自分の言葉で伝えられるように。",
-      "progress": 45,
-      "next": "英会話を30分学習する",
-      "memo": "毎日少しずつ、楽しみながら続ける。\n次の海外旅行で、現地の人と会話してみたい。"
-    },
-    {
-      "id": "event",
-      "title": "地域イベントを開催する",
-      "subtitle": "人がつながる場をつくり、地域の魅力を再発見する",
-      "scope": "チーム",
-      "icon": "mountains",
-      "purpose": "地域の人たちが気軽に集まり、つながり、\n新しい挑戦が生まれるきっかけをつくる。",
-      "progress": 40,
-      "next": "会場の候補を3つに絞って、下見を予約する",
-      "memo": "地域のカフェや商店街とも連携できそう。\n小さく始めて、継続的なイベントに育てたい。"
-    },
-    {
-      "id": "business",
-      "title": "新規事業を育てる",
-      "subtitle": "社会に新しい価値を届ける",
+      "id": "ebitda",
+      "title": "償却前利益3億円",
+      "subtitle": "EBITDA3億円を安定して出す",
       "scope": "組織",
-      "icon": "cube",
-      "purpose": "身近な課題から、新しい可能性を見つける。\n本当に必要とされるサービスを形にする。",
+      "icon": "target",
+      "purpose": "利益は、売上とコストと投資の積み重ねで決まる。\n三つを同じ一枚の地図で見て、月次で判断できる状態にする。",
+      "progress": 30,
+      "next": "4月の月次で、売上・費用・償却前利益の着地見込みを出す",
+      "memo": "前期は2.4億。3億には粗利+4,500万かコスト▲3,000万が要る。\n投資は回収年数5年以内を目安にする。"
+    },
+    {
+      "id": "revenue",
+      "parentId": "ebitda",
+      "title": "ゴルフ場売り上げUP",
+      "subtitle": "年間売上を前年比115%に",
+      "scope": "組織",
+      "icon": "chart",
+      "purpose": "来場者数と客単価の両方を、無理のない形で伸ばす。\n満足して帰ったお客様が、次の予約をしてくださる状態をつくる。",
       "progress": 35,
-      "next": "インタビュー候補者に日程を確認する",
-      "memo": "まずは10人のリアルな声を聞いてみる。\n小さな仮説検証を重ねて、価値を確かめたい。"
+      "next": "4月の売上速報を確認して、伸ばす施策を3つに絞る",
+      "memo": "プレー単価より、レストランと物販の伸びしろが大きい。\nリピート率は会員と一般で分けて見る。"
+    },
+    {
+      "id": "cost",
+      "parentId": "ebitda",
+      "title": "コストを最適化する",
+      "subtitle": "使い方を数字で決める",
+      "scope": "組織",
+      "icon": "leaf",
+      "purpose": "削るのではなく、効くところに使う。\n使った理由を説明できる状態にして、無駄だけを落とす。",
+      "progress": 30,
+      "next": "4月の水道光熱費と薬剤費を、前年同月と並べて見る",
+      "memo": "人件費は残業の偏りが大きい。\n薬剤と肥料は散布記録とセットで見ないと判断できない。"
+    },
+    {
+      "id": "capexplan",
+      "parentId": "ebitda",
+      "title": "投資と修繕を計画する",
+      "subtitle": "回収年数から投資額を決める",
+      "scope": "組織",
+      "icon": "folder",
+      "purpose": "その場しのぎの修繕は、結局いちばん高くつく。\n中期の計画に載せてから、金額と時期を決める。",
+      "progress": 25,
+      "next": "今期の修繕候補を、緊急度と回収年数で並べ替える",
+      "memo": "カート道と排水は先送りすると悪化が早い。\n設備更新はリースと購入を並べて比べる。"
+    },
+    {
+      "id": "plan",
+      "parentId": "revenue",
+      "title": "企画で来場を増やす",
+      "subtitle": "来場のきっかけをつくる",
+      "scope": "組織",
+      "icon": "target",
+      "purpose": "思いつきの割引ではなく、\n誰にいつ何を届けるかを決めてから動く。",
+      "progress": 40,
+      "next": "CRMの休眠会員リストに、平日プランを案内する",
+      "memo": "予約センターの取りこぼしが一番もったいない。\n営業先は法人とコンペ幹事に絞る。"
+    },
+    {
+      "id": "cs",
+      "parentId": "revenue",
+      "title": "プレー体験を良くする",
+      "subtitle": "待たせない、気持ちよく",
+      "scope": "組織",
+      "icon": "sparkle",
+      "purpose": "プレー時間の短さと、迎え方の丁寧さ。\nこの二つが「また来たい」の理由になる。",
+      "progress": 55,
+      "next": "詰まりやすい3番と12番の進行時間を計測する",
+      "memo": "4時間半を超えるとアンケートの満足度が落ちる。\nポーターの声かけは3パターンに整理する。"
+    },
+    {
+      "id": "course",
+      "parentId": "cost",
+      "title": "コースをデータで管理する",
+      "subtitle": "勘ではなく記録で決める",
+      "scope": "組織",
+      "icon": "mountains",
+      "purpose": "良いコースは、良い判断の積み重ねでできる。\n誰が見ても同じ判断ができる記録を残す。",
+      "progress": 35,
+      "next": "気温と日照の記録を、グリーンごとに1週間つける",
+      "memo": "散水は気温と日照、施肥は生育記録で決める。\nベテランの判断基準を言葉にして残したい。"
+    },
+    {
+      "id": "labor",
+      "parentId": "cost",
+      "title": "労務とコンプラを整える",
+      "subtitle": "まず足元の管理を固める",
+      "scope": "組織",
+      "icon": "shield",
+      "purpose": "働き方が整っていない現場では、改善は続かない。\n法令順守と休みの取りやすさを、数字で確認できる状態にする。",
+      "progress": 45,
+      "next": "先週の時間外労働を締めて、45時間超えの兆候を確認する",
+      "memo": "繁忙期は早番・遅番の二部制でシフトを組み直す。\nコンプラ研修はキャディ・レストランも対象に年2回。"
     }
   ],
   "tasks": [
     {
       "id": "t1",
-      "title": "英単語を30分学習する",
+      "title": "先週の時間外労働を締めて確認する",
       "scope": "個人",
       "time": "09:00",
       "done": true
     },
     {
       "id": "t2",
-      "title": "会場の候補を調べる",
+      "title": "予約センターの応答率を確認する",
       "scope": "チーム",
       "time": "11:00",
       "done": false
     },
     {
       "id": "t3",
-      "title": "インタビュー質問を整理する",
+      "title": "4月の売上と客単価を集計する",
       "scope": "組織",
       "time": "14:00",
       "done": false
     },
     {
       "id": "t4",
-      "title": "読書メモをまとめる",
-      "scope": "個人",
-      "time": "20:00",
+      "title": "気温・日照の記録から散水量を決める",
+      "scope": "チーム",
+      "time": "16:00",
       "done": false
     }
   ],
   "initiatives": [
     {
-      "id": "learn",
-      "goalId": "english",
-      "title": "学習を週3回続ける",
+      "id": "unitprice",
+      "goalId": "revenue",
+      "title": "レストランと物販の\n単価を上げる",
+      "icon": "leaf",
+      "progress": 40
+    },
+    {
+      "id": "crm",
+      "goalId": "plan",
+      "title": "CRMで休眠客に\n届ける",
+      "icon": "users",
+      "progress": 50
+    },
+    {
+      "id": "crm-segment",
+      "goalId": "plan",
+      "parentId": "crm",
+      "title": "休眠の定義を\n決める",
+      "icon": "note",
+      "progress": 70
+    },
+    {
+      "id": "crm-offer",
+      "goalId": "plan",
+      "parentId": "crm",
+      "title": "平日プランを\n案内する",
+      "icon": "calendar",
+      "progress": 35
+    },
+    {
+      "id": "callcenter",
+      "goalId": "plan",
+      "title": "予約センターの\n応答率を上げる",
+      "icon": "bell",
+      "progress": 30
+    },
+    {
+      "id": "sales",
+      "goalId": "plan",
+      "title": "営業先を法人に\n絞り込む",
+      "icon": "flag",
+      "progress": 20
+    },
+    {
+      "id": "pace",
+      "goalId": "cs",
+      "title": "プレー進行を\n4時間半にする",
+      "icon": "calendar",
+      "progress": 60
+    },
+    {
+      "id": "pace-measure",
+      "goalId": "cs",
+      "parentId": "pace",
+      "title": "詰まる組を\n計測する",
+      "icon": "chart",
+      "progress": 55
+    },
+    {
+      "id": "pace-marshal",
+      "goalId": "cs",
+      "parentId": "pace",
+      "title": "進行の声かけを\n決める",
+      "icon": "users",
+      "progress": 25
+    },
+    {
+      "id": "porter",
+      "goalId": "cs",
+      "title": "ポーター対応を\n標準化する",
+      "icon": "users",
+      "progress": 45
+    },
+    {
+      "id": "weather",
+      "goalId": "course",
+      "title": "気温・日照を\n毎日記録する",
+      "icon": "note",
+      "progress": 50
+    },
+    {
+      "id": "weather-format",
+      "goalId": "course",
+      "parentId": "weather",
+      "title": "記録の様式を\nそろえる",
+      "icon": "stack",
+      "progress": 80
+    },
+    {
+      "id": "greenkeep",
+      "goalId": "course",
+      "title": "散水と施肥を\n記録で決める",
+      "icon": "leaf",
+      "progress": 25
+    },
+    {
+      "id": "overtime",
+      "goalId": "labor",
+      "title": "時間外労働を\n月45時間以内に",
+      "icon": "chart",
+      "progress": 40
+    },
+    {
+      "id": "compliance",
+      "goalId": "labor",
+      "title": "コンプラ研修を\n年2回行う",
       "icon": "book",
       "progress": 60
     },
     {
-      "id": "travel",
-      "goalId": "english",
-      "title": "海外旅行で\n実際に使ってみる",
-      "icon": "airplane",
+      "id": "repair",
+      "goalId": "capexplan",
+      "title": "中期の修繕計画を\nつくる",
+      "icon": "folder",
       "progress": 30
     },
     {
-      "id": "venue",
-      "goalId": "event",
-      "title": "会場を決める",
-      "icon": "calendar",
-      "progress": 80
-    },
-    {
-      "id": "pr",
-      "goalId": "event",
-      "title": "広報・集客を行う",
-      "icon": "users",
-      "progress": 40
-    },
-    {
-      "id": "interview",
-      "goalId": "business",
-      "title": "インタビューを\n10件行う",
-      "icon": "bulb",
-      "progress": 50
-    },
-    {
-      "id": "mvp",
-      "goalId": "business",
-      "title": "MVPを作る",
+      "id": "capex",
+      "goalId": "capexplan",
+      "title": "設備更新の\n投資額を決める",
       "icon": "cube",
-      "progress": 30
+      "progress": 15
+    },
+    {
+      "id": "monthly",
+      "goalId": "capexplan",
+      "title": "月次で収益を\n見る",
+      "icon": "chart",
+      "progress": 45
     }
   ],
   "learnings": [
-    "地域の課題を知るには、実際に話を聞くことが一番早い",
-    "完璧を目指すより、まずやってみることで見えてくるものがある",
-    "英語の学習は、毎日少しでも続けることが効果的",
-    "メンバーそれぞれの「やりたいこと」が、チームの推進力になる"
+    "キーパーの勘だけでは、グリーンの状態は再現できない",
+    "予約センターの応答率が、そのまま平日の稼働率に効く",
+    "時間外労働の削減は、シフトの組み方で8割決まる",
+    "プレー進行が4時間半を切ると、満足度がはっきり上がる"
   ]
 }

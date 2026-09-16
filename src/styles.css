@@ -520,10 +520,18 @@ input[type="checkbox"]:checked::after {
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(345px, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 7px;
   margin-top: 9px;
-  height: calc(100vh - 292px);
   min-height: 650px;
+}
+.dashboard-grid > .map-panel {
+  grid-column: 1 / -1;
+  height: min(52vh, 560px);
+  min-height: 420px;
+}
+.dashboard-grid > .detail-panel {
+  min-height: 430px;
 }
 .left-column {
   min-width: 0;
@@ -692,6 +700,33 @@ input[type="checkbox"]:checked::after {
   border: 2px solid #9862ff;
   box-shadow: 0 2px 8px #926bff0d;
   padding: 10px;
+}
+.node-toggle {
+  pointer-events: all;
+  position: absolute;
+  bottom: -11px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 24px;
+  height: 21px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #fff;
+  color: #5b6b82;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 2px 6px #40648814;
+  z-index: 3;
+}
+.node-toggle:hover {
+  color: var(--ink);
+  border-color: #c3d2e6;
 }
 .node-icon {
   display: flex;
@@ -2700,6 +2735,10 @@ input[type="checkbox"]:checked::after {
   .map-panel {
     min-height: 371px;
   }
+  .dashboard-grid > .map-panel {
+    height: min(58vh, 540px);
+    min-height: 410px;
+  }
   .bottom-panel {
     height: 300px;
   }
@@ -2863,6 +2902,10 @@ input[type="checkbox"]:checked::after {
   .map-panel {
     height: 365px;
     min-height: 365px;
+  }
+  .dashboard-grid > .map-panel {
+    height: 430px;
+    min-height: 430px;
   }
   .bottom-panel {
     height: 280px;
@@ -3093,6 +3136,10 @@ input[type="checkbox"]:checked::after {
     height: 335px;
     min-height: 335px;
   }
+  .dashboard-grid > .map-panel {
+    height: 380px;
+    min-height: 380px;
+  }
   .flow-container {
     padding: 12px 4px;
     min-height: 230px;
@@ -3249,6 +3296,10 @@ input[type="checkbox"]:checked::after {
   .map-panel {
     height: 315px;
     min-height: 315px;
+  }
+  .dashboard-grid > .map-panel {
+    height: 360px;
+    min-height: 360px;
   }
   .flow-container {
     min-height: 205px;

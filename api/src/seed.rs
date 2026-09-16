@@ -45,15 +45,23 @@ pub fn seed(db: &Connection, demo: bool) -> Result<()> {
         put(db, w, "items", id, &item)?;
         let r = json!({"id":format!("rel-{next}"),"workspace_id":w,"source_id":next,"target_id":id,"type":"part_of","rationale":"","version":1});
         put(db, w, "relations", r["id"].as_str().unwrap(), &r)?;
+        if let Some(parent) = goal["parentId"].as_str() {
+            let r = json!({"id":format!("rel-{id}"),"workspace_id":w,"source_id":id,"target_id":parent,"type":"part_of","rationale":"","version":1});
+            put(db, w, "relations", r["id"].as_str().unwrap(), &r)?;
+        }
     }
     for item in raw["initiatives"].as_array().unwrap() {
         let id = item["id"].as_str().unwrap();
-        let parent = item["goalId"].as_str().unwrap();
-        let w = match parent {
-            "english" => "personal",
-            "event" => "team",
-            _ => "organization",
-        };
+        let goal_id = item["goalId"].as_str().unwrap();
+        let parent = item["parentId"].as_str().unwrap_or(goal_id);
+        let w = raw["goals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|goal| goal["id"] == goal_id)
+            .map_or("organization", |goal| {
+                scope(goal["scope"].as_str().unwrap())
+            });
         let v = json!({"id":id,"workspace_id":w,"kind":"initiative","title":item["title"],"description":"","state":"active","version":1,"created_at":now(),"updated_at":now(),"fields":{"icon":item["icon"],"self_assessment":item["progress"],"assessed_at":now()}});
         put(db, w, "items", id, &v)?;
         let r = json!({"id":format!("rel-{id}"),"workspace_id":w,"source_id":id,"target_id":parent,"type":"part_of","rationale":"","version":1});

@@ -1,6 +1,7 @@
 export type Scope = "個人" | "チーム" | "組織";
 export type Goal = {
   id: string;
+  parentId?: string;
   title: string;
   subtitle: string;
   scope: Scope;
@@ -30,6 +31,7 @@ export type Task = {
 export type Initiative = {
   id: string;
   goalId: string;
+  parentId?: string;
   title: string;
   icon: string;
   progress: number | null;
