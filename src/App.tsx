@@ -466,44 +466,64 @@ export function App() {
   const visibleItems = allItems.filter(
     (i) => !i.archived_at && workspaceMatches(i.workspace_id),
   );
-  const goals: Goal[] = visibleItems
-    .filter((i) => ["outcome", "idea", "milestone"].includes(i.kind))
-    .map((i) => ({
-      id: uiId(i),
-      title: i.title,
-      subtitle: i.fields.subtitle || "",
-      scope: scopeOf(i.workspace_id),
-      icon: i.fields.icon || "target",
-      purpose: i.description,
-      progress: i.fields.self_assessment ?? null,
-      next:
-        allItems.find(
-          (a) =>
-            a.id === i.fields.next_action_id &&
-            a.workspace_id === i.workspace_id,
-        )?.title || "",
-      memo: i.fields.memo || "",
-      startDate: i.start_date,
-      dueDate: i.due_date,
-      state: i.state,
-    }));
+  const isGoalKind = (item: Item) =>
+    ["outcome", "idea", "milestone"].includes(item.kind);
+  const partOfTarget = (item: Item) => {
+    const relation = allRelations.find(
+      (r) =>
+        r.workspace_id === item.workspace_id &&
+        r.source_id === item.id &&
+        r.type === "part_of",
+    );
+    return relation
+      ? allItems.find(
+          (candidate) =>
+            candidate.workspace_id === item.workspace_id &&
+            candidate.id === relation.target_id,
+        )
+      : undefined;
+  };
+  const goals: Goal[] = visibleItems.filter(isGoalKind).map((i) => ({
+    id: uiId(i),
+    parentId: (() => {
+      const parent = partOfTarget(i);
+      return parent && isGoalKind(parent) ? uiId(parent) : undefined;
+    })(),
+    title: i.title,
+    subtitle: i.fields.subtitle || "",
+    scope: scopeOf(i.workspace_id),
+    icon: i.fields.icon || "target",
+    purpose: i.description,
+    progress: i.fields.self_assessment ?? null,
+    next:
+      allItems.find(
+        (a) =>
+          a.id === i.fields.next_action_id && a.workspace_id === i.workspace_id,
+      )?.title || "",
+    memo: i.fields.memo || "",
+    startDate: i.start_date,
+    dueDate: i.due_date,
+    state: i.state,
+  }));
   const initiatives: Initiative[] = visibleItems
     .filter((i) => i.kind === "initiative")
-    .map((i) => ({
-      id: uiId(i),
-      goalId: (() => {
-        const r = allRelations.find(
-          (r) =>
-            r.workspace_id === i.workspace_id &&
-            r.source_id === i.id &&
-            r.type === "part_of",
-        );
-        return r ? `${i.workspace_id}~${r.target_id}` : "";
-      })(),
-      title: i.title,
-      icon: i.fields.icon || "flag",
-      progress: i.fields.self_assessment ?? null,
-    }));
+    .map((i) => {
+      const parent = partOfTarget(i);
+      let owner = parent;
+      const seen = new Set<string>();
+      while (owner && owner.kind === "initiative" && !seen.has(owner.id)) {
+        seen.add(owner.id);
+        owner = partOfTarget(owner);
+      }
+      return {
+        id: uiId(i),
+        goalId: owner && isGoalKind(owner) ? uiId(owner) : "",
+        parentId: parent?.kind === "initiative" ? uiId(parent) : undefined,
+        title: i.title,
+        icon: i.fields.icon || "flag",
+        progress: i.fields.self_assessment ?? null,
+      };
+    });
   const doneFor = (item: Item, date = today) =>
     item.fields.recurrence
       ? [...allRecords]
@@ -1314,16 +1334,16 @@ export function App() {
               </div>
             </section>
             <div className="dashboard-grid">
+              <GoalMap
+                goals={goals}
+                initiatives={initiatives}
+                selected={selectedId}
+                onSelect={selectGoal}
+                scope={scope}
+                setScope={changeScope}
+                onInitiative={openInitiative}
+              />
               <div className="left-column">
-                <GoalMap
-                  goals={goals}
-                  initiatives={initiatives}
-                  selected={selectedId}
-                  onSelect={selectGoal}
-                  scope={scope}
-                  setScope={changeScope}
-                  onInitiative={openInitiative}
-                />
                 <section className="panel bottom-panel" id="workspace-panels">
                   <div
                     className="bottom-tabs"
@@ -1860,7 +1880,7 @@ export function App() {
                                 ? "項目のつながり"
                                 : modal.kind === "aiSuggestions"
                                   ? "AIによる次の行動・振り返り提案"
-                                : "項目の詳細"
+                                  : "項目の詳細"
           }
         >
           {store.error && (
@@ -2957,8 +2977,7 @@ function Modal({
         const target = returnFocus.current;
         if (target && window.getComputedStyle(target).visibility !== "hidden")
           target.focus();
-        else
-          document.querySelector<HTMLButtonElement>(".mobile-menu")?.focus();
+        else document.querySelector<HTMLButtonElement>(".mobile-menu")?.focus();
       });
     };
   }, []);

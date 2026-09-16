@@ -42,13 +42,13 @@ fn first_goal(service: &Service, workspace: &str) -> Value {
 #[test]
 fn quality_fixture_returns_short_actions_and_separates_reflection_claims() {
     let (_dir, service) = setup();
-    let goal = first_goal(&service, "personal");
+    let goal = first_goal(&service, "organization");
     let body = json!({"goal_id":goal["id"],"expected_version":goal["version"]});
     let result = call(
         &service,
         &Actor::local(),
         "POST",
-        "/v1/workspaces/personal/ai/suggestions/preview",
+        "/v1/workspaces/organization/ai/suggestions/preview",
         body,
         Some("quality-fixture"),
     )
@@ -69,13 +69,13 @@ fn quality_fixture_returns_short_actions_and_separates_reflection_claims() {
 #[test]
 fn retry_is_idempotent_and_does_not_create_domain_items() {
     let (_dir, service) = setup();
-    let goal = first_goal(&service, "personal");
+    let goal = first_goal(&service, "organization");
     let body = json!({"goal_id":goal["id"],"expected_version":goal["version"]});
     let before = call(
         &service,
         &Actor::local(),
         "GET",
-        "/v1/workspaces/personal/snapshot",
+        "/v1/workspaces/organization/snapshot",
         json!({}),
         None,
     )
@@ -84,7 +84,7 @@ fn retry_is_idempotent_and_does_not_create_domain_items() {
         &service,
         &Actor::local(),
         "POST",
-        "/v1/workspaces/personal/ai/suggestions/preview",
+        "/v1/workspaces/organization/ai/suggestions/preview",
         body.clone(),
         Some("same-input"),
     )
@@ -93,7 +93,7 @@ fn retry_is_idempotent_and_does_not_create_domain_items() {
         &service,
         &Actor::local(),
         "POST",
-        "/v1/workspaces/personal/ai/suggestions/preview",
+        "/v1/workspaces/organization/ai/suggestions/preview",
         body,
         Some("same-input"),
     )
@@ -102,7 +102,7 @@ fn retry_is_idempotent_and_does_not_create_domain_items() {
         &service,
         &Actor::local(),
         "GET",
-        "/v1/workspaces/personal/snapshot",
+        "/v1/workspaces/organization/snapshot",
         json!({}),
         None,
     )
@@ -115,7 +115,7 @@ fn retry_is_idempotent_and_does_not_create_domain_items() {
 #[test]
 fn permissions_and_stale_goal_version_are_enforced() {
     let (_dir, service) = setup();
-    let goal = first_goal(&service, "team");
+    let goal = first_goal(&service, "organization");
     let body = json!({"goal_id":goal["id"],"expected_version":goal["version"]});
     assert_eq!(
         call(
@@ -125,7 +125,7 @@ fn permissions_and_stale_goal_version_are_enforced() {
                 agent: false
             },
             "POST",
-            "/v1/workspaces/team/ai/suggestions/preview",
+            "/v1/workspaces/organization/ai/suggestions/preview",
             body.clone(),
             Some("outside")
         )
@@ -139,7 +139,7 @@ fn permissions_and_stale_goal_version_are_enforced() {
             &service,
             &Actor::local(),
             "POST",
-            "/v1/workspaces/team/ai/suggestions/preview",
+            "/v1/workspaces/organization/ai/suggestions/preview",
             stale,
             Some("stale")
         )
@@ -152,16 +152,16 @@ fn permissions_and_stale_goal_version_are_enforced() {
 #[test]
 fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
     let (_dir, service) = setup();
-    let goal = first_goal(&service, "personal");
-    let path = "/v1/workspaces/personal/changesets/preview";
-    let proposal = call(&service, &Actor::local(), "POST", path, json!({"title":"AI提案を採用","operations":[{"method":"POST","path":"/v1/workspaces/personal/items","body":{"title":"30分だけ試す","kind":"action","parent_id":goal["id"]}}]}), Some("preview-ai")).unwrap();
+    let goal = first_goal(&service, "organization");
+    let path = "/v1/workspaces/organization/changesets/preview";
+    let proposal = call(&service, &Actor::local(), "POST", path, json!({"title":"AI提案を採用","operations":[{"method":"POST","path":"/v1/workspaces/organization/items","body":{"title":"30分だけ試す","kind":"action","parent_id":goal["id"]}}]}), Some("preview-ai")).unwrap();
     let id = proposal["id"].as_str().unwrap();
     assert_eq!(
         call(
             &service,
             &Actor::local(),
             "POST",
-            &format!("/v1/workspaces/personal/changesets/{id}/apply"),
+            &format!("/v1/workspaces/organization/changesets/{id}/apply"),
             json!({}),
             Some("early-apply")
         )
@@ -173,7 +173,7 @@ fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
         &service,
         &Actor::local(),
         "POST",
-        &format!("/v1/workspaces/personal/changesets/{id}/approve"),
+        &format!("/v1/workspaces/organization/changesets/{id}/approve"),
         json!({}),
         Some("approve-ai"),
     )
@@ -183,7 +183,7 @@ fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
         &Actor::local(),
         "PATCH",
         &format!(
-            "/v1/workspaces/personal/items/{}",
+            "/v1/workspaces/organization/items/{}",
             goal["id"].as_str().unwrap()
         ),
         json!({"expected_version":goal["version"],"title":"changed elsewhere"}),
@@ -195,7 +195,7 @@ fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
             &service,
             &Actor::local(),
             "POST",
-            &format!("/v1/workspaces/personal/changesets/{id}/apply"),
+            &format!("/v1/workspaces/organization/changesets/{id}/apply"),
             json!({}),
             Some("stale-apply")
         )
@@ -212,8 +212,8 @@ fn expired_approved_proposal_is_rejected() {
         &service,
         &Actor::local(),
         "POST",
-        "/v1/workspaces/personal/changesets/preview",
-        json!({"title":"期限テスト","operations":[{"method":"POST","path":"/v1/workspaces/personal/items","body":{"title":"短い行動","kind":"action"}}]}),
+        "/v1/workspaces/organization/changesets/preview",
+        json!({"title":"期限テスト","operations":[{"method":"POST","path":"/v1/workspaces/organization/items","body":{"title":"短い行動","kind":"action"}}]}),
         Some("expiry-preview"),
     )
     .unwrap();
@@ -222,7 +222,7 @@ fn expired_approved_proposal_is_rejected() {
         &service,
         &Actor::local(),
         "POST",
-        &format!("/v1/workspaces/personal/changesets/{id}/approve"),
+        &format!("/v1/workspaces/organization/changesets/{id}/approve"),
         json!({}),
         Some("expiry-approve"),
     )
@@ -230,16 +230,16 @@ fn expired_approved_proposal_is_rejected() {
     {
         let db = service.db.lock().unwrap();
         let mut change: Value =
-            pathbase_api::storage::get(&db, "personal", "changesets", id).unwrap();
+            pathbase_api::storage::get(&db, "organization", "changesets", id).unwrap();
         change["expires_at"] = json!("2000-01-01T00:00:00+00:00");
-        pathbase_api::storage::put(&db, "personal", "changesets", id, &change).unwrap();
+        pathbase_api::storage::put(&db, "organization", "changesets", id, &change).unwrap();
     }
     assert_eq!(
         call(
             &service,
             &Actor::local(),
             "POST",
-            &format!("/v1/workspaces/personal/changesets/{id}/apply"),
+            &format!("/v1/workspaces/organization/changesets/{id}/apply"),
             json!({}),
             Some("expired-apply")
         )
