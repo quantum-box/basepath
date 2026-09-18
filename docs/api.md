@@ -22,11 +22,14 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
 | `GET /v1/settings` | compact、notifications、timezone |
 | `GET /v1/templates` | free / okr / project / learning / habit、バージョン、作成予定 |
-| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles |
+| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles / checkins |
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
 | `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
 | `GET /v1/workspaces/{w}/dashboard` | 行動の実施・指標の進捗・自己評価・状況を分けて返す |
+| `GET /v1/workspaces/{w}/review` | 未チェックイン／停滞／要注意／最近更新の4リスト |
+| `GET /v1/workspaces/{w}/items/{id}/checkins` | チェックイン全履歴と現在有効なもの |
+| `GET /v1/workspaces/{w}/items/{id}/timeline?as_of=` | 目標に起きたことの時系列と、その時点の状態 |
 | `GET /v1/workspaces/{w}/cycles` | 計画期間一覧 |
 | `GET /v1/workspaces/{w}/items` | query / kind / state / archived / cursor / limitによる検索 |
 | `GET /v1/workspaces/{w}/items/{id}` | 版番号を含む項目 |
@@ -111,6 +114,31 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 通常の記録はnote / review / learning / checkin。実行履歴を偽装できないようcompletionなどは専用操作だけが生成します。記録・観測の訂正はsupersedes_idで追記し、元データは保持します。
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
+
+## Check-in・履歴・レビュー
+
+目標を「作って終わり」にしないための追記型の記録です。
+
+- `POST /v1/workspaces/{w}/items/{id}/checkins`：`health`（on_track / at_risk / off_track）、`self_assessment`、`comment`、`results`、`blockers`、`next_focus`、`observation_ids`、`supersedes_id`。**記入者と日時はサーバーが打ちます。** 何も書かれていないチェックインは拒否します。
+- `POST /v1/workspaces/{w}/items/{id}/health`：状況だけを記録する短縮形。内部はチェックインなので、状況が記録なしに変わることはありません。
+- `GET /v1/workspaces/{w}/items/{id}/checkins`：全履歴と`standing_id`（現在有効なもの）。
+- `GET /v1/workspaces/{w}/items/{id}/timeline?as_of=`：作成・引き継ぎ・チェックインと訂正・観測と訂正・記録・つながりの変更・編集を時系列で。`as_of`を渡すとその時点まで再生し、**その時点で何が信じられていたか**を`state`で返します。
+- `GET /v1/workspaces/{w}/review?stale_days=&cycle_id=`：レビュー用の4リスト。
+
+**訂正は追記です。** 間違っていたチェックインは`supersedes_id`で新しいものを書き、元は残ります。チェックイン履歴の価値は「その時点で何を信じていたか」を言えることで、編集してしまうと「今何を信じているか」しか言えなくなります。
+
+**数値と言葉は別データのままです。** `observation_ids`は観測を指すだけで値を複製しません（複製するとコメントと測定値が食い違い始めます）。
+
+レビューは4つのリストに分けます。**沈黙は警告ではありません**：誰もチェックインしていない目標を「要注意」に混ぜると、新しい目標がすべて問題に見え、実際に誰かが警告した目標が埋もれます。
+
+| リスト | 意味 |
+| --- | --- |
+| `never_checked_in` | 一度も記録がない |
+| `stale` | 記録はあるが`stale_days`（既定14日）以上前 |
+| `at_risk` | 誰かがat_risk / off_trackと記録した |
+| `recently_updated` | 期間内に記録があった |
+
+目標のcurrent healthは**最新の有効なチェックインの投影**です。AI接続は`changesets/preview`にチェックインを含めて提案でき、差分には本人の前回の言葉が`before`として並びます。適用は本人として実行されるので、記録の`author`は本人になります。
 
 ## Goal Dashboard
 

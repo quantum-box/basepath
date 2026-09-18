@@ -1112,3 +1112,172 @@ test("a malformed health or payload does not become a verdict", () => {
   assert.equal(view.goals[0].health, null);
   assert.equal(healthLabel(view.goals[0].health?.status ?? null), "未記入");
 });
+
+// --- Check-ins, timeline, review ----------------------------------------
+//
+// A history is only worth having if it says what was believed at the time.
+
+const {
+  checkinsFrom,
+  timelineFrom,
+  reviewQueueFrom,
+  eventLabel,
+  healthLabel: checkinHealthLabel,
+  reviewCounts,
+} = await import("../src/shared/checkinView.ts");
+
+test("a correction is shown as a correction, not as the only truth", () => {
+  const history = checkinsFrom({
+    standing_id: "ci2",
+    items: [
+      {
+        id: "ci2",
+        item_id: "g1",
+        health: "off_track",
+        comment: "見込み違いでした",
+        author: "us_alice",
+        created_at: "2026-11-10T00:00:00Z",
+        supersedes_id: "ci1",
+        observation_ids: [],
+      },
+      {
+        id: "ci1",
+        item_id: "g1",
+        health: "on_track",
+        comment: "順調です",
+        self_assessment: 70,
+        author: "us_alice",
+        created_at: "2026-11-01T00:00:00Z",
+        observation_ids: [],
+      },
+    ],
+  });
+  assert.equal(history.length, 2);
+  const [current, original] = history;
+  assert.equal(current.standing, true);
+  assert.equal(current.superseded, false);
+  assert.equal(current.supersedesId, "ci1");
+  // The one it replaced is still here, still saying what it said.
+  assert.equal(original.standing, false);
+  assert.equal(original.superseded, true);
+  assert.equal(original.comment, "順調です");
+  assert.equal(original.selfAssessment, 70);
+});
+
+test("a timeline replayed to a moment reports that moment", () => {
+  const line = timelineFrom({
+    item_id: "g1",
+    title: "履歴のある目標",
+    as_of: "2026-11-05T00:00:00Z",
+    events: [
+      { at: "2026-10-01T00:00:00Z", kind: "created", summary: "作成" },
+      {
+        at: "2026-11-01T00:00:00Z",
+        kind: "checkin",
+        actor: "us_alice",
+        summary: "on_track",
+        ref: "ci1",
+      },
+    ],
+    state: {
+      health: "on_track",
+      self_assessment: 70,
+      checkin_id: "ci1",
+      checked_in_at: "2026-11-01T00:00:00Z",
+      checked_in_by: "us_alice",
+    },
+  });
+  assert.equal(line.asOf, "2026-11-05T00:00:00Z");
+  assert.equal(line.state.health, "on_track");
+  assert.equal(line.state.checkedInBy, "us_alice");
+  assert.equal(line.events.length, 2);
+  assert.equal(eventLabel("checkin"), "チェックイン");
+  assert.equal(eventLabel("alignment_changed"), "つながりの変更");
+  // An event kind nobody has named still renders as itself rather than blank.
+  assert.equal(eventLabel("something_new"), "something_new");
+});
+
+test("before anyone had spoken, nothing was known", () => {
+  const line = timelineFrom({
+    item_id: "g1",
+    title: "まだ何もない目標",
+    as_of: "2000-01-01T00:00:00Z",
+    events: [],
+    state: {
+      health: null,
+      self_assessment: null,
+      checkin_id: null,
+      checked_in_at: null,
+      checked_in_by: null,
+    },
+  });
+  assert.equal(line.state.health, null);
+  assert.equal(line.state.selfAssessment, null);
+  assert.equal(checkinHealthLabel(line.state.health), "未記入");
+  assert.deepEqual(line.events, []);
+  assert.equal(timelineFrom(null), null);
+  assert.equal(timelineFrom({ events: [] }), null);
+});
+
+test("silence and a warning are different lists", () => {
+  const queue = reviewQueueFrom({
+    workspace_id: "team",
+    stale_days: 14,
+    never_checked_in: [
+      { id: "g_quiet", title: "誰も何も言っていない", owner: null },
+    ],
+    stale: [],
+    at_risk: [
+      {
+        id: "g_trouble",
+        title: "問題がある",
+        owner: { kind: "team", id: "運営" },
+        health: "at_risk",
+        blockers: "人手",
+        next_focus: "採用",
+        last_checkin_at: "2026-11-10T00:00:00Z",
+        last_checkin_by: "us_alice",
+      },
+    ],
+    recently_updated: [
+      {
+        id: "g_trouble",
+        title: "問題がある",
+        owner: { kind: "team", id: "運営" },
+      },
+    ],
+  });
+  const counts = reviewCounts(queue);
+  assert.equal(counts.silent, 1);
+  assert.equal(counts.atRisk, 1);
+  // The quiet goal is not in the warning list, and never becomes one by
+  // being quiet for longer.
+  assert.equal(
+    queue.atRisk.some((entry) => entry.id === "g_quiet"),
+    false,
+  );
+  assert.equal(queue.neverCheckedIn[0].lastCheckinAt, null);
+  assert.equal(queue.neverCheckedIn[0].ownerLabel, "担当なし");
+  assert.equal(queue.atRisk[0].ownerLabel, "運営");
+  assert.equal(queue.atRisk[0].blockers, "人手");
+});
+
+test("a health value this model does not have is not rendered as one", () => {
+  const history = checkinsFrom({
+    standing_id: "ci1",
+    items: [
+      {
+        id: "ci1",
+        item_id: "g1",
+        health: "絶好調",
+        author: "us_alice",
+        created_at: "2026-11-01T00:00:00Z",
+      },
+    ],
+  });
+  assert.equal(history[0].health, null);
+  assert.equal(checkinHealthLabel(history[0].health), "未記入");
+  // And the observation links default to an empty list rather than undefined,
+  // so a screen never has to guard for it.
+  assert.deepEqual(history[0].observationIds, []);
+});

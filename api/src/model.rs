@@ -117,6 +117,47 @@ pub struct Recurrence {
     #[serde(default)]
     pub weekdays: Vec<u8>,
 }
+/// One update on how a goal is going.
+///
+/// Append-only. A check-in that turns out to be wrong is corrected by writing
+/// another one that supersedes it, never by editing this: the point of a
+/// check-in history is that it says what was believed at the time, and an
+/// edited one says only what is believed now.
+///
+/// The numbers stay their own data. `observation_ids` names the measurements
+/// this was written against; it does not copy their values, because a comment
+/// and a measurement are different kinds of claim and a copy would let them
+/// drift apart.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Checkin {
+    pub id: String,
+    pub workspace_id: String,
+    pub item_id: String,
+    /// `on_track` | `at_risk` | `off_track`, or absent when this check-in only
+    /// records words.
+    #[serde(default)]
+    pub health: Option<String>,
+    /// The author's own judgement, when they made one.
+    #[serde(default)]
+    pub self_assessment: Option<f64>,
+    #[serde(default)]
+    pub comment: String,
+    #[serde(default)]
+    pub results: String,
+    #[serde(default)]
+    pub blockers: String,
+    #[serde(default)]
+    pub next_focus: String,
+    #[serde(default)]
+    pub observation_ids: Vec<String>,
+    pub author: String,
+    pub created_at: String,
+    /// The check-in this corrects.
+    #[serde(default)]
+    pub supersedes_id: Option<String>,
+}
+
 /// Somebody's stated view of how a goal is going.
 ///
 /// Deliberately not derived. Signals — a stale metric, a missed date, nobody
@@ -187,6 +228,13 @@ pub struct Relation {
     pub relation_type: String,
     #[serde(default)]
     pub rationale: String,
+    /// When the link was made.
+    ///
+    /// Optional because relations recorded before this field existed have no
+    /// honest answer. A timeline leaves those out rather than dating them
+    /// with the moment it happened to read them.
+    #[serde(default)]
+    pub created_at: Option<String>,
     pub version: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
