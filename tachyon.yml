@@ -104,6 +104,16 @@ spec:
           value: /tmp/pathbase.sqlite3
         # Provision PATHBASE_SESSION_KEYS as an encrypted app environment
         # variable; key material must never be committed to this manifest.
+        #
+        # Field delegates authentication to Tachyon's Cognito verifier, which
+        # only accepts tokens issued by the Cognito user pool (ADR-0036).
+        # Registering the OAuth2Client below with useTachyonUserPool also
+        # creates a secretless Cognito App Client with USER_PASSWORD_AUTH, so
+        # TACHYON_OIDC_CLIENT_ID is already that App Client's id and setting
+        # the issuer is enough to sign in against the pool directly. The user
+        # pool id and region are public configuration, not secrets.
+        - name: PATHBASE_COGNITO_ISSUER
+          value: https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_8Ga4bK5M4
         - name: TACHYON_OIDC_ISSUER
           value: https://api.n1.tachy.one
         - name: TACHYON_OIDC_CLIENT_ID

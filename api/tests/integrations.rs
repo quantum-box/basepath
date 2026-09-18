@@ -28,6 +28,7 @@ struct MockState {
     field_task: Arc<Mutex<(String, String, String)>>,
     expires: Arc<Mutex<i64>>,
     token_lifetime: Arc<Mutex<i64>>,
+    cognito_token: Arc<Mutex<String>>,
 }
 async fn mock(
     State(s): State<MockState>,
@@ -40,7 +41,25 @@ async fn mock(
     s.calls.lock().unwrap().push(path.into());
     match path {
         "/.well-known/openid-configuration"=>Json(json!({"issuer":s.base,"authorization_endpoint":format!("{}/authorize",s.base),"token_endpoint":format!("{}/token",s.base),"jwks_uri":format!("{}/jwks",s.base)})).into_response(),
-        "/jwks"=>Json(serde_json::from_str::<Value>(include_str!("fixtures/oidc-jwks.json")).unwrap()).into_response(),
+        "/jwks"|"/pool/.well-known/jwks.json"=>Json(serde_json::from_str::<Value>(include_str!("fixtures/oidc-jwks.json")).unwrap()).into_response(),
+        // Cognito's AWS JSON protocol posts to the service root with x-amz-target.
+        "/"=> {
+            assert_eq!(method, Method::POST);
+            assert_eq!(headers.get("x-amz-target").unwrap(),"AWSCognitoIdentityProviderService.InitiateAuth");
+            assert_eq!(headers.get("content-type").unwrap(),"application/x-amz-json-1.1");
+            let request=serde_json::from_str::<Value>(&body).unwrap();
+            assert_eq!(request["AuthFlow"],"USER_PASSWORD_AUTH");
+            assert_eq!(request["ClientId"],"cognito-test-client");
+            if request["AuthParameters"]["PASSWORD"]!="test-password" {
+                return (StatusCode::BAD_REQUEST,Json(json!({"__type":"com.amazon.coral.service#NotAuthorizedException"}))).into_response();
+            }
+            let mut header=jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);header.kid=Some("test-key".into());
+            let claims=json!({"sub":"upstream-subject","iss":format!("{}/pool",s.base),"exp":*s.expires.lock().unwrap(),"token_use":"access","client_id":"cognito-test-client"});
+            let key=jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/oidc-test-key.pem")).unwrap();
+            let access_token=jsonwebtoken::encode(&header,&claims,&key).unwrap();
+            *s.cognito_token.lock().unwrap()=access_token.clone();
+            Json(json!({"AuthenticationResult":{"AccessToken":access_token,"ExpiresIn":3600,"TokenType":"Bearer"}})).into_response()
+        },
         "/oauth2/login"=> {
             assert_eq!(method, Method::POST);
             let credentials=serde_json::from_str::<Value>(&body).unwrap();
@@ -75,7 +94,9 @@ async fn mock(
         },
         "/v1/me"=> {
             assert_eq!(method, Method::GET);
-            if headers.get("authorization").and_then(|value| value.to_str().ok()) != Some("Bearer test-access-token") {
+            let cognito=format!("Bearer {}",s.cognito_token.lock().unwrap());
+            let presented=headers.get("authorization").and_then(|value| value.to_str().ok()).unwrap_or_default();
+            if presented != "Bearer test-access-token" && presented != cognito {
                 return StatusCode::UNAUTHORIZED.into_response();
             }
             assert!(headers.get("x-user-id").is_none());
@@ -134,6 +155,7 @@ async fn upstream() -> (MockState, tokio::task::JoinHandle<()>) {
         ))),
         expires: Arc::new(Mutex::new(chrono::Utc::now().timestamp() + 3600)),
         token_lifetime: Arc::new(Mutex::new(3600)),
+        cognito_token: Default::default(),
     };
     let router = Router::new().fallback(mock).with_state(s.clone());
     let handle = tokio::spawn(async {
@@ -149,6 +171,8 @@ async fn auth(s: &MockState) -> TachyonAuth {
         redirect_uri: "http://localhost:1420/api/auth/callback".into(),
         public_url: "http://localhost:1420".into(),
         tachyon_api_url: s.base.clone(),
+        cognito_client_id: None,
+        cognito_issuer: None,
     })
     .await
     .unwrap()
@@ -163,6 +187,8 @@ fn runtime_auth_uses_tachyon_oauth_routes_without_discovery() {
         redirect_uri: "https://pathbase.example.com/api/auth/callback".into(),
         public_url: "https://pathbase.example.com".into(),
         tachyon_api_url: "https://api.example.com".into(),
+        cognito_client_id: None,
+        cognito_issuer: None,
     })
     .unwrap();
 
@@ -186,6 +212,8 @@ async fn auth_status_uses_the_path_below_the_cloudapp_api_mount() {
         redirect_uri: "https://pathbase.example.com/api/auth/callback".into(),
         public_url: "https://pathbase.example.com".into(),
         tachyon_api_url: "https://api.example.com".into(),
+        cognito_client_id: None,
+        cognito_issuer: None,
     })
     .unwrap();
     let app = Router::new().nest(
@@ -229,6 +257,8 @@ async fn preflight_checks_configuration_and_unauthenticated_boundaries() {
             redirect_uri: "http://localhost:1420/api/auth/callback".into(),
             public_url: "http://localhost:1420".into(),
             tachyon_api_url: s.base.clone(),
+            cognito_client_id: None,
+            cognito_issuer: None,
         }),
         false,
         Ok(Some(
@@ -268,6 +298,8 @@ async fn encrypted_session_survives_auth_instance_replacement() {
         redirect_uri: "http://localhost:1420/api/auth/callback".into(),
         public_url: "http://localhost:1420".into(),
         tachyon_api_url: s.base.clone(),
+        cognito_client_id: None,
+        cognito_issuer: None,
     };
     let key = [7_u8; 32];
     let a = TachyonAuth::new_with_session_keys(config.clone(), vec![key])
@@ -292,6 +324,8 @@ async fn encrypted_session_survives_auth_instance_replacement() {
             redirect_uri: "http://localhost:1420/api/auth/callback".into(),
             public_url: "http://localhost:1420".into(),
             tachyon_api_url: s.base.clone(),
+            cognito_client_id: None,
+            cognito_issuer: None,
         },
         vec![[8_u8; 32]],
     )
@@ -514,6 +548,53 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
         .any(|p| p.ends_with("/complete")));
     server.abort();
 }
+/// ADR-0036: Field delegates to Tachyon's Cognito verifier, so the bearer PathBase
+/// stores and forwards has to be a user-pool access token, not a Tachyon-issued one.
+#[tokio::test]
+async fn cognito_direct_login_stores_the_user_pool_access_token_as_the_bearer() {
+    let (s, _h) = upstream().await;
+    let auth = TachyonAuth::new(AuthConfig {
+        issuer: s.base.clone(),
+        client_id: "pathbase-test".into(),
+        client_secret: None,
+        redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+        public_url: "http://localhost:1420".into(),
+        tachyon_api_url: s.base.clone(),
+        cognito_client_id: Some("cognito-test-client".into()),
+        cognito_issuer: Some(format!("{}/pool", s.base)),
+    })
+    .await
+    .unwrap();
+
+    let cookie = auth
+        .direct_login("test-user", "test-password")
+        .await
+        .unwrap();
+    // The Tachyon OAuth2 authorization-code routes are not used at all.
+    let calls = s.calls.lock().unwrap().clone();
+    assert!(
+        calls.iter().any(|p| p == "/"),
+        "InitiateAuth was not called"
+    );
+    assert!(!calls.iter().any(|p| p == "/oauth2/login"));
+    assert!(!calls.iter().any(|p| p == "/authorize"));
+    assert!(!calls.iter().any(|p| p == "/token"));
+
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
+    let session = auth.session(&headers).await.unwrap();
+    assert_eq!(
+        session.access_token,
+        s.cognito_token.lock().unwrap().clone(),
+        "the session must carry the Cognito access token"
+    );
+    assert_eq!(session.identity.id, "us_verified");
+
+    // A wrong password is rejected as 401, not surfaced as an upstream outage.
+    let rejected = auth.direct_login("test-user", "wrong-password").await;
+    assert_eq!(rejected.unwrap_err().status, 401);
+}
+
 #[tokio::test]
 async fn direct_login_uses_tachyon_pkce_without_hosted_ui() {
     let (s, server) = upstream().await;
