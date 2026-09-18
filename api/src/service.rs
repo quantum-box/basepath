@@ -719,6 +719,24 @@ async fn dispatch_inner(
         }
         ("GET", ["v1", "workspaces"]) => return value(memberships(tx, &actor.id).await?),
         ("GET", ["v1", "templates"]) => return Ok(templates()),
+        // MCP connections belong to the person, not to a workspace: they are
+        // the record of which AI clients they let act on their behalf. An
+        // agent can never manage its own delegation.
+        ("GET", ["v1", "mcp", "connections"]) if !actor.agent => {
+            return value(crate::mcp_auth::list_connections(tx, &actor.id).await?);
+        }
+        ("POST", ["v1", "mcp", "connections", id, "approve"]) if !actor.agent => {
+            only(body, &["scopes", "expected_version"])?;
+            let scopes: Vec<String> = serde_json::from_value(body["scopes"].clone())?;
+            let expected = body["expected_version"].as_i64().ok_or_else(|| {
+                ApiError::new(428, "VERSION_REQUIRED", "expected_versionが必要です")
+            })?;
+            return value(crate::mcp_auth::approve(tx, &actor.id, id, &scopes, expected).await?);
+        }
+        ("POST", ["v1", "mcp", "connections", id, "revoke"]) if !actor.agent => {
+            only(body, &[])?;
+            return value(crate::mcp_auth::revoke(tx, &actor.id, id).await?);
+        }
         ("GET", ["v1", "settings"]) => {
             let raw = tx
                 .fetch_optional(

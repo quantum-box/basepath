@@ -3,6 +3,7 @@ pub mod collaboration;
 pub mod db;
 pub mod field;
 pub mod mcp;
+pub mod mcp_auth;
 pub mod migrate;
 pub mod model;
 pub mod openapi;
@@ -49,6 +50,60 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+/// Builds the hosted MCP router when this deployment exposes one.
+///
+/// It is enabled by `PATHBASE_MCP_CLIENT_ID`, the OAuth client an access token
+/// must have been issued to. There is no shared-secret mode: an MCP client
+/// authenticates as the person, or not at all.
+pub fn remote_mcp_router(
+    service: service::Service,
+    auth: Option<&Arc<auth::TachyonAuth>>,
+) -> Result<Option<Router<HttpState>>, ApiError> {
+    let Some(resource) = mcp_auth::ResourceConfig::from_env()? else {
+        return Ok(None);
+    };
+    let auth = auth.ok_or_else(|| {
+        ApiError::new(
+            500,
+            "AUTH_CONFIGURATION",
+            "MCPを公開するにはTachyon認証の設定が必要です",
+        )
+    })?;
+    let allowed_hosts = std::env::var("PATHBASE_MCP_ALLOWED_HOSTS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|host| !host.is_empty())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            url::Url::parse(&resource.resource)
+                .ok()
+                .and_then(|url| url.host_str().map(String::from))
+                .into_iter()
+                .collect()
+        });
+    if allowed_hosts.is_empty() {
+        return Err(ApiError::new(
+            500,
+            "AUTH_CONFIGURATION",
+            "PATHBASE_MCP_ALLOWED_HOSTSを設定してください",
+        ));
+    }
+    Ok(Some(mcp::remote_router(
+        mcp::RemoteMcp {
+            service,
+            auth: auth.clone(),
+            resource: Arc::new(resource),
+        },
+        allowed_hosts,
+    )))
+}
+
 pub fn router(state: HttpState) -> Router {
     router_with_mcp(state, None)
 }
@@ -144,6 +199,15 @@ async fn endpoint(
     bytes: Bytes,
 ) -> Result<Response, ApiError> {
     let path = uri.path().to_owned();
+    // RFC 9728 protected resource metadata. It must be reachable without a
+    // token: it is how a client discovers where to get one.
+    if method == Method::GET && path.starts_with("/.well-known/oauth-protected-resource") {
+        let resource = mcp_auth::ResourceConfig::from_env()?.ok_or_else(ApiError::missing)?;
+        if path != resource.metadata_path() && path != "/.well-known/oauth-protected-resource" {
+            return Err(ApiError::missing());
+        }
+        return Ok(Json(resource.metadata()).into_response());
+    }
     if path == "/auth/status" && method == Method::GET {
         return Ok(Json(json!({"mode":if state.auth.is_some(){"tachyon"}else{"local-preview"},"configured":state.auth.is_some(),"field_configured":state.field.is_some()})).into_response());
     }

@@ -122,3 +122,76 @@ test("no local SQLite path survives in the deployed API", async () => {
   assert.doesNotMatch(manifest, /mysql:\/\//);
   assert.doesNotMatch(example, /^DATABASE_URL=.+$/m);
 });
+
+test("the MCP endpoint has its own OAuth client, separate from web sign-in", async () => {
+  const { parseAllDocuments } = await import("yaml");
+  const raw = await readFile(
+    new URL("../tachyon.yml", import.meta.url),
+    "utf8",
+  );
+  const documents = parseAllDocuments(raw).map((document) => document.toJS());
+  const clients = documents.filter(
+    (document) => document?.kind === "OAuth2Client",
+  );
+  const names = clients.map((client) => client.metadata.name);
+  assert.ok(names.includes("pathbase-local"), "web sign-in client");
+  assert.ok(names.includes("pathbase-mcp"), "MCP client");
+
+  // Both are public clients using PKCE: no client secret is ever committed.
+  for (const client of clients) {
+    assert.equal(client.spec.clientType, "public");
+    assert.equal(client.spec.clientSecret, undefined);
+    assert.ok(client.spec.grantTypes.includes("authorization_code"));
+  }
+  // A browser callback must not also be an MCP callback, or one client's token
+  // could be obtained through the other's flow.
+  const web = clients.find((c) => c.metadata.name === "pathbase-local");
+  const mcp = clients.find((c) => c.metadata.name === "pathbase-mcp");
+  for (const uri of mcp.spec.redirectUris) {
+    assert.ok(
+      !web.spec.redirectUris.includes(uri),
+      `redirect URI shared between clients: ${uri}`,
+    );
+  }
+
+  // The API app names the MCP client by reference, never by literal value.
+  const api = (await apps())["pathbase-api"];
+  const clientId = api.envVars.find(
+    (variable) => variable.name === "PATHBASE_MCP_CLIENT_ID",
+  );
+  assert.equal(clientId.type, "credential");
+  assert.equal(clientId.valueFrom.oauth2ClientRef.name, "pathbase-mcp");
+  assert.equal(clientId.value, undefined);
+});
+
+test("production and preview are different MCP resources", async () => {
+  const api = (await apps())["pathbase-api"];
+  const resource = (environment) =>
+    (api.environments[environment].envVars ?? []).find(
+      (variable) => variable.name === "PATHBASE_MCP_RESOURCE",
+    )?.value;
+
+  const production = resource("production");
+  const preview = resource("preview");
+  assert.ok(production, "production declares its MCP resource");
+  assert.ok(preview, "preview declares its MCP resource");
+  // A connection approved against one must not be a token for the other.
+  assert.notEqual(production, preview);
+  // The base list must not fix a resource, or the overlays would be moot.
+  assert.equal(
+    api.envVars.find((variable) => variable.name === "PATHBASE_MCP_RESOURCE"),
+    undefined,
+  );
+});
+
+test("no MCP shared secret survives anywhere", async () => {
+  const [manifest, example] = await Promise.all([
+    readFile(new URL("../tachyon.yml", import.meta.url), "utf8"),
+    readFile(new URL("../.env.example", import.meta.url), "utf8"),
+  ]);
+  // The fixed-token mode is gone: an MCP client authenticates as the person.
+  for (const source of [manifest, example]) {
+    assert.doesNotMatch(source, /PATHBASE_MCP_TOKEN/);
+    assert.doesNotMatch(source, /PATHBASE_MCP_ACTOR_ID/);
+  }
+});
