@@ -123,7 +123,7 @@ test("no local SQLite path survives in the deployed API", async () => {
   assert.doesNotMatch(example, /^DATABASE_URL=.+$/m);
 });
 
-test("the MCP endpoint has its own OAuth client, separate from web sign-in", async () => {
+test("the MCP endpoint is enabled by declaration, with no OAuth client of its own", async () => {
   const { parseAllDocuments } = await import("yaml");
   const raw = await readFile(
     new URL("../tachyon.yml", import.meta.url),
@@ -135,33 +135,35 @@ test("the MCP endpoint has its own OAuth client, separate from web sign-in", asy
   );
   const names = clients.map((client) => client.metadata.name);
   assert.ok(names.includes("pathbase-local"), "web sign-in client");
-  assert.ok(names.includes("pathbase-mcp"), "MCP client");
+  // Basepath issues the MCP tokens itself, so there is no platform OAuth
+  // client for AI hosts to be registered against. One that existed but was
+  // unused would only be a credential nobody was watching.
+  assert.equal(
+    names.filter((name) => name.includes("mcp")).length,
+    0,
+    "the MCP endpoint must not carry an unused identity-provider client",
+  );
 
-  // Both are public clients using PKCE: no client secret is ever committed.
+  // Every declared client is public and uses PKCE: no secret is committed.
   for (const client of clients) {
     assert.equal(client.spec.clientType, "public");
     assert.equal(client.spec.clientSecret, undefined);
     assert.ok(client.spec.grantTypes.includes("authorization_code"));
   }
-  // A browser callback must not also be an MCP callback, or one client's token
-  // could be obtained through the other's flow.
-  const web = clients.find((c) => c.metadata.name === "pathbase-local");
-  const mcp = clients.find((c) => c.metadata.name === "pathbase-mcp");
-  for (const uri of mcp.spec.redirectUris) {
-    assert.ok(
-      !web.spec.redirectUris.includes(uri),
-      `redirect URI shared between clients: ${uri}`,
-    );
-  }
 
-  // The API app names the MCP client by reference, never by literal value.
+  // The endpoint exists only where it is declared, and the declaration is a
+  // plain switch rather than a credential reference.
   const api = (await apps())["pathbase-api"];
-  const clientId = api.envVars.find(
-    (variable) => variable.name === "PATHBASE_MCP_CLIENT_ID",
+  const enabled = api.envVars.find(
+    (variable) => variable.name === "PATHBASE_MCP_ENABLED",
   );
-  assert.equal(clientId.type, "credential");
-  assert.equal(clientId.valueFrom.oauth2ClientRef.name, "pathbase-mcp");
-  assert.equal(clientId.value, undefined);
+  assert.equal(enabled.value, "1");
+  assert.equal(enabled.type, undefined);
+  assert.equal(
+    api.envVars.find((variable) => variable.name === "PATHBASE_MCP_CLIENT_ID"),
+    undefined,
+    "the removed variable must not linger",
+  );
 });
 
 test("production and preview are different MCP resources", async () => {

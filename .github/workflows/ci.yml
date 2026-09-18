@@ -35,9 +35,13 @@ jobs:
       - run: npm run test:sites
       - run: npm run test:config
       - run: npm run test:view
+      - run: npm run test:plugin
       # The MCP App bundle is committed so the Lambda can embed it. Rebuild it
       # here and fail if the committed file has drifted from its source.
       - run: npm run check:mcp-app
+      # The distributable plugin packages assemble from plugin/<host>/ and the
+      # shared skills/. A package that cannot be built cannot be submitted.
+      - run: npm run build:plugin
       # Without a built binary this checks only the dev-script binary selection;
       # the browser job runs the same file against the real API.
       - run: npm run test:smoke

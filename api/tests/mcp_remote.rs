@@ -1,14 +1,24 @@
 //! The hosted MCP endpoint, driven over real HTTP by a real child process.
 //!
-//! Identity comes from an OAuth access token issued to this deployment's MCP
-//! client. There is no shared-secret mode, so this test also covers what an
-//! attacker would try: no token, a token for the web sign-in client, a token
-//! for another user, a connection that was never approved, one that was
-//! revoked, and a scope the person did not grant.
+//! Identity comes from an OAuth access token Basepath issued after the person
+//! consented on Basepath's own origin. There is no shared-secret mode, so this
+//! test also covers what an attacker would try: no token, a token minted by
+//! the identity provider for the browser, a token for another user, a
+//! connection that was revoked, and a scope the person did not grant.
+//!
+//! The consent step runs in process, against the same database file, because
+//! it is a signed-in person clicking in Basepath — there is no HTTP request an
+//! AI client could make that performs it. Everything a client actually does —
+//! registration, the token exchange, and every MCP call — goes over HTTP.
 use axum::{extract::State, http::HeaderMap, response::IntoResponse, routing::any, Json, Router};
-use pathbase_api::service::{Actor, Service};
+use pathbase_api::{
+    mcp_auth::ResourceConfig,
+    oauth,
+    service::{Actor, Service},
+};
 use reqwest::{header::HeaderMap as ClientHeaders, Client as HttpClient, StatusCode};
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     collections::HashMap,
     net::TcpListener,
@@ -18,7 +28,6 @@ use std::{
 };
 
 const API_TOKEN: &str = "local-api-test-token-with-32-characters";
-const MCP_CLIENT: &str = "pathbase-mcp-test-client";
 const WEB_CLIENT: &str = "pathbase-web-test-client";
 const SESSION_KEYS: &str = "dGVzdC1zZXNzaW9uLWtleS0zMi1ieXRlcy1sb25nISE";
 
@@ -113,7 +122,16 @@ async fn start_upstream() -> String {
     base
 }
 
-async fn start_server(db: &Path, upstream: &str) -> (Server, String, String) {
+/// Starts one API process.
+///
+/// `canonical` names the MCP resource this process serves. Two processes of
+/// one deployment share it — that is what makes them the same resource to a
+/// client — while a test that starts a single process lets it derive its own.
+async fn start_server(
+    db: &Path,
+    upstream: &str,
+    canonical: Option<&str>,
+) -> (Server, String, String) {
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -140,10 +158,17 @@ async fn start_server(db: &Path, upstream: &str) -> (Server, String, String) {
             .env("TACHYON_API_URL", upstream)
             .env("PATHBASE_COGNITO_ISSUER", format!("{upstream}/pool"))
             .env("PATHBASE_COGNITO_CLIENT_ID", WEB_CLIENT)
-            // The MCP endpoint has its own OAuth client, so a browser token is
-            // not a token for this resource.
-            .env("PATHBASE_MCP_CLIENT_ID", MCP_CLIENT)
-            .env("PATHBASE_MCP_RESOURCE", format!("{public}/mcp"))
+            // Basepath is the authorization server for its own MCP resource.
+            .env("PATHBASE_MCP_ENABLED", "1")
+            // Run directly, with no Worker in front, so the API's public base
+            // is the origin rather than `{origin}/api`.
+            .env("PATHBASE_API_BASE_URL", &public)
+            .env(
+                "PATHBASE_MCP_RESOURCE",
+                canonical
+                    .map(String::from)
+                    .unwrap_or(format!("{public}/mcp")),
+            )
             .env("PATHBASE_MCP_ALLOWED_HOSTS", "127.0.0.1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -241,8 +266,105 @@ async fn initialize(client: &HttpClient, url: &str, token: &str) {
     );
 }
 
-/// Approves a connection the way the PathBase screen does, as the person.
-async fn approve(service: &Service, actor: &str, scopes: Value) -> Value {
+/// Completes the OAuth flow the way a host does, and returns the access token.
+///
+/// Registration and the token exchange are real HTTP calls, because that is
+/// what a host performs. The consent in between is in process against the same
+/// database: it is a signed-in person clicking in Basepath, and there is
+/// deliberately no request an AI client can make that stands in for it.
+async fn connect(
+    client: &HttpClient,
+    service: &Service,
+    public: &str,
+    actor: &str,
+    scopes: &[&str],
+) -> String {
+    let redirect = "http://127.0.0.1:8123/callback";
+    let registered: Value = client
+        .post(format!("{public}/oauth/register"))
+        .json(&json!({"client_name":"Remote test host","redirect_uris":[redirect]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let client_id = registered["client_id"].as_str().unwrap().to_owned();
+
+    use base64::Engine;
+    let verifier = format!("{actor}-verifier-{actor}-verifier-0123456789abcdef");
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    let resource = ResourceConfig {
+        resource: format!("{public}/mcp"),
+        issuer: public.to_owned(),
+        api_base: public.to_owned(),
+        consent_url: format!("{public}/settings/connections"),
+    };
+    let mut query = HashMap::new();
+    for (key, value) in [
+        ("client_id", client_id.as_str()),
+        ("redirect_uri", redirect),
+        ("response_type", "code"),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("scope", &scopes.join(" ")),
+        ("state", "remote-test"),
+    ] {
+        query.insert(key.to_string(), value.to_string());
+    }
+    let asked = oauth::begin_authorization(&service.db, &resource, public, &query)
+        .await
+        .unwrap();
+    let oauth::Authorization::Ask(_, handle) = asked else {
+        panic!("the authorization request should have reached the person");
+    };
+    let decided = oauth::decide(
+        service,
+        &Actor {
+            id: actor.into(),
+            agent: false,
+            connection: None,
+        },
+        public,
+        &handle,
+        &scopes
+            .iter()
+            .map(|scope| scope.to_string())
+            .collect::<Vec<_>>(),
+        true,
+    )
+    .await
+    .unwrap();
+    let code = url::Url::parse(decided["redirect_to"].as_str().unwrap())
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
+
+    let issued = client
+        .post(format!("{public}/oauth/token"))
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("code_verifier", verifier.as_str()),
+            ("redirect_uri", redirect),
+            ("client_id", client_id.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(issued.status(), StatusCode::OK);
+    // A token response must never be cached by anything in between.
+    assert_eq!(issued.headers().get("cache-control").unwrap(), "no-store");
+    let issued: Value = issued.json().await.unwrap();
+    assert_eq!(issued["scope"], scopes.join(" "));
+    issued["access_token"].as_str().unwrap().to_owned()
+}
+
+/// The connection id of the one delegation this person holds.
+async fn connection_of(service: &Service, actor: &str) -> Value {
     let who = Actor {
         id: actor.into(),
         agent: false,
@@ -259,21 +381,7 @@ async fn approve(service: &Service, actor: &str, scopes: Value) -> Value {
         )
         .await
         .unwrap();
-    let connection = connections.as_array().unwrap().first().unwrap().clone();
-    service
-        .handle(
-            &who,
-            "POST",
-            &format!(
-                "/v1/mcp/connections/{}/approve",
-                connection["id"].as_str().unwrap()
-            ),
-            &HashMap::new(),
-            json!({"scopes":scopes,"expected_version":connection["version"]}),
-            Some(&uuid::Uuid::new_v4().to_string()),
-        )
-        .await
-        .unwrap()
+    connections.as_array().unwrap().first().unwrap().clone()
 }
 
 #[tokio::test]
@@ -282,7 +390,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     let db = dir.path().join("remote-mcp.sqlite3");
     let upstream = start_upstream().await;
     let issuer = format!("{upstream}/pool");
-    let (_server, url, public) = start_server(&db, &upstream).await;
+    let (_server, url, public) = start_server(&db, &upstream, None).await;
     let client = HttpClient::new();
     let service = Service::open(&db.to_string_lossy()).await.unwrap();
 
@@ -295,11 +403,32 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     assert_eq!(metadata.status(), StatusCode::OK);
     let metadata: Value = metadata.json().await.unwrap();
     assert_eq!(metadata["resource"], format!("{public}/mcp"));
-    assert_eq!(metadata["authorization_servers"][0], issuer);
+    // The authorization server is Basepath itself, not the identity provider:
+    // the pool advertises no PKCE method and offers no registration endpoint,
+    // so a host that follows the specification could not use it.
+    assert_eq!(metadata["authorization_servers"][0], public);
     assert!(metadata["scopes_supported"]
         .as_array()
         .unwrap()
         .contains(&json!("pathbase.read")));
+
+    let server_metadata: Value = client
+        .get(format!("{public}/.well-known/oauth-authorization-server"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(server_metadata["issuer"], public);
+    assert_eq!(
+        server_metadata["code_challenge_methods_supported"][0],
+        "S256"
+    );
+    assert_eq!(
+        server_metadata["registration_endpoint"],
+        format!("{public}/oauth/register")
+    );
 
     // --- no token: 401 pointing at the metadata --------------------------
     let anonymous = client
@@ -324,9 +453,13 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         "{challenge}"
     );
 
-    // --- a token for the web sign-in client is not a token for this ------
+    // --- an identity-provider token is not a delegation ------------------
+    //
+    // A browser access token from the user pool proves who someone is. It says
+    // nothing about which AI client they allowed, so it is not accepted here
+    // however valid it is.
     let browser_token = mint(&issuer, "us_alice", WEB_CLIENT, 3600);
-    let wrong_audience = post(
+    let wrong_credential = post(
         &client,
         &url,
         &browser_token,
@@ -334,41 +467,25 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
     )
     .await;
-    assert_eq!(wrong_audience.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(wrong_credential.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
-        wrong_audience.json::<Value>().await.unwrap()["error"],
-        "INVALID_AUDIENCE"
+        wrong_credential.json::<Value>().await.unwrap()["error"],
+        "INVALID_TOKEN"
     );
 
-    // --- an expired token is refused -------------------------------------
-    let expired = mint(&issuer, "us_alice", MCP_CLIENT, -3600);
-    let refused = post(
+    // --- a made-up bearer is refused -------------------------------------
+    let forged = post(
         &client,
         &url,
-        &expired,
+        "pbmcp_at_not-a-token-this-server-ever-issued",
         None,
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
     )
     .await;
-    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
 
-    // --- a valid token still needs the person's approval -----------------
-    let alice = mint(&issuer, "us_alice", MCP_CLIENT, 3600);
-    let pending = post(
-        &client,
-        &url,
-        &alice,
-        None,
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-    )
-    .await;
-    assert_eq!(pending.status(), StatusCode::FORBIDDEN);
-    let body: Value = pending.json().await.unwrap();
-    assert_eq!(body["error"], "CONNECTION_APPROVAL_REQUIRED");
-    assert!(body["consent_url"].as_str().unwrap().contains("/settings/"));
-
-    // --- approved for reading only ---------------------------------------
-    approve(&service, "us_alice", json!(["pathbase.read"])).await;
+    // --- connected for reading only --------------------------------------
+    let alice = connect(&client, &service, &public, "us_alice", &["pathbase.read"]).await;
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
@@ -423,18 +540,10 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         agent: false,
         connection: None,
     };
-    let connections = service
-        .handle(
-            &who,
-            "GET",
-            "/v1/mcp/connections",
-            &HashMap::new(),
-            json!({}),
-            None,
-        )
-        .await
-        .unwrap();
-    let connection_id = connections[0]["id"].as_str().unwrap().to_owned();
+    let connection_id = connection_of(&service, "us_alice").await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     service
         .handle(
             &who,
@@ -456,31 +565,16 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}),
     )
     .await;
-    assert_eq!(after_revoke.status(), StatusCode::FORBIDDEN);
-    assert_eq!(
-        after_revoke.json::<Value>().await.unwrap()["error"],
-        "CONNECTION_REVOKED"
-    );
+    // The token itself is dead, so the endpoint no longer even recognises it.
+    assert_eq!(after_revoke.status(), StatusCode::UNAUTHORIZED);
 
     // --- another user is a separate delegation ---------------------------
-    let bob = mint(&issuer, "us_bob", MCP_CLIENT, 3600);
-    let bob_pending = post(
+    let bob = connect(
         &client,
-        &url,
-        &bob,
-        None,
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-    )
-    .await;
-    assert_eq!(
-        bob_pending.status(),
-        StatusCode::FORBIDDEN,
-        "Bob does not inherit Alice's approval"
-    );
-    approve(
         &service,
+        &public,
         "us_bob",
-        json!(["pathbase.read", "pathbase.propose"]),
+        &["pathbase.read", "pathbase.propose"],
     )
     .await;
     initialize(&client, &url, &bob).await;
@@ -529,7 +623,6 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     // --- nothing leaked the token ----------------------------------------
     let serialized = serde_json::to_string(&bob_context).unwrap();
     assert!(!serialized.contains(&bob), "a token must never be echoed");
-    assert!(!serialized.contains(MCP_CLIENT.trim_start_matches("pathbase-")));
 }
 
 /// Two independent server processes over one database, alternating requests.
@@ -542,31 +635,23 @@ async fn consecutive_requests_may_reach_different_instances() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("stateless.sqlite3");
     let upstream = start_upstream().await;
-    let issuer = format!("{upstream}/pool");
-    let (_first, first_url, _) = start_server(&db, &upstream).await;
+    let (_first, first_url, first_public) = start_server(&db, &upstream, None).await;
     let client = HttpClient::new();
     let service = Service::open(&db.to_string_lossy()).await.unwrap();
 
-    let token = mint(&issuer, "us_carol", MCP_CLIENT, 3600);
-    // First contact creates the pending delegation.
-    let pending = post(
+    let token = connect(
         &client,
-        &first_url,
-        &token,
-        None,
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
-    )
-    .await;
-    assert_eq!(pending.status(), StatusCode::FORBIDDEN);
-    approve(
         &service,
+        &first_public,
         "us_carol",
-        json!(["pathbase.read", "pathbase.propose"]),
+        &["pathbase.read", "pathbase.propose"],
     )
     .await;
 
-    // A second process, started independently, serves the same connection.
-    let (_second, second_url, _) = start_server(&db, &upstream).await;
+    // A second process, told it serves the same resource — which is what a
+    // second Lambda execution environment is.
+    let (_second, second_url, _) =
+        start_server(&db, &upstream, Some(&format!("{first_public}/mcp"))).await;
     assert_ne!(first_url, second_url);
 
     // No initialize against the second instance, and no session id anywhere:

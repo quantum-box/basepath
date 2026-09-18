@@ -19,30 +19,6 @@ spec:
   useTachyonUserPool: true
 ---
 apiVersion: apps.tachy.one/v1alpha
-kind: OAuth2Client
-metadata:
-  # The hosted MCP endpoint has its own OAuth client, deliberately separate
-  # from the browser sign-in client above. The audience check in the MCP
-  # endpoint refuses a token issued to `pathbase-local`, so a stolen browser
-  # session cannot be replayed as an AI client, and the reverse is also true.
-  name: pathbase-mcp
-  tenantId: tn_01m2a6ztfmd95p70gwgyshbevq
-spec:
-  clientType: public
-  redirectUris:
-    # Registered per host. ChatGPT and Claude each publish their own callback;
-    # PLT-4823 / PLT-4824 add them once the host connection is set up.
-    - https://pathbase-v2.txcloud.app/api/mcp/callback
-  allowedScopes:
-    - openid
-    - profile
-    - email
-  grantTypes:
-    - authorization_code
-    - refresh_token
-  useTachyonUserPool: true
----
-apiVersion: apps.tachy.one/v1alpha
 kind: CloudApps
 metadata:
   name: pathbase-v2
@@ -179,15 +155,19 @@ spec:
           value: tn_01hjjn348rn3t49zz6hvmfq67p
         - name: FIELD_OPERATOR_ID
           value: tn_01j91h09tpj5ehwbwfwfxpak2b
-        # Enables the hosted MCP endpoint and names the OAuth client an access
-        # token must have been issued to. Without it the endpoint does not
+        # Enables the hosted MCP endpoint. Without it the endpoint does not
         # exist; there is no shared-secret mode.
-        - name: PATHBASE_MCP_CLIENT_ID
-          type: credential
-          valueFrom:
-            oauth2ClientRef:
-              name: pathbase-mcp
-              field: clientId
+        #
+        # Basepath is the authorization server for this resource and issues the
+        # tokens itself. It is not a second identity provider: a person still
+        # signs in against the Cognito pool above, and the consent screen runs
+        # with that session. What Basepath issues is the delegation to one AI
+        # client, which is state it already owned. The pool cannot play this
+        # role — its discovery document advertises no PKCE method and no
+        # registration endpoint, and its redirect URIs are fixed at deploy
+        # time, while a host mints a callback per connection.
+        - name: PATHBASE_MCP_ENABLED
+          value: "1"
       # PATHBASE_DB_ENVIRONMENT is declared per environment, never in the base
       # list: the first process to migrate claims the database for its value,
       # and a process configured for a different one refuses to migrate or

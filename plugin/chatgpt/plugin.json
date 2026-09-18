@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "basepath",
+  "version": "0.1.0",
+  "description": "Work with your Basepath goals, weekly plan and reviews in the conversation. Every change is a proposal you approve in Basepath.",
+  "author": {
+    "name": "Quantum Box",
+    "url": "https://pathbase-v2.txcloud.app"
+  },
+  "homepage": "https://pathbase-v2.txcloud.app",
+  "repository": "https://github.com/quantum-box/basepath",
+  "license": "MIT",
+  "keywords": ["goals", "planning", "weekly review", "okr"],
+  "skills": "./skills/",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Basepath",
+        "shortDescription": "目標・今週の行動・週次レビューを会話の中で",
+        "longDescription": "Basepathに保存されている目標、今日と今週の行動、週次レビューを会話の中で表示し、計画の変更を提案します。AIが作るのは変更案だけです。実際に反映されるのは、あなたがBasepath上で差分を確認して承認したときだけで、この画面での操作は本人確認の代わりにはなりません。個人の計画と組織の計画は別のワークスペースとして扱われ、混ざることはありません。",
+        "developerName": "Quantum Box",
+        "category": "productivity",
+        "composerIcon": "./assets/composer-icon.svg",
+        "logo": "./assets/logo.svg"
+      }
+    }
+  }
+}

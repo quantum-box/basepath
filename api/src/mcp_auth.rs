@@ -238,6 +238,45 @@ pub async fn approve(
     get_connection(tx, actor, id).await
 }
 
+/// Grants scopes as part of the OAuth consent screen.
+///
+/// Separate from `approve` on purpose. `approve` is the settings screen acting
+/// on a connection that already exists, so it takes the version it was shown
+/// and refuses a connection the person has disconnected — silently
+/// reactivating one there would be a surprise.
+///
+/// This is the other case: the person is *now*, on Basepath's own origin, with
+/// their own session, authorizing this client. Re-authorizing something they
+/// disconnected earlier is exactly what they asked for, and there is no
+/// version on screen to check because the screen is the authorization request.
+pub async fn grant_from_consent(
+    tx: &mut Tx,
+    actor: &str,
+    id: &str,
+    scopes: &[String],
+) -> Result<Connection> {
+    get_connection(tx, actor, id).await?;
+    let mut granted: Vec<String> = Vec::new();
+    for scope in scopes {
+        if !GRANTABLE_SCOPES.contains(&scope.as_str()) {
+            return Err(ApiError::invalid(&format!("許可できない権限です: {scope}")));
+        }
+        if !granted.contains(scope) {
+            granted.push(scope.clone());
+        }
+    }
+    if granted.is_empty() {
+        return Err(ApiError::invalid("権限を1つ以上選択してください"));
+    }
+    tx.execute(
+        "UPDATE mcp_connections SET scopes=?,status='active',updated_at=?,version=version+1 \
+         WHERE id=? AND actor=?",
+        &params![granted.join(" "), now(), id, actor],
+    )
+    .await?;
+    get_connection(tx, actor, id).await
+}
+
 /// Disconnects. A still-valid access token stops working immediately.
 pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Connection> {
     get_connection(tx, actor, id).await?;
@@ -247,6 +286,10 @@ pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Connection> {
         &params![now(), id, actor],
     )
     .await?;
+    // "Disconnected" has to mean the tokens are dead now, not when they would
+    // have expired. They are in the same transaction as the status change, so
+    // there is no window where one is true and the other is not.
+    crate::oauth::revoke_connection(tx, id).await?;
     get_connection(tx, actor, id).await
 }
 
@@ -256,30 +299,39 @@ pub struct ResourceConfig {
     /// Canonical URL of the MCP endpoint, which is also the resource
     /// identifier clients request a token for (RFC 8707).
     pub resource: String,
-    /// Authorization server clients should use.
-    pub authorization_server: String,
-    /// The OAuth client id an access token must have been issued to.
+    /// The authorization server for this resource, which is Basepath itself.
     ///
-    /// This is the audience check: a token minted for the PathBase web sign-in
-    /// client is refused at the MCP endpoint, and the other way round.
-    pub client_id: String,
-    /// Where a person approves or disconnects a connection.
+    /// Not the Cognito user pool: its discovery document advertises no PKCE
+    /// method and it offers no way for a host that mints a callback per
+    /// connection to register. `api/src/oauth.rs` carries the full reasoning.
+    /// People still authenticate against the pool; what Basepath issues is the
+    /// delegation to an AI client.
+    pub issuer: String,
+    /// Where the Rust API is reachable from outside.
+    ///
+    /// In a deployment the Cloudflare Worker serves the browser app and
+    /// forwards `/api/*` to this process, so the API's public base is
+    /// `{public_url}/api`. Running the API directly — a test, or the
+    /// single-origin container — it is the origin itself. The OAuth metadata
+    /// publishes absolute endpoint URLs, so this cannot be guessed.
+    pub api_base: String,
+    /// Where a person manages or disconnects a connection after granting it.
     pub consent_url: String,
 }
 
 impl ResourceConfig {
     /// Reads the MCP resource configuration.
     ///
-    /// Returns `None` when `PATHBASE_MCP_CLIENT_ID` is unset, which is how a
+    /// Returns `None` when `PATHBASE_MCP_ENABLED` is not set, which is how a
     /// deployment declares that it does not expose a hosted MCP endpoint.
     pub fn from_env() -> Result<Option<Self>> {
-        let Some(client_id) = std::env::var("PATHBASE_MCP_CLIENT_ID")
+        let enabled = std::env::var("PATHBASE_MCP_ENABLED")
             .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-        else {
+            .map(|value| value.trim().to_ascii_lowercase())
+            .is_some_and(|value| ["1", "true", "yes", "on"].contains(&value.as_str()));
+        if !enabled {
             return Ok(None);
-        };
+        }
         let public_url = std::env::var("PATHBASE_PUBLIC_URL")
             .ok()
             .map(|value| value.trim_end_matches('/').to_owned())
@@ -291,33 +343,23 @@ impl ResourceConfig {
                     "PATHBASE_PUBLIC_URLを設定してください",
                 )
             })?;
+        crate::auth::validate_url(&public_url)?;
         let resource = std::env::var("PATHBASE_MCP_RESOURCE")
             .ok()
             .map(|value| value.trim().trim_end_matches('/').to_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| format!("{public_url}/api/mcp"));
         crate::auth::validate_url(&resource)?;
-        let authorization_server = std::env::var("PATHBASE_MCP_AUTHORIZATION_SERVER")
+        let api_base = std::env::var("PATHBASE_API_BASE_URL")
             .ok()
             .map(|value| value.trim().trim_end_matches('/').to_owned())
             .filter(|value| !value.is_empty())
-            .or_else(|| {
-                std::env::var("PATHBASE_COGNITO_ISSUER")
-                    .ok()
-                    .map(|value| value.trim().trim_end_matches('/').to_owned())
-                    .filter(|value| !value.is_empty())
-            })
-            .ok_or_else(|| {
-                ApiError::new(
-                    500,
-                    "AUTH_CONFIGURATION",
-                    "MCPの認可サーバーを設定してください",
-                )
-            })?;
+            .unwrap_or_else(|| format!("{public_url}/api"));
+        crate::auth::validate_url(&api_base)?;
         Ok(Some(Self {
             resource,
-            authorization_server,
-            client_id,
+            issuer: public_url.clone(),
+            api_base,
             consent_url: format!("{public_url}/settings/connections"),
         }))
     }
@@ -326,7 +368,7 @@ impl ResourceConfig {
     pub fn metadata(&self) -> Value {
         json!({
             "resource": self.resource,
-            "authorization_servers": [self.authorization_server],
+            "authorization_servers": [self.issuer],
             "scopes_supported": GRANTABLE_SCOPES,
             "bearer_methods_supported": ["header"],
             "resource_documentation": format!("{}/docs/mcp", self.resource.trim_end_matches("/mcp")),
