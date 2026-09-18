@@ -54,17 +54,24 @@ impl AuthConfig {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         };
+        let client_id = required("TACHYON_OIDC_CLIENT_ID")?;
+        let cognito_issuer = optional("PATHBASE_COGNITO_ISSUER");
         let config = Self {
             issuer: required("TACHYON_OIDC_ISSUER")?,
-            client_id: required("TACHYON_OIDC_CLIENT_ID")?,
             client_secret: std::env::var("TACHYON_OIDC_CLIENT_SECRET")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
             redirect_uri: required("TACHYON_OIDC_REDIRECT_URI")?,
             public_url: required("PATHBASE_PUBLIC_URL")?,
             tachyon_api_url: required("TACHYON_API_URL")?,
-            cognito_client_id: optional("PATHBASE_COGNITO_CLIENT_ID"),
-            cognito_issuer: optional("PATHBASE_COGNITO_ISSUER"),
+            // An `OAuth2Client` with `useTachyonUserPool` is registered as a
+            // Cognito App Client, so `TACHYON_OIDC_CLIENT_ID` is already the
+            // user pool client id. Only a deployment that pins a different App
+            // Client needs to set this explicitly.
+            cognito_client_id: optional("PATHBASE_COGNITO_CLIENT_ID")
+                .or_else(|| cognito_issuer.as_ref().map(|_| client_id.clone())),
+            cognito_issuer,
+            client_id,
         };
         config.validate()?;
         Ok(config)
