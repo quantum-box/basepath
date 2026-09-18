@@ -99,3 +99,18 @@ No new App Client was needed, contrary to the first reading of the platform docs
 Confirmed against the live user pool rather than taken from the code: `InitiateAuth` with PathBase's client id and a deliberately nonexistent user returns `UserNotFoundException`. That distinguishes the case from `ResourceNotFoundException` (client absent from the pool), `InvalidParameterException` (`USER_PASSWORD_AUTH` not enabled) and the `NotAuthorizedException` about a missing `SECRET_HASH` (client has a secret). The probe used a `.invalid` address and a throwaway password, and no real account was involved.
 
 `PATHBASE_COGNITO_CLIENT_ID` therefore defaults to `TACHYON_OIDC_CLIENT_ID` and only has to be set when a deployment pins a different App Client. `tachyon.yml` now sets `PATHBASE_COGNITO_ISSUER` on `pathbase-api`, so a deployment from `main` switches production to the Cognito bearer.
+
+## Field delegation working end to end — 2026-09-18
+
+The Cognito bearer removed the authentication failure, and the two defects it exposed are fixed. `GET /api/v1/integrations/field/tenants` now returns 200 from the live deployment.
+
+The sequence, each step verified in production rather than inferred:
+
+1. With the Tachyon-issued bearer, Field answered 401 `FIELD_AUTH_REJECTED` for every tenant. Switching to the Cognito user pool token removed it.
+2. Field then answered 503 `FIELD_UNAVAILABLE` in about 400 ms — far inside the 10 second timeout, so not a connectivity fault. `api/src/field.rs` collapsed every status outside 200/401/403/404/429 into one opaque error, so the cause was invisible. The unexpected-status arm now carries `upstream_status`, `upstream_code` and a truncated `upstream_message`.
+3. That immediately showed `400 BAD_REQUEST — unsupported required_action for tenant listing: field:ViewSalesAnalytics`. Field separates tenant listing from the sales grants: `erp_route_actions.rs` defines `field:ListTenants` so an accounting role does not need an unrelated sales permission to bootstrap its tenant scope, and Field's own client sends that action. PathBase still sent the sales action, and its comment asserting Field permits only that action was stale.
+4. With `field:ListTenants`, tenant discovery returns 200.
+
+The list is empty, and that is a grant, not a fault. `tachyon org policies actions` lists `field:ListTenants` as "List Field tenants available to the current operator", and `tachyon org policies mappings` reports no user-policy mappings in the `TACHYON Field`, `Quantum Box, Inc.`, `札幌カントリー倶楽部` or `Field Cafe 検証` tenant scopes. No user currently holds a Field policy in them, so Field correctly returns no tenants. Sales tasks and metrics answer 404 for the selected tenant, which is Field's response for a tenant that holds no Field resources; PathBase forwards it unchanged.
+
+What this leaves: the PathBase side of the Field contract is verified against production — token issuance, delegation, canonical tenant context, action authorization and error mapping. Reading actual sales tasks and metrics needs a Tachyon user granted a Field policy in a tenant that has Field data. That is an access grant in Field, not a change in this repository, and it is the only step still outstanding for the Field acceptance criteria.
