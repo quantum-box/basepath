@@ -140,3 +140,161 @@ body {
     gap: 6px;
   }
 }
+
+/* Tree interaction */
+.plan-node-toggle {
+  width: 1.4em;
+  flex: 0 0 auto;
+  font: inherit;
+  background: none;
+  border: 0;
+  color: var(--plan-muted);
+  cursor: pointer;
+  padding: 0;
+  text-align: start;
+}
+.plan-node-select {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  flex: 1 1 12ch;
+  min-width: 0;
+  font: inherit;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: start;
+}
+.plan-node-select[aria-pressed="true"] .plan-node-title {
+  text-decoration: underline;
+  text-decoration-color: var(--plan-accent);
+  text-underline-offset: 3px;
+}
+.plan-node-folded {
+  font-size: 11px;
+  color: var(--plan-muted);
+}
+.plan-expand-all,
+.plan-truncated button,
+.plan-actions button {
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--plan-line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.plan-expand-all {
+  justify-self: start;
+}
+
+/* Selected item detail */
+.plan-detail {
+  border: 1px solid var(--plan-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.plan-detail h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.plan-detail dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px 12px;
+}
+.plan-detail dt {
+  font-size: 11px;
+  color: var(--plan-muted);
+}
+.plan-detail dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* Week */
+.plan-week h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.plan-week-days {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.plan-week-days > li {
+  border-inline-start: 2px solid var(--plan-line);
+  padding-inline-start: 8px;
+}
+.plan-week-days > li[data-today="true"] {
+  border-inline-start-color: var(--plan-accent);
+}
+.plan-week-days h4 {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--plan-muted);
+}
+.plan-week-days ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.plan-week-days li li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.plan-entry-label {
+  font-size: 11px;
+  color: var(--plan-muted);
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.plan-unscheduled,
+.plan-notice {
+  margin: 0;
+  font-size: 12px;
+  color: var(--plan-muted);
+}
+.plan-notice {
+  border-inline-start: 2px solid var(--plan-accent);
+  padding-inline-start: 8px;
+}
+.plan-action-title {
+  flex: 1 1 10ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plan-workspace-switch {
+  margin-inline-start: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+}
+.plan-workspace-switch select {
+  font: inherit;
+  font-size: 12px;
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--plan-line);
+  border-radius: 8px;
+  padding: 2px 6px;
+  max-width: 16ch;
+}
+.plan-role {
+  font-size: 11px;
+  color: var(--plan-muted);
+}
