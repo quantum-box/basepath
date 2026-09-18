@@ -33,6 +33,8 @@ Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理�
 
 [.env.example](.env.example)を参考に、PathBase用に登録されたOIDCクライアントと環境の接続情報を設定します。`npm run dev`は`.env` / `.env.local`の`PATHBASE_*`、`TACHYON_*`、`FIELD_*`を読みます。単独Rustプロセスには環境変数として渡してください。認証情報を`VITE_*`に置かないでください。
 
+ログインフォームの認証先は設定で決まります。`PATHBASE_COGNITO_CLIENT_ID`と`PATHBASE_COGNITO_ISSUER`を両方設定すると、secretなしApp Clientを使ってCognitoの`InitiateAuth`（`USER_PASSWORD_AUTH`）を直接呼び、その access token をセッションのbearerにします。Hosted UIとAmplifyは使いません。未設定の場合はTachyon OAuth2のPKCEフローになりますが、FieldはCognito発行token以外を受け付けないため、Fieldの呼び出しは401になります。`npm run preflight`が未設定を警告します。
+
 `PATHBASE_MODE=tachyon`の場合、必要な認証設定がないと起動しません。コールバックは`PATHBASE_PUBLIC_URL/api/auth/callback`と完全一致させます。アクセストークンと選択テナントは`PATHBASE_SESSION_KEYS`でAES-256-GCM暗号化したHttpOnly Cookieに保持し、ブラウザーJavaScriptからは読めません。同じ鍵を設定した`pathbase-api`の実行環境間でセッションを引き継げます。Cookieは上流アクセストークンと同時（最大8時間）に失効し、ログアウト時に消去します。
 
 実環境へ接続する前に`npm run preflight`を実行すると、設定形式、OIDC Discovery、Tachyonのトークン検証API、Fieldの権限付きテナント一覧APIへの到達性を確認できます。確認要求には意図的に無効な認証情報を使い、クライアントシークレット、トークン、テナント識別子は結果へ表示しません。成功後も、実ユーザーでログインしてFieldの許可・権限不足・期限切れを確認する必要があります。
@@ -85,7 +87,7 @@ GitHub ActionsではPRと`main`へのpushで、次の4ジョブを実行しま�
 
 ## 現在の範囲
 
-実環境（`https://pathbase-v2.txcloud.app`）でのTachyonログインとテナント選択は2026-09-18に確認済みです。Fieldデータの取得は未確認で、Fieldが`pathbase-local`クライアントのトークンを委譲認証で受け付けず401を返します。テナントに依らず401のため利用者の権限不足ではなく、Tachyon / Field側の受入設定が残っています（詳細は`docs/implementation-qa.md`）。複数アカウントでの招待も未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB、ホスト型MCPは別途実装が必要です。
+実環境（`https://pathbase-v2.txcloud.app`）でのTachyonログインとテナント選択は2026-09-18に確認済みです。Fieldデータの取得は未確認です。FieldはTachyonの`/auth/v1beta/verify`へ委譲し、Cognitoユーザープールが発行したtokenしか受け付けないため、Tachyon OAuth2発行のtokenでは必ず401になります。`PATHBASE_COGNITO_CLIENT_ID`と`PATHBASE_COGNITO_ISSUER`を設定するとCognito直接認証に切り替わりますが、PathBase用のsecretなしApp Clientがユーザープールに未作成のため実環境では未適用です（詳細は`docs/implementation-qa.md`）。複数アカウントでの招待も未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB、ホスト型MCPは別途実装が必要です。
 
 `.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs`、`tests/sites-worker.test.mjs`は既存構成を維持しています。`npm run build`は`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`を生成します。Sites用workerは静的配信であり、それだけではRust APIは公開されません。外部へのデプロイは行っていません。
 

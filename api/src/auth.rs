@@ -29,6 +29,14 @@ pub struct AuthConfig {
     pub redirect_uri: String,
     pub public_url: String,
     pub tachyon_api_url: String,
+    /// Secretless Cognito App Client used for the human sign-in form. ADR-0036
+    /// makes Cognito the only issuer of human access tokens, because Field and
+    /// the other downstream APIs verify Cognito's issuer and JWKS and reject a
+    /// token minted by Tachyon's own OAuth2 authorization server.
+    pub cognito_client_id: Option<String>,
+    /// Cognito user pool issuer, e.g.
+    /// `https://cognito-idp.<region>.amazonaws.com/<pool-id>`.
+    pub cognito_issuer: Option<String>,
 }
 impl AuthConfig {
     pub fn from_env() -> Result<Self> {
@@ -40,6 +48,12 @@ impl AuthConfig {
                     ApiError::new(500, "AUTH_CONFIGURATION", &format!("{k}を設定してください"))
                 })
         };
+        let optional = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
         let config = Self {
             issuer: required("TACHYON_OIDC_ISSUER")?,
             client_id: required("TACHYON_OIDC_CLIENT_ID")?,
@@ -49,6 +63,8 @@ impl AuthConfig {
             redirect_uri: required("TACHYON_OIDC_REDIRECT_URI")?,
             public_url: required("PATHBASE_PUBLIC_URL")?,
             tachyon_api_url: required("TACHYON_API_URL")?,
+            cognito_client_id: optional("PATHBASE_COGNITO_CLIENT_ID"),
+            cognito_issuer: optional("PATHBASE_COGNITO_ISSUER"),
         };
         config.validate()?;
         Ok(config)
@@ -69,7 +85,55 @@ impl AuthConfig {
                 "Tachyon callback must be PATHBASE_PUBLIC_URL/api/auth/callback",
             ));
         }
+        match (&self.cognito_client_id, &self.cognito_issuer) {
+            (Some(client_id), Some(issuer)) => {
+                if client_id.len() > 128
+                    || !client_id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    return Err(ApiError::invalid("Invalid Cognito client id"));
+                }
+                validate_url(issuer)?;
+                let url = Url::parse(issuer).unwrap();
+                // Loopback issuers are the test/preview mock; only a real
+                // deployment is pinned to Cognito's hostname.
+                let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+                let host_is_cognito = loopback
+                    || url
+                        .host_str()
+                        .is_some_and(|host| host.starts_with("cognito-idp."));
+                if !host_is_cognito || url.path().trim_matches('/').is_empty() {
+                    return Err(ApiError::invalid(
+                        "PATHBASE_COGNITO_ISSUER must be https://cognito-idp.<region>.amazonaws.com/<user-pool-id>",
+                    ));
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(ApiError::invalid(
+                    "Set PATHBASE_COGNITO_CLIENT_ID and PATHBASE_COGNITO_ISSUER together",
+                ))
+            }
+        }
         Ok(())
+    }
+    /// Cognito's AWS JSON endpoint, derived from the user pool issuer so the
+    /// region is never configured twice.
+    fn cognito_idp_endpoint(&self) -> Option<String> {
+        let issuer = self.cognito_issuer.as_ref()?;
+        let url = Url::parse(issuer).ok()?;
+        Some(format!("{}/", url.origin().ascii_serialization()))
+    }
+    fn cognito_jwks_uri(&self) -> Option<String> {
+        let issuer = self.cognito_issuer.as_ref()?;
+        Some(format!(
+            "{}/.well-known/jwks.json",
+            issuer.trim_end_matches('/')
+        ))
+    }
+    pub fn cognito_configured(&self) -> bool {
+        self.cognito_client_id.is_some() && self.cognito_issuer.is_some()
     }
 }
 pub fn validate_url(raw: &str) -> Result<()> {
@@ -144,6 +208,27 @@ struct Claims {
 struct TokenResponse {
     access_token: String,
     id_token: Option<String>,
+    expires_in: Option<i64>,
+}
+/// Claims Tachyon's own Cognito verifier checks, mirrored here so PathBase
+/// rejects a token before it ever reaches Tachyon or Field.
+#[derive(Deserialize)]
+struct CognitoAccessClaims {
+    token_use: Option<String>,
+    client_id: Option<String>,
+}
+#[derive(Deserialize)]
+struct InitiateAuthResponse {
+    #[serde(rename = "AuthenticationResult")]
+    authentication_result: Option<AuthenticationResult>,
+    #[serde(rename = "ChallengeName")]
+    challenge_name: Option<String>,
+}
+#[derive(Deserialize)]
+struct AuthenticationResult {
+    #[serde(rename = "AccessToken")]
+    access_token: Option<String>,
+    #[serde(rename = "ExpiresIn")]
     expires_in: Option<i64>,
 }
 #[derive(Deserialize)]
@@ -450,6 +535,164 @@ impl TachyonAuth {
         }
         r.json().await.map_err(|_| unavailable())
     }
+    /// Sign in against the Cognito user pool with the secretless App Client.
+    ///
+    /// ADR-0036 makes Cognito the only issuer of human access tokens. Field
+    /// delegates to Tachyon's `/auth/v1beta/verify`, which requires the token's
+    /// `iss` to equal the Cognito user pool issuer and its signature to come
+    /// from that pool's JWKS, so a Tachyon-issued token can never be accepted.
+    /// The Hosted UI is not used: the password is posted to this API by the
+    /// PathBase form, forwarded once to Cognito, and never stored or logged.
+    async fn cognito_direct_login(&self, username: &str, password: &str) -> Result<String> {
+        let client_id = self
+            .config
+            .cognito_client_id
+            .as_ref()
+            .ok_or_else(|| ApiError::new(500, "AUTH_CONFIGURATION", "Cognito未設定です"))?;
+        let endpoint = self
+            .config
+            .cognito_idp_endpoint()
+            .ok_or_else(|| ApiError::new(500, "AUTH_CONFIGURATION", "Cognito未設定です"))?;
+        let response = self
+            .client
+            .post(endpoint)
+            // The AWS JSON protocol is content-typed `x-amz-json-1.1`, so the
+            // body is serialized here instead of through reqwest's `json`,
+            // which would overwrite the header.
+            .header("content-type", "application/x-amz-json-1.1")
+            .header(
+                "x-amz-target",
+                "AWSCognitoIdentityProviderService.InitiateAuth",
+            )
+            .body(
+                json!({
+                    "AuthFlow": "USER_PASSWORD_AUTH",
+                    "ClientId": client_id,
+                    "AuthParameters": {"USERNAME": username, "PASSWORD": password},
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .map_err(|_| unavailable())?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            // Cognito reports the failure kind in the body, not the status.
+            let kind = response
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|body| {
+                    body.get("__type")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.rsplit('#').next().unwrap_or(value).to_string())
+                })
+                .unwrap_or_default();
+            return Err(match kind.as_str() {
+                "TooManyRequestsException" | "LimitExceededException" => ApiError::new(
+                    429,
+                    "RATE_LIMITED",
+                    "ログイン試行が多すぎます。時間をおいて再試行してください",
+                ),
+                "PasswordResetRequiredException" => ApiError::new(
+                    409,
+                    "NEW_PASSWORD_REQUIRED",
+                    "Tachyonで新しいパスワードを設定してから再試行してください",
+                ),
+                _ if status >= 500 => unavailable(),
+                _ => unauthorized(),
+            });
+        }
+        let body: InitiateAuthResponse = response.json().await.map_err(|_| unavailable())?;
+        if let Some(challenge) = body.challenge_name.as_deref() {
+            return Err(match challenge {
+                "NEW_PASSWORD_REQUIRED" => ApiError::new(
+                    409,
+                    "NEW_PASSWORD_REQUIRED",
+                    "Tachyonで新しいパスワードを設定してから再試行してください",
+                ),
+                // MFA and the other challenges need a second round trip that the
+                // current sign-in form does not collect.
+                _ => ApiError::new(
+                    409,
+                    "AUTH_CHALLENGE_REQUIRED",
+                    "この認証方式にはTachyonでの追加操作が必要です",
+                ),
+            });
+        }
+        let result = body.authentication_result.ok_or_else(unauthorized)?;
+        let access_token = result.access_token.ok_or_else(unauthorized)?;
+        self.validate_cognito_access_token(&access_token).await?;
+        self.establish_cognito_session(access_token, result.expires_in)
+            .await
+    }
+    /// Reject anything Tachyon's verifier would reject, before it is stored in a
+    /// session cookie: pool issuer, pool JWKS signature, expiry, `token_use` and
+    /// the App Client this deployment is pinned to.
+    async fn validate_cognito_access_token(&self, token: &str) -> Result<()> {
+        let issuer = self
+            .config
+            .cognito_issuer
+            .as_ref()
+            .ok_or_else(|| ApiError::new(500, "AUTH_CONFIGURATION", "Cognito未設定です"))?;
+        let jwks_uri = self
+            .config
+            .cognito_jwks_uri()
+            .ok_or_else(|| ApiError::new(500, "AUTH_CONFIGURATION", "Cognito未設定です"))?;
+        let header = decode_header(token).map_err(|_| unauthorized())?;
+        if header.alg != Algorithm::RS256 {
+            return Err(unauthorized());
+        }
+        let jwks: JwkSet = self
+            .client
+            .get(jwks_uri)
+            .send()
+            .await
+            .map_err(|_| unavailable())?
+            .error_for_status()
+            .map_err(|_| unavailable())?
+            .json()
+            .await
+            .map_err(|_| unavailable())?;
+        let jwk = jwks
+            .find(header.kid.as_deref().ok_or_else(unauthorized)?)
+            .ok_or_else(unauthorized)?;
+        let key = DecodingKey::from_jwk(jwk).map_err(|_| unauthorized())?;
+        let mut validation = Validation::new(Algorithm::RS256);
+        // Cognito access tokens carry `client_id`, not `aud`; it is checked below.
+        validation.validate_aud = false;
+        validation.set_issuer(&[issuer]);
+        validation.set_required_spec_claims(&["exp", "iss", "sub"]);
+        let claims = decode::<CognitoAccessClaims>(token, &key, &validation)
+            .map_err(|_| unauthorized())?
+            .claims;
+        if claims.token_use.as_deref() != Some("access") {
+            return Err(unauthorized());
+        }
+        if claims.client_id.as_deref() != self.config.cognito_client_id.as_deref() {
+            return Err(unauthorized());
+        }
+        Ok(())
+    }
+    async fn establish_cognito_session(
+        &self,
+        access_token: String,
+        expires_in: Option<i64>,
+    ) -> Result<String> {
+        // Canonical identity and tenant memberships still come from Tachyon,
+        // which accepts a Cognito access token on the same bearer scheme.
+        self.verify_identity(&access_token).await?;
+        let now = Utc::now().timestamp();
+        let expires_at = now + expires_in.unwrap_or(3600).clamp(60, 8 * 3600);
+        let envelope = SessionEnvelope {
+            access_token,
+            selected_tenant: None,
+            expires_at,
+            session_expires_at: expires_at,
+        };
+        let value = self.seal_session(&envelope)?;
+        Ok(self.cookie_header("pathbase_session", &value, expires_at - now))
+    }
     pub async fn direct_login(&self, username: &str, password: &str) -> Result<String> {
         let username = username.trim();
         if username.is_empty()
@@ -458,6 +701,9 @@ impl TachyonAuth {
             || password.len() > 4096
         {
             return Err(unauthorized());
+        }
+        if self.config.cognito_configured() {
+            return self.cognito_direct_login(username, password).await;
         }
         let response = self
             .client

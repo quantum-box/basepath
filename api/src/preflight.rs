@@ -144,6 +144,22 @@ pub async fn run(
                 "ok",
                 "公開URL、コールバックURL、OIDC、Tachyon APIの設定形式は有効です",
             );
+            // Field delegates to Tachyon's Cognito verifier, so a deployment
+            // without a user pool client authenticates but can never read Field.
+            check(
+                &mut checks,
+                "cognito_issuer",
+                if config.cognito_configured() {
+                    "ok"
+                } else {
+                    "warning"
+                },
+                if config.cognito_configured() {
+                    "Cognitoユーザープールのクライアント設定があります。Field委譲認証に使えるaccess tokenを発行します"
+                } else {
+                    "PATHBASE_COGNITO_CLIENT_IDとPATHBASE_COGNITO_ISSUERが未設定です。ログインはできますが、FieldはTachyon発行tokenを受け付けないため401になります"
+                },
+            );
             match TachyonAuth::new(config).await {
                 Ok(auth) => {
                     check(
