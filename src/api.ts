@@ -41,6 +41,15 @@ export type Item = {
     template_version?: number;
     recurrence?: Recurrence | null;
     external_url?: string | null;
+    /** How this goal's progress is derived, when it is derived at all. */
+    rollup?: string | null;
+    /** Somebody's stated view of how this goal is going. */
+    health?: {
+      status: "on_track" | "at_risk" | "off_track";
+      note?: string;
+      set_at: string;
+      set_by: string;
+    } | null;
     /** Whose goal this is: the organization, a team, or a person. */
     owner?: { kind: "organization" | "team" | "person"; id?: string } | null;
     /** The planning period this belongs to, when the workspace uses them. */

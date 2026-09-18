@@ -65,6 +65,19 @@ pub struct ItemFields {
     /// working exactly as before, and every item in it simply has no cycle.
     #[serde(default)]
     pub cycle_id: Option<String>,
+    /// How this goal's progress is derived, when it is derived at all.
+    ///
+    /// Unset is the default and means **no derived progress**. A number that
+    /// nobody chose a method for is a number nobody can defend, and a
+    /// dashboard full of those is worse than a dashboard with blanks.
+    #[serde(default)]
+    pub rollup: Option<String>,
+    /// Someone's explicit judgement of how this goal is going.
+    ///
+    /// Set by a person, with a note and a timestamp, so "at risk" always has
+    /// an author and a date. Absent means unknown — which is a real answer.
+    #[serde(default)]
+    pub health: Option<GoalHealth>,
     /// Whose goal this is: the organization, a team, or a person.
     ///
     /// Alignment is a graph inside one workspace. A goal owned by a person
@@ -104,6 +117,23 @@ pub struct Recurrence {
     #[serde(default)]
     pub weekdays: Vec<u8>,
 }
+/// Somebody's stated view of how a goal is going.
+///
+/// Deliberately not derived. Signals — a stale metric, a missed date, nobody
+/// checking in — are facts the product can compute and show; deciding that
+/// they add up to "at risk" is a judgement, and it carries the name of whoever
+/// made it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GoalHealth {
+    /// `on_track` | `at_risk` | `off_track`.
+    pub status: String,
+    #[serde(default)]
+    pub note: String,
+    pub set_at: String,
+    pub set_by: String,
+}
+
 /// Who a goal belongs to.
 ///
 /// `organization` is the workspace itself and carries no id. `team` names a

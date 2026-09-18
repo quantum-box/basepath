@@ -108,6 +108,7 @@ const SUITES = [
   { file: "api/tests/injection.rs", pattern: /#\[tokio::test\]/g, least: 5 },
   { file: "api/tests/planning.rs", pattern: /#\[tokio::test\]/g, least: 10 },
   { file: "api/tests/alignment.rs", pattern: /#\[tokio::test\]/g, least: 9 },
+  { file: "api/tests/dashboard.rs", pattern: /#\[tokio::test\]/g, least: 11 },
   { file: "api/tests/tidb.rs", pattern: /#\[tokio::test\]/g, least: 9 },
   {
     file: "api/tests/collaboration.rs",
@@ -130,6 +131,7 @@ const SUITES = [
   { file: "tests/e2e/workspace.spec.mjs", pattern: /^test\(/gm, least: 11 },
   { file: "tests/e2e/planning.spec.mjs", pattern: /^test\(/gm, least: 5 },
   { file: "tests/e2e/alignment.spec.mjs", pattern: /^test\(/gm, least: 5 },
+  { file: "tests/e2e/dashboard.spec.mjs", pattern: /^test\(/gm, least: 6 },
   { file: "tests/plugin.test.mjs", pattern: /^test\(/gm, least: 9 },
   { file: "tests/sites-worker.test.mjs", pattern: /^test\(/gm, least: 12 },
 ];

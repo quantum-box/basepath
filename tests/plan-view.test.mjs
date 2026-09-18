@@ -901,3 +901,214 @@ test("a goal supported through two paths is not rendered twice", () => {
   for (const root of roots(view)) walk(root);
   assert.equal(reachable.size, 4, "every goal is reachable exactly once");
 });
+
+// --- Goal dashboard -----------------------------------------------------
+//
+// Four different facts, four named fields, and absent is never zero.
+
+const {
+  dashboardViewFrom,
+  healthLabel,
+  methodLabel,
+  percent,
+  metricValueLabel,
+} = await import("../src/shared/dashboardView.ts");
+
+const board = {
+  workspace_id: "team",
+  today: "2026-11-15",
+  goals: [
+    {
+      id: "g1",
+      title: "四つが並ぶ目標",
+      owner: { kind: "organization", id: "" },
+      cycle: { id: "c1", label: "2026 Q4" },
+      state: "active",
+      due_date: "2026-12-31",
+      action_completion: { total: 4, completed: 1, rate: 25 },
+      metric_progress: {
+        method: "metric_worst",
+        source: "metrics",
+        value: 20,
+        counted: 2,
+        missing: 1,
+        metrics: [
+          {
+            metric_id: "m1",
+            name: "売上",
+            unit: "万円",
+            direction: "increase",
+            baseline: 0,
+            target: 100,
+            latest: 90,
+            progress: 90,
+            status: "current",
+            latest_observation_id: "obs_1",
+            observed_at: "2026-11-10T00:00:00Z",
+          },
+          {
+            metric_id: "m2",
+            name: "解約率",
+            unit: "%",
+            direction: "decrease",
+            baseline: 10,
+            target: 5,
+            latest: 9,
+            progress: 20,
+            status: "stale",
+            latest_observation_id: "obs_2",
+            observed_at: "2026-09-01T00:00:00Z",
+          },
+          {
+            metric_id: "m3",
+            name: "測っていない指標",
+            unit: "件",
+            direction: "increase",
+            baseline: 0,
+            target: 10,
+            latest: null,
+            progress: null,
+            status: "unmeasured",
+            latest_observation_id: null,
+            observed_at: null,
+          },
+        ],
+      },
+      self_assessment: 60,
+      assessed_at: "2026-11-01T00:00:00Z",
+      health: {
+        status: "at_risk",
+        note: "人手が足りない",
+        set_at: "2026-11-12T00:00:00Z",
+        set_by: "us_alice",
+      },
+      suggested_health: {
+        status: "at_risk",
+        reasons: ["2週間以上更新されていない指標があります"],
+      },
+      signals: {
+        overdue: false,
+        stale_metrics: 1,
+        unmeasured_metrics: 1,
+        last_checkin_at: "2026-11-12T00:00:00Z",
+        days_since_checkin: 3,
+      },
+    },
+    {
+      id: "g2",
+      title: "何も分かっていない目標",
+      owner: null,
+      cycle: null,
+      state: "active",
+      due_date: null,
+      action_completion: { total: 0, completed: 0, rate: null },
+      metric_progress: {
+        method: null,
+        source: "none",
+        value: null,
+        counted: 0,
+        missing: 0,
+        metrics: [],
+      },
+      self_assessment: null,
+      assessed_at: null,
+      health: null,
+      suggested_health: null,
+      signals: {
+        overdue: false,
+        stale_metrics: 0,
+        unmeasured_metrics: 0,
+        last_checkin_at: null,
+        days_since_checkin: null,
+      },
+    },
+  ],
+  by_health: { on_track: 0, at_risk: 1, off_track: 0, unknown: 1 },
+  without_rollup_method: 1,
+  rollup_methods: [
+    "metric_average",
+    "metric_worst",
+    "children_average",
+    "children_worst",
+  ],
+};
+
+test("the four figures stay four figures, with four different values", () => {
+  const view = dashboardViewFrom(board);
+  const goal = view.goals[0];
+  assert.equal(goal.actionCompletion.rate, 25);
+  assert.equal(goal.metricProgress.value, 20);
+  assert.equal(goal.selfAssessment, 60);
+  assert.equal(goal.health.status, "at_risk");
+  // There is deliberately no single "progress" field to reach for.
+  assert.equal("progress" in goal, false);
+});
+
+test("nothing known reads as nothing known, never as zero", () => {
+  const view = dashboardViewFrom(board);
+  const blank = view.goals[1];
+  assert.equal(blank.actionCompletion.rate, null);
+  assert.equal(blank.metricProgress.value, null);
+  assert.equal(blank.metricProgress.method, null);
+  assert.equal(blank.selfAssessment, null);
+  assert.equal(blank.health, null);
+  // And each renders as an absence rather than a number.
+  assert.equal(percent(blank.actionCompletion.rate), "—");
+  assert.equal(percent(blank.selfAssessment, "未設定"), "未設定");
+  assert.equal(healthLabel(null), "未記入");
+  assert.equal(methodLabel(null), "集計方法なし");
+  // A real zero still reads as zero: this is about absence, not about
+  // hiding bad numbers.
+  assert.equal(percent(0), "0%");
+});
+
+test("a derived number carries the method that derived it", () => {
+  const view = dashboardViewFrom(board);
+  const goal = view.goals[0];
+  assert.equal(goal.metricProgress.method, "metric_worst");
+  assert.equal(methodLabel("metric_worst"), "指標の最小");
+  assert.equal(goal.metricProgress.counted, 2);
+  // And says what it could not count rather than averaging what it had.
+  assert.equal(goal.metricProgress.missing, 1);
+});
+
+test("every metric can be followed back to its observation", () => {
+  const view = dashboardViewFrom(board);
+  const [first, , unmeasured] = view.goals[0].metricProgress.metrics;
+  assert.equal(first.latestObservationId, "obs_1");
+  assert.equal(first.observedAt, "2026-11-10T00:00:00Z");
+  assert.equal(metricValueLabel(first), "90 万円");
+  // An unmeasured metric says so and points at nothing, rather than at 0.
+  assert.equal(unmeasured.latest, null);
+  assert.equal(unmeasured.progress, null);
+  assert.equal(unmeasured.latestObservationId, null);
+  assert.equal(metricValueLabel(unmeasured), "未計測");
+});
+
+test("a suggestion stays a suggestion", () => {
+  const view = dashboardViewFrom(board);
+  const goal = view.goals[0];
+  // Both exist, separately: the suggestion does not replace the judgement,
+  // and the judgement does not silence the signals.
+  assert.equal(goal.suggestedHealth.status, "at_risk");
+  assert.deepEqual(goal.suggestedHealth.reasons, [
+    "2週間以上更新されていない指標があります",
+  ]);
+  assert.equal(goal.health.setBy, "us_alice");
+  // A goal nobody has judged has no health, whatever the signals say.
+  assert.equal(view.goals[1].health, null);
+  assert.equal(view.byHealth.unknown, 1);
+});
+
+test("a malformed health or payload does not become a verdict", () => {
+  assert.equal(dashboardViewFrom(null), null);
+  assert.equal(dashboardViewFrom({ goals: [] }), null);
+  const view = dashboardViewFrom({
+    ...board,
+    goals: [{ ...board.goals[0], health: { status: "絶好調", set_by: "x" } }],
+  });
+  // A status this model does not have is no status at all, rather than being
+  // rendered as though someone had said it.
+  assert.equal(view.goals[0].health, null);
+  assert.equal(healthLabel(view.goals[0].health?.status ?? null), "未記入");
+});

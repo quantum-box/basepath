@@ -26,6 +26,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
 | `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
+| `GET /v1/workspaces/{w}/dashboard` | 行動の実施・指標の進捗・自己評価・状況を分けて返す |
 | `GET /v1/workspaces/{w}/cycles` | 計画期間一覧 |
 | `GET /v1/workspaces/{w}/items` | query / kind / state / archived / cursor / limitによる検索 |
 | `GET /v1/workspaces/{w}/items/{id}` | 版番号を含む項目 |
@@ -110,6 +111,31 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 通常の記録はnote / review / learning / checkin。実行履歴を偽装できないようcompletionなどは専用操作だけが生成します。記録・観測の訂正はsupersedes_idで追記し、元データは保持します。
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
+
+## Goal Dashboard
+
+**4つの別々の事実を、混ぜずに返します。** ここは目標系の製品が嘘をつき始める場所です。チケットを4枚出したことが「売上目標に40%」になり、その数字が画面に載り、四半期のあいだ擁護される。
+
+- `GET /v1/workspaces/{w}/dashboard?owner_kind=&owner_id=&cycle_id=`
+
+| フィールド | 意味 | 無いとき |
+| --- | --- | --- |
+| `action_completion` | 予定した行動のうち実施された割合 | 行動が0件なら`rate: null`（0%ではない） |
+| `metric_progress` | 観測から導出した進捗。`method`で算出方法を明示 | 方法未設定なら`value: null`、`method: null` |
+| `self_assessment` | 本人の判断 | 未記入なら`null` |
+| `health` | 誰かが記録した状況。記入者と日時つき | 未記入なら`null`（=unknown） |
+
+**集計方法に既定値はありません。** 方法を誰も選んでいない目標は、導出した進捗を一切返しません。方法が明示されていない数字は議論できないためです。`metric_average` / `metric_worst` / `children_average` / `children_worst` から選びます（`items.fields.rollup`）。
+
+`metric_progress.counted`と`missing`で、何件を根拠にし何件を数えられなかったかを返します。3つのうち1つが未計測なら、残り2つで平均を出しつつ「1件は数えていない」と言います。
+
+**指標の進捗は基準値→目標値の到達率**です。`increase`は`(latest - baseline) / (target - baseline)`、`decrease`はその逆、`threshold`は達成/未達の2値（「閾値の83%」という中間は存在しないため作りません）。100%を超えた場合は超えたまま返します。
+
+`signals`は事実（期限超過、古い観測、未計測、チェックインなし）です。`suggested_health`はそこから規則で導いた**提案**で、`health`にはなりません。それらが「注意」を意味すると決めるのは判断であり、判断には記入者がいます。
+
+- `POST /v1/workspaces/{w}/items/{id}/health`：`status`（on_track / at_risk / off_track）、`note`、`expected_version`。記入者と日時はサーバーが打ちます（クライアントが他人名義や過去日時で記録できないように）。
+
+組織全体を1つの数字にはしません。サマリは状況別の件数です。
 
 ## Goal Alignment
 

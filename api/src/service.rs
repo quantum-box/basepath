@@ -194,6 +194,98 @@ fn workspace_today(workspace: &Workspace) -> NaiveDate {
         .unwrap_or_else(|_| Utc::now().date_naive())
 }
 
+/// How far a metric has moved from where it started toward where it is going.
+///
+/// `None` when nothing has been observed. Not zero: "we have not measured
+/// this" and "we measured it and it has not moved" are different facts, and a
+/// dashboard that shows them the same way is lying about the second one.
+///
+/// The value is not clamped. A metric that overshot its target reads above
+/// 100% because that is what happened; hiding it would make a real result
+/// look like a merely adequate one.
+fn metric_progress(metric: &Metric, latest: Option<f64>) -> Option<f64> {
+    let latest = latest?;
+    match metric.direction.as_str() {
+        "increase" => {
+            let span = metric.target - metric.baseline;
+            (span != 0.0).then(|| (latest - metric.baseline) / span * 100.0)
+        }
+        "decrease" => {
+            let span = metric.baseline - metric.target;
+            (span != 0.0).then(|| (metric.baseline - latest) / span * 100.0)
+        }
+        // A threshold is met or it is not. Reporting "83% of a threshold"
+        // would invent a middle that does not exist.
+        "threshold" => Some(if latest >= metric.target { 100.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// The observation that currently stands for a metric.
+///
+/// Corrections are appended with `supersedes_id` rather than overwriting, so
+/// the current value is the newest observation nothing supersedes. The ones it
+/// replaced stay readable — that is the point of recording a correction rather
+/// than an edit.
+fn standing_observation<'a>(
+    metric: &Metric,
+    observations: &'a [Observation],
+) -> Option<&'a Observation> {
+    let mut live: Vec<&Observation> = observations
+        .iter()
+        .filter(|observation| {
+            observation.metric_id == metric.id
+                && !observations
+                    .iter()
+                    .any(|other| other.supersedes_id.as_deref() == Some(&observation.id))
+        })
+        .collect();
+    live.sort_by(|a, b| a.observed_at.cmp(&b.observed_at));
+    live.last().copied()
+}
+
+/// The rollup methods a goal can use, and what each one means.
+///
+/// Every one of them is named on the response, because a number whose method
+/// is not stated cannot be argued with. There is deliberately no default: a
+/// goal nobody chose a method for reports no derived progress at all.
+const ROLLUP_METHODS: [&str; 4] = [
+    // The mean of this goal's own measured metrics.
+    "metric_average",
+    // The least-progressed of them: a goal is not on track because three of
+    // its four measures are.
+    "metric_worst",
+    // The mean of the goals that roll up into this one.
+    "children_average",
+    "children_worst",
+];
+
+/// A goal's derived progress, with everything needed to argue about it.
+struct Rollup {
+    method: Option<String>,
+    value: Option<f64>,
+    counted: usize,
+    missing: usize,
+    source: &'static str,
+}
+
+fn combine(method: &str, values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    match method {
+        "metric_average" | "children_average" => {
+            Some(values.iter().sum::<f64>() / values.len() as f64)
+        }
+        "metric_worst" | "children_worst" => {
+            values.iter().copied().fold(None::<f64>, |least, value| {
+                Some(least.map_or(value, |l| l.min(value)))
+            })
+        }
+        _ => None,
+    }
+}
+
 /// The alignment graph: whose goals these are, and what they roll up to.
 ///
 /// One workspace, one graph. A goal in someone's personal workspace is not in
@@ -328,6 +420,340 @@ async fn alignment_graph(tx: &mut Tx, w: &str, query: &HashMap<String, String>) 
         "people": people,
         "unowned_goals": unowned,
         "orphan_goals": nodes.iter().filter(|node| node["orphan"] == true).count(),
+    }))
+}
+
+/// The goal dashboard.
+///
+/// Four different things are reported, and they are never merged:
+///
+/// 1. **Action completion** — how many planned occurrences happened. Null when
+///    nothing was planned, because a rate over nothing is not 0%.
+/// 2. **Metric progress** — derived from observations, by a method the goal
+///    names. Null when the goal named no method, or when nothing is measured.
+/// 3. **Self-assessment** — the person's own judgement. Theirs, not derived.
+/// 4. **Health** — somebody's stated view, with their name and the date.
+///
+/// Collapsing any pair of these is the standard way a goal dashboard starts
+/// lying: shipping four tickets becomes "40% to the revenue target", and the
+/// number is defended for a quarter because it is on a screen.
+///
+/// Signals are facts (a stale metric, a passed date, nobody checking in). A
+/// suggestion derived from them is offered separately and never becomes the
+/// health itself — that judgement has an author.
+async fn dashboard(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
+    let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+    let workspace: Workspace = serde_json::from_str(
+        &tx.fetch_optional(&sql, &params![w])
+            .await?
+            .ok_or_else(ApiError::missing)?
+            .text(0)?,
+    )?;
+    let today = workspace_today(&workspace);
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let metrics: Vec<Metric> = list(tx, w, "metrics").await?;
+    let observations: Vec<Observation> = list(tx, w, "observations").await?;
+    let records: Vec<Record> = list(tx, w, "records").await?;
+    let cycles: Vec<Cycle> = list(tx, w, "cycles").await?;
+
+    let wanted_kind = query.get("owner_kind").map(String::as_str);
+    let wanted_id = query.get("owner_id").map(String::as_str);
+    let wanted_cycle = query.get("cycle_id").map(String::as_str);
+
+    let goals: Vec<&Item> = items
+        .iter()
+        .filter(|item| {
+            item.archived_at.is_none() && ["outcome", "milestone"].contains(&item.kind.as_str())
+        })
+        .collect();
+
+    // Progress per goal, resolved deepest-first so a parent can roll up its
+    // children. The alignment graph refuses cycles, so this terminates.
+    let mut derived: HashMap<String, Option<f64>> = HashMap::new();
+    let mut order: Vec<&Item> = goals.clone();
+    order.sort_by_key(|item| {
+        // Depth from the top, so children are computed before parents.
+        let mut depth = 0;
+        let mut current = item.id.clone();
+        while let Some(parent) = relations.iter().find(|relation| {
+            relation.source_id == current
+                && ["part_of", "contributes_to"].contains(&relation.relation_type.as_str())
+        }) {
+            depth += 1;
+            current = parent.target_id.clone();
+            if depth > 64 {
+                break;
+            }
+        }
+        std::cmp::Reverse(depth)
+    });
+
+    let rollup_of = |item: &Item, derived: &HashMap<String, Option<f64>>| -> Rollup {
+        let Some(method) = item.fields.rollup.as_deref() else {
+            // No method, no number. This is the default and it is on purpose.
+            return Rollup {
+                method: None,
+                value: None,
+                counted: 0,
+                missing: 0,
+                source: "none",
+            };
+        };
+        if method.starts_with("metric") {
+            let own: Vec<&Metric> = metrics
+                .iter()
+                .filter(|metric| metric.item_id == item.id)
+                .collect();
+            let measured: Vec<f64> = own
+                .iter()
+                .filter_map(|metric| {
+                    metric_progress(
+                        metric,
+                        standing_observation(metric, &observations).map(|o| o.value),
+                    )
+                })
+                .collect();
+            return Rollup {
+                method: Some(method.to_owned()),
+                value: combine(method, &measured),
+                counted: measured.len(),
+                missing: own.len() - measured.len(),
+                source: "metrics",
+            };
+        }
+        let children: Vec<&Item> = goals
+            .iter()
+            .copied()
+            .filter(|child| {
+                relations.iter().any(|relation| {
+                    relation.source_id == child.id
+                        && relation.target_id == item.id
+                        && ["part_of", "contributes_to"].contains(&relation.relation_type.as_str())
+                })
+            })
+            .collect();
+        let measured: Vec<f64> = children
+            .iter()
+            .filter_map(|child| derived.get(&child.id).copied().flatten())
+            .collect();
+        Rollup {
+            method: Some(method.to_owned()),
+            value: combine(method, &measured),
+            counted: measured.len(),
+            missing: children.len() - measured.len(),
+            source: "children",
+        }
+    };
+
+    for item in &order {
+        let rollup = rollup_of(item, &derived);
+        derived.insert(item.id.clone(), rollup.value);
+    }
+
+    let latest_occurrences = latest_by_occurrence(&records);
+    let mut rows = Vec::new();
+    for item in &goals {
+        let owner = item.fields.owner.as_ref();
+        let matches = wanted_kind.is_none_or(|kind| owner.is_some_and(|owner| owner.kind == kind))
+            && wanted_id.is_none_or(|id| owner.is_some_and(|owner| owner.id == id))
+            && wanted_cycle.is_none_or(|cycle| item.fields.cycle_id.as_deref() == Some(cycle));
+        if !matches {
+            continue;
+        }
+
+        // --- metrics, each with the observation behind it ------------------
+        let own: Vec<&Metric> = metrics
+            .iter()
+            .filter(|metric| metric.item_id == item.id)
+            .collect();
+        let mut stale = 0;
+        let mut unmeasured = 0;
+        let measures: Vec<Value> = own
+            .iter()
+            .map(|metric| {
+                let standing = standing_observation(metric, &observations);
+                let progress = metric_progress(metric, standing.map(|o| o.value));
+                let age = standing
+                    .and_then(|o| DateTime::parse_from_rfc3339(&o.observed_at).ok())
+                    .map(|when| {
+                        Utc::now()
+                            .signed_duration_since(when.with_timezone(&Utc))
+                            .num_days()
+                    });
+                let status = match (standing, age) {
+                    (None, _) => {
+                        unmeasured += 1;
+                        "unmeasured"
+                    }
+                    (Some(_), Some(days)) if days > 14 => {
+                        stale += 1;
+                        "stale"
+                    }
+                    _ => "current",
+                };
+                json!({
+                    "metric_id": metric.id,
+                    "name": metric.name,
+                    "unit": metric.unit,
+                    "direction": metric.direction,
+                    "baseline": metric.baseline,
+                    "target": metric.target,
+                    "latest": standing.map(|o| o.value),
+                    "progress": progress,
+                    "status": status,
+                    // Every number on the dashboard can be followed back.
+                    "latest_observation_id": standing.map(|o| o.id.clone()),
+                    "observed_at": standing.map(|o| o.observed_at.clone()),
+                })
+            })
+            .collect();
+
+        // --- what was planned, and what happened ---------------------------
+        let beneath: Vec<&Item> = items
+            .iter()
+            .filter(|other| {
+                other.kind == "action"
+                    && other.archived_at.is_none()
+                    && relations.iter().any(|relation| {
+                        relation.source_id == other.id
+                            && relation.target_id == item.id
+                            && ["part_of", "contributes_to"]
+                                .contains(&relation.relation_type.as_str())
+                    })
+            })
+            .collect();
+        let done = beneath
+            .iter()
+            .filter(|action| {
+                action.state == "done"
+                    || latest_occurrences.values().any(|record| {
+                        record.record_type == "completion"
+                            && record
+                                .occurrence_key
+                                .as_deref()
+                                .is_some_and(|key| key.starts_with(&format!("{}:", action.id)))
+                    })
+            })
+            .count();
+
+        // --- signals: facts, not verdicts ----------------------------------
+        let overdue = item
+            .due_date
+            .as_deref()
+            .is_some_and(|due| due < today.to_string().as_str() && item.state != "done");
+        let last_checkin = records
+            .iter()
+            .filter(|record| {
+                record.item_ids.contains(&item.id)
+                    && ["checkin", "review", "note", "learning"]
+                        .contains(&record.record_type.as_str())
+            })
+            .map(|record| record.happened_at.clone())
+            .max();
+        let days_since_checkin = last_checkin
+            .as_deref()
+            .and_then(|when| DateTime::parse_from_rfc3339(when).ok())
+            .map(|when| {
+                Utc::now()
+                    .signed_duration_since(when.with_timezone(&Utc))
+                    .num_days()
+            });
+
+        // A suggestion, from rules, kept apart from the stated health. It is
+        // never promoted automatically: deciding that these facts add up to
+        // "at risk" is a judgement, and a judgement has an author.
+        let mut reasons: Vec<&str> = Vec::new();
+        if overdue {
+            reasons.push("期限を過ぎています");
+        }
+        if stale > 0 {
+            reasons.push("2週間以上更新されていない指標があります");
+        }
+        if unmeasured > 0 {
+            reasons.push("未計測の指標があります");
+        }
+        if days_since_checkin.is_none_or(|days| days > 21) {
+            reasons.push("3週間以上チェックインがありません");
+        }
+        let suggested = match reasons.len() {
+            0 => None,
+            1 => Some("at_risk"),
+            _ => Some("off_track"),
+        };
+
+        let cycle = item
+            .fields
+            .cycle_id
+            .as_ref()
+            .and_then(|id| cycles.iter().find(|cycle| &cycle.id == id));
+        let rollup = rollup_of(item, &derived);
+
+        rows.push(json!({
+            "id": item.id,
+            "title": item.title,
+            "owner": item.fields.owner,
+            "cycle": cycle,
+            "state": item.state,
+            "due_date": item.due_date,
+            "updated_at": item.updated_at,
+            // 1. What was planned and what happened. Null when nothing was
+            //    planned: a rate over nothing is not 0%.
+            "action_completion": json!({
+                "total": beneath.len(),
+                "completed": done,
+                "rate": (!beneath.is_empty())
+                    .then(|| (done as f64 / beneath.len() as f64) * 100.0),
+            }),
+            // 2. Derived from observations, by a stated method.
+            "metric_progress": json!({
+                "method": rollup.method,
+                "source": rollup.source,
+                "value": rollup.value,
+                "counted": rollup.counted,
+                "missing": rollup.missing,
+                "metrics": measures,
+            }),
+            // 3. The person's own judgement of their own goal.
+            "self_assessment": item.fields.self_assessment,
+            "assessed_at": item.fields.assessed_at,
+            // 4. Somebody's stated view, with their name and the date.
+            "health": item.fields.health,
+            "suggested_health": suggested.map(|status| json!({"status":status,"reasons":reasons})),
+            "signals": json!({
+                "overdue": overdue,
+                "stale_metrics": stale,
+                "unmeasured_metrics": unmeasured,
+                "last_checkin_at": last_checkin,
+                "days_since_checkin": days_since_checkin,
+            }),
+        }));
+    }
+
+    // Counts, not one number. There is no single figure for "how the
+    // organisation is doing", and inventing one would be the same mistake at a
+    // larger scale.
+    let mut by_health: HashMap<&str, usize> = HashMap::new();
+    for row in &rows {
+        let status = row["health"]["status"].as_str().unwrap_or("unknown");
+        *by_health.entry(status).or_default() += 1;
+    }
+    Ok(json!({
+        "workspace_id": w,
+        "today": today.to_string(),
+        "goals": rows,
+        "goal_count": rows.len(),
+        "by_health": {
+            "on_track": by_health.get("on_track").copied().unwrap_or(0),
+            "at_risk": by_health.get("at_risk").copied().unwrap_or(0),
+            "off_track": by_health.get("off_track").copied().unwrap_or(0),
+            "unknown": by_health.get("unknown").copied().unwrap_or(0),
+        },
+        "without_rollup_method": rows
+            .iter()
+            .filter(|row| row["metric_progress"]["method"].is_null())
+            .count(),
+        "rollup_methods": ROLLUP_METHODS,
     }))
 }
 
@@ -597,6 +1023,28 @@ async fn validate_item(tx: &mut Tx, item: &Item) -> Result<()> {
         .is_some_and(|priority| !["low", "medium", "high", "urgent"].contains(&priority))
     {
         return Err(ApiError::invalid("優先度を確認してください"));
+    }
+    if let Some(method) = &item.fields.rollup {
+        if !ROLLUP_METHODS.contains(&method.as_str()) {
+            return Err(ApiError::invalid(&format!(
+                "集計方法はunsetか{}のいずれかです",
+                ROLLUP_METHODS.join(" / ")
+            )));
+        }
+    }
+    if let Some(health) = &item.fields.health {
+        if !["on_track", "at_risk", "off_track"].contains(&health.status.as_str()) {
+            return Err(ApiError::invalid(
+                "状況はon_track / at_risk / off_trackのいずれかです",
+            ));
+        }
+        if health.note.chars().count() > 2000 {
+            return Err(ApiError::invalid("状況のメモは2000文字以内にしてください"));
+        }
+        timestamp(&health.set_at)?;
+        if health.set_by.trim().is_empty() {
+            return Err(ApiError::invalid("状況には記入者が必要です"));
+        }
     }
     if let Some(owner) = &item.fields.owner {
         match owner.kind.as_str() {
@@ -1991,6 +2439,32 @@ async fn dispatch_inner(
         }
         ("GET", "planning", "", "") => planning_context(tx, w, query).await,
         ("GET", "alignment", "", "") => alignment_graph(tx, w, query).await,
+        ("GET", "dashboard", "", "") => dashboard(tx, w, query).await,
+        // Stating how a goal is going.
+        //
+        // A separate route rather than a field a client sets, because the
+        // author and the time are the point: "at risk" with nobody's name on
+        // it is a rumour. The server stamps both, so they cannot be supplied.
+        ("POST", "items", id, "health") if !id.is_empty() => {
+            only(body, &["status", "note", "expected_version"])?;
+            let mut item: Item = get(tx, w, "items", id).await?;
+            guard_personal_goal(tx, actor, w, &item).await?;
+            version(body, item.version)?;
+            if !["outcome", "milestone"].contains(&item.kind.as_str()) {
+                return Err(ApiError::invalid("状況を記録できるのは目標と節目だけです"));
+            }
+            item.fields.health = Some(GoalHealth {
+                status: text(body, "status").into(),
+                note: text(body, "note").chars().take(2000).collect(),
+                set_at: now(),
+                set_by: actor.id.clone(),
+            });
+            item.version += 1;
+            item.updated_at = now();
+            validate_item(tx, &item).await?;
+            put(tx, w, "items", id, &item).await?;
+            value(item)
+        }
         ("POST", "cycles", "", "") => {
             only(
                 body,
