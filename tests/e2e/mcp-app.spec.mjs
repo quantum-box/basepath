@@ -366,3 +366,175 @@ test("a deep tree and long Japanese titles stay readable at 320px", async ({
     .evaluate((body) => body.scrollWidth - body.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });
+
+test("a change set is shown as a diff that cannot be approved in the app", async ({
+  page,
+}) => {
+  const app = await openHarness(page);
+
+  const review = app.getByRole("region", { name: "変更案" });
+  await expect(review).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "AIからの計画変更" }),
+  ).toBeVisible();
+  await expect(review.getByText("追加1・更新0・削除1")).toBeVisible();
+  // Who proposed it, and through which connection.
+  await expect(
+    review.getByText("接続 mcpconn_1", { exact: false }),
+  ).toBeVisible();
+  // A deletion is called a deletion.
+  await expect(review.getByText("この項目は削除されます")).toBeVisible();
+  // The new item's fields are shown before/after.
+  await expect(review.getByRole("row", { name: /タイトル/ })).toBeVisible();
+
+  // Approval is not offered here, and the reason is stated.
+  await expect(
+    review.getByRole("button", { name: "この内容で承認する" }),
+  ).toBeHidden();
+  await expect(
+    review.getByText("ここでの操作は本人確認の代わりになりません", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("button", { name: "Basepathで承認する" }),
+  ).toBeVisible();
+  await expect(
+    review.getByText("https://basepath.example/changes/personal/change_1"),
+  ).toBeVisible();
+});
+
+test("withdrawing a proposal goes through the server and reloads", async ({
+  page,
+}) => {
+  const app = await openHarness(page);
+  await app.getByRole("button", { name: "この案を取り下げる" }).click();
+  await expect(app.getByText("変更案を取り下げました")).toBeVisible();
+
+  const calls = await page.evaluate(() => window.__calls);
+  expect(calls).toContain("pathbase_reject_change");
+  // The state is re-read rather than assumed.
+  expect(calls.lastIndexOf("pathbase_list_changes")).toBeGreaterThan(
+    calls.indexOf("pathbase_reject_change"),
+  );
+});
+
+test("applying is offered only once someone has approved", async ({ page }) => {
+  const approved = await page.evaluate(() => null);
+  void approved;
+  const app = await openHarness(page, {
+    fixtures: {
+      pathbase_get_context: {
+        workspaces: [
+          {
+            id: "personal",
+            name: "個人",
+            scope: "個人",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+        ],
+        basepath_url: "https://basepath.example",
+      },
+      pathbase_get_graph: {
+        items: [],
+        relations: [],
+        truncated: false,
+        limit: 200,
+      },
+      pathbase_get_today: { local_date: "2026-09-18", items: [] },
+      pathbase_get_week: {
+        start: "2026-09-14",
+        end: "2026-09-20",
+        timezone: "Asia/Tokyo",
+        days: [],
+        unscheduled: [],
+      },
+      pathbase_list_changes: {
+        items: [
+          {
+            id: "change_2",
+            workspace_id: "personal",
+            title: "承認済みの案",
+            status: "approved",
+            hash: "digest-2",
+            approved_by: "us_me",
+            approved_at: "2026-09-18T01:00:00Z",
+            created_at: "2026-09-18T00:00:00Z",
+            expires_at: "2099-01-01T00:00:00Z",
+            changes: [],
+          },
+        ],
+      },
+      pathbase_apply_changes: {
+        changeset: { id: "change_2", status: "applied" },
+      },
+    },
+  });
+
+  const review = app.getByRole("region", { name: "変更案" });
+  await expect(review.getByText("承認済み・適用待ち")).toBeVisible();
+  await expect(review.getByText("承認 us_me", { exact: false })).toBeVisible();
+  await review
+    .getByRole("button", { name: "承認済みの内容を適用する" })
+    .click();
+  await expect(app.getByText("承認済みの内容を適用しました")).toBeVisible();
+  const calls = await page.evaluate(() => window.__calls);
+  expect(calls).toContain("pathbase_apply_changes");
+});
+
+test("an expired proposal offers nothing but a rebuild", async ({ page }) => {
+  const app = await openHarness(page, {
+    fixtures: {
+      pathbase_get_context: {
+        workspaces: [
+          {
+            id: "personal",
+            name: "個人",
+            scope: "個人",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+        ],
+        basepath_url: "https://basepath.example",
+      },
+      pathbase_get_graph: {
+        items: [],
+        relations: [],
+        truncated: false,
+        limit: 200,
+      },
+      pathbase_get_today: { local_date: "2026-09-18", items: [] },
+      pathbase_get_week: {
+        start: "2026-09-14",
+        end: "2026-09-20",
+        timezone: "Asia/Tokyo",
+        days: [],
+        unscheduled: [],
+      },
+      pathbase_list_changes: {
+        items: [
+          {
+            id: "change_3",
+            workspace_id: "personal",
+            title: "期限切れの案",
+            status: "pending",
+            hash: "digest-3",
+            created_at: "2020-01-01T00:00:00Z",
+            expires_at: "2020-01-01T00:30:00Z",
+            changes: [],
+          },
+        ],
+      },
+    },
+  });
+
+  const review = app.getByRole("region", { name: "変更案" });
+  await expect(review.getByText("期限切れ").first()).toBeVisible();
+  await expect(
+    review.getByText("もう一度作り直してください", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("button", { name: "Basepathで承認する" }),
+  ).toBeHidden();
+});

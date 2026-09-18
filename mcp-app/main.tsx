@@ -24,7 +24,14 @@ import {
   type PlanView,
 } from "../src/shared/viewModel";
 import { PlanViewPanel, type ActionRequest } from "../src/shared/PlanView";
+import { ChangeReview } from "../src/shared/ChangeReview";
+import {
+  approvalUrl,
+  changeSetsFrom,
+  type ChangeSet,
+} from "../src/shared/changeView";
 import { useTreeState } from "../src/shared/useTreeState";
+import "./document.css";
 import "../src/shared/planView.css";
 
 const APP_INFO = { name: "Basepath", version: "1.0.0" };
@@ -80,6 +87,10 @@ function BasepathApp() {
   const [limit, setLimit] = useState<number | undefined>(undefined);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [changes, setChanges] = useState<ChangeSet[]>([]);
+  const [basepathUrl, setBasepathUrl] = useState("");
+  const [changeBusy, setChangeBusy] = useState(false);
+  const [changeNotice, setChangeNotice] = useState<string | null>(null);
   /** Only the newest load may write to the view. */
   const generation = useRef(0);
   // Folding and selection reset when the workspace does: a node id from one
@@ -149,6 +160,30 @@ function BasepathApp() {
     }
     setProblem(null);
     setView(next);
+
+    // Proposals awaiting the person, alongside the plan they would change.
+    const workspace = next.workspace;
+    if (!workspace) {
+      setChanges([]);
+      return;
+    }
+    try {
+      const context = await host.call("pathbase_get_context", {});
+      const url = (context as { basepath_url?: unknown })?.basepath_url;
+      setBasepathUrl(typeof url === "string" ? url : "");
+      const listed = await host.call("pathbase_list_changes", {
+        workspace_id: workspace.id,
+      });
+      setChanges(
+        changeSetsFrom(listed).filter(
+          (change) =>
+            change.status === "pending" || change.status === "approved",
+        ),
+      );
+    } catch {
+      // A plan that loads without its proposals is still worth showing.
+      setChanges([]);
+    }
   }, [hostFor, workspaceId, limit]);
 
   useEffect(() => {
@@ -197,6 +232,65 @@ function BasepathApp() {
     [hostFor, view.workspace, view.localDate, busyAction, refresh],
   );
 
+  /**
+   * Withdrawing a proposal, or applying one the person already approved.
+   *
+   * Approving is deliberately not here: a click in this app reaches the server
+   * as an ordinary tool call, which the server cannot tell apart from the
+   * model's, so it is not evidence of the person's intent.
+   */
+  const actOnChange = useCallback(
+    async (change: ChangeSet, intent: "reject" | "apply") => {
+      const host = hostFor();
+      if (!host || changeBusy) return;
+      setChangeBusy(true);
+      setChangeNotice(null);
+      try {
+        await host.call(
+          intent === "reject"
+            ? "pathbase_reject_change"
+            : "pathbase_apply_changes",
+          {
+            workspace_id: change.workspaceId,
+            preview_id: change.id,
+            idempotency_key: `${intent}:${change.id}:${change.hash}`,
+          },
+        );
+        setChangeNotice(
+          intent === "reject"
+            ? "変更案を取り下げました。"
+            : "承認済みの内容を適用しました。",
+        );
+      } catch (failure) {
+        if (failure instanceof HostError) {
+          const described = problemFor(failure);
+          setChangeNotice(`${described.title}: ${described.detail}`);
+        } else {
+          setChangeNotice("操作できませんでした。");
+        }
+      } finally {
+        setChangeBusy(false);
+        await refresh();
+      }
+    },
+    [hostFor, changeBusy, refresh],
+  );
+
+  const openApproval = useCallback(
+    async (change: ChangeSet) => {
+      if (!app || !basepathUrl) return;
+      const url = approvalUrl(basepathUrl, change);
+      if (app.getHostCapabilities()?.openLinks) {
+        await app.openLink({ url });
+        return;
+      }
+      setChangeNotice(
+        `このホストはリンクを開けません。${url} を開いてください。`,
+      );
+    },
+    [app, basepathUrl],
+  );
+
   if (error) {
     return (
       <PlanViewPanel
@@ -211,22 +305,45 @@ function BasepathApp() {
   }
 
   return (
-    <PlanViewPanel
-      view={view}
-      tree={tree}
-      loading={loading && !problem}
-      problem={problem ? { ...problem, retry: () => void refresh() } : null}
-      stale={stale}
-      onSelectWorkspace={(id) => {
-        setNotice(null);
-        setLimit(undefined);
-        setWorkspaceId(id);
-      }}
-      onPropose={(request) => void propose(request)}
-      busyAction={busyAction}
-      notice={notice}
-      onExpand={() => setLimit(200)}
-    />
+    <>
+      <PlanViewPanel
+        view={view}
+        tree={tree}
+        loading={loading && !problem}
+        problem={problem ? { ...problem, retry: () => void refresh() } : null}
+        stale={stale}
+        onSelectWorkspace={(id) => {
+          setNotice(null);
+          setLimit(undefined);
+          setWorkspaceId(id);
+        }}
+        onPropose={(request) => void propose(request)}
+        busyAction={busyAction}
+        notice={notice}
+        onExpand={() => setLimit(200)}
+      />
+      {changes.map((change) => (
+        <ChangeReview
+          key={change.id}
+          change={change}
+          workspaceName={view.workspace?.name}
+          busy={changeBusy}
+          notice={changeNotice}
+          approveHref={
+            basepathUrl ? approvalUrl(basepathUrl, change) : undefined
+          }
+          onOpenApproval={
+            basepathUrl ? () => void openApproval(change) : undefined
+          }
+          onReject={() => void actOnChange(change, "reject")}
+          onApply={
+            change.approvedBy
+              ? () => void actOnChange(change, "apply")
+              : undefined
+          }
+        />
+      ))}
+    </>
   );
 }
 

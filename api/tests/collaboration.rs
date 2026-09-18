@@ -21,6 +21,7 @@ fn actor(id: &str) -> Actor {
     Actor {
         id: id.into(),
         agent: false,
+        connection: None,
     }
 }
 async fn req(s: &Service, a: &str, method: &str, path: &str, body: Value) -> Result<Value> {
@@ -218,7 +219,8 @@ async fn invitation_membership_revocation_and_restart_keep_personal_data_private
             s.handle(
                 &Actor {
                     id: "us_guest".into(),
-                    agent
+                    agent,
+                    connection: None,
                 },
                 "GET",
                 &format!("{base}/snapshot"),
@@ -421,6 +423,7 @@ async fn invitations_are_targeted_expiring_revocable_and_not_agent_controlled() 
     let ai = Actor {
         id: "us_owner".into(),
         agent: true,
+        connection: None,
     };
     assert_eq!(
         s.handle(

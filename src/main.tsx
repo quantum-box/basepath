@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import "@xyflow/react/dist/style.css";
 import "./fonts.css";
 import "./styles.css";
+// The change review is shared with the MCP App, and brings its own styles.
+import "./shared/planView.css";
 import { App } from "./App";
 
 createRoot(document.getElementById("root")!).render(

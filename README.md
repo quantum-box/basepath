@@ -75,6 +75,8 @@ hosted MCP は Streamable HTTP の `/mcp`（`PATHBASE_WEB_ROOT` 使用時は `/a
 
 transportはstateless Streamable HTTP（JSON応答）です。Lambdaでは連続したリクエストが別の実行環境に届くため、sessionを持ちません。`initialize`は`Mcp-Session-Id`を返さず、応答は`application/json`、SSE用の`GET`は拒否します。`Host`（と設定時は`Origin`）を検証し、応答は常に`Cache-Control: no-store`です。
 
+変更案の確認と承認は[docs/change-approval.md](docs/change-approval.md)にまとめています。要点は「AIホスト内のクリックは承認の証拠にならない」ことです。アプリからのtool呼び出しはモデルからの呼び出しと同じ接続・同じトークン・同じ形でサーバーへ届き、区別できる情報がありません。そのため承認はBasepath自身のオリジンで本人のセッションを使って行い（`/changes/{workspace}/{id}`）、会話内では差分の提示・取り下げ・承認済みの適用までを行います。
+
 toolのannotationsは実際の副作用に合わせています。変更案はDELETEを含みうるので、preview / propose / applyは`destructiveHint: true`です。`pathbase_get_graph`は最大`limit`件（既定・上限とも200）を返し、`truncated`を明示します。
 
 MCP Apps対応として、`pathbase_get_graph` / `pathbase_get_today` / `pathbase_get_week` に `_meta.ui.resourceUri`（`ui://basepath/plan.html`）を付け、`resources/list` で `text/html;profile=mcp-app` のUI resourceを公開します。バンドルは外部から何も読み込まない単一ファイルなので、CSPは空（許可する配信元なし）です。UIは空のシェルで、業務データも資格情報も埋め込みません。ホスト経由で取得し、認可はRust側で毎回行います。表示はホストの承認や認可の代替ではありません。UI非対応ホストでも通常の `structuredContent` / text でそのまま使えます。
@@ -83,7 +85,7 @@ UIは `mcp-app/` と `src/shared/`（Web / Tauriと共有する表示部品と�
 
 discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT / Claude実機での接続確認は未実施です。
 
-17個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
+18個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 
 ## 検証
 

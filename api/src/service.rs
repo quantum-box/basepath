@@ -20,12 +20,27 @@ pub struct Service {
 pub struct Actor {
     pub id: String,
     pub agent: bool,
+    /// The MCP delegation this request arrived through, when it did.
+    ///
+    /// Recorded in the audit trail so "which connection proposed this?" has an
+    /// answer. It is never an authorization input: an agent is an agent
+    /// whichever connection it came from.
+    pub connection: Option<String>,
 }
 impl Actor {
     pub fn local() -> Self {
         Self {
             id: "local-owner".into(),
             agent: false,
+            connection: None,
+        }
+    }
+    /// A person acting through the browser.
+    pub fn person(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            agent: false,
+            connection: None,
         }
     }
 }
@@ -611,9 +626,13 @@ impl Service {
             .ok_or_else(|| {
                 ApiError::new(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Keyが必要です")
             })?;
+        // An agent may propose, withdraw a proposal, and apply one the person
+        // already approved. It may not approve, and it may not write directly.
         if actor.agent
             && !(parts.get(3) == Some(&"changesets")
-                && (parts.get(4) == Some(&"preview") || parts.get(5) == Some(&"apply")))
+                && (parts.get(4) == Some(&"preview")
+                    || parts.get(5) == Some(&"apply")
+                    || parts.get(5) == Some(&"reject")))
         {
             return Err(ApiError::new(
                 403,
@@ -665,8 +684,8 @@ impl Service {
         )
         .await?;
         tx.execute(
-            "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq) \
-             VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq,connection) \
+             VALUES(?,?,?,?,?,?,?,?)",
             &params![
                 new_id("audit"),
                 w,
@@ -674,7 +693,8 @@ impl Service {
                 if actor.agent { "mcp" } else { "ui" },
                 format!("{method} {path}"),
                 now(),
-                sequence()
+                sequence(),
+                actor.connection.clone().unwrap_or_default()
             ],
         )
         .await?;
@@ -787,7 +807,7 @@ async fn dispatch_inner(
     .await?;
     if actor.agent
         && method != "GET"
-        && !(col == "changesets" && (id == "preview" || suffix == "apply"))
+        && !(col == "changesets" && (id == "preview" || suffix == "apply" || suffix == "reject"))
     {
         return Err(ApiError::new(
             403,
@@ -1056,12 +1076,12 @@ async fn dispatch_inner(
         ("GET", "audit", "", "") => {
             let rows = tx
                 .fetch_all(
-                    "SELECT id,command,created_at,origin,actor FROM audit \
+                    "SELECT id,command,created_at,origin,actor,connection FROM audit \
                      WHERE workspace_id=? ORDER BY seq DESC LIMIT 100",
                     &params![w],
                 )
                 .await?;
-            value(rows.iter().map(|r| Ok(json!({"id":r.text(0)?,"command":r.text(1)?,"created_at":r.text(2)?,"origin":r.text(3)?,"actor":r.text(4)?}))).collect::<Result<Vec<_>>>()?)
+            value(rows.iter().map(|r| Ok(json!({"id":r.text(0)?,"command":r.text(1)?,"created_at":r.text(2)?,"origin":r.text(3)?,"actor":r.text(4)?,"connection":r.opt_text(5)?.filter(|value| !value.is_empty())}))).collect::<Result<Vec<_>>>()?)
         }
         ("GET", col, "", "")
             if [
@@ -1586,7 +1606,16 @@ async fn dispatch_inner(
         ("POST", "templates", id, "apply") => apply_template(tx, actor, w, id, body).await,
         ("POST", "onboarding", "complete", "") => complete_onboarding(tx, actor, w, body).await,
         ("POST", "changesets", "preview", "") => preview(tx, actor, w, body).await,
+        // Approval is a person's act, and only a person's.
+        //
+        // An MCP client's call — whether the model made it or a button in the
+        // app did — arrives on the same connection with the same token, so the
+        // server cannot tell them apart. It therefore does not try: an agent
+        // actor is refused here, and approval happens in Basepath's own origin
+        // with the person's own session. `_meta.ui.visibility`, a header, or an
+        // `approved` flag the caller sets are not evidence of anything.
         ("POST", "changesets", id, "approve") if !actor.agent => {
+            only(body, &["hash"])?;
             let mut c: Value = get(tx, w, col, id).await?;
             validate_preview(tx, w, &c).await?;
             if c["status"] != "pending" {
@@ -1596,16 +1625,53 @@ async fn dispatch_inner(
                     "この変更案は承認待ちではありません",
                 ));
             }
+            // The person approves the content they were shown. If the caller
+            // names a digest, it has to be that content's.
+            if let Some(shown) = body["hash"].as_str() {
+                if shown != text(&c, "hash") {
+                    return Err(ApiError::new(
+                        409,
+                        "CHANGESET_SUPERSEDED",
+                        "表示していた内容と異なります。最新の変更案を確認してください",
+                    ));
+                }
+            }
             c["approved_by"] = json!(actor.id);
+            c["approved_at"] = json!(now());
             c["status"] = json!("approved");
             c["approved_hash"] = c["hash"].clone();
             put(tx, w, col, id, &c).await?;
             Ok(c)
         }
+        // Rejecting only discards a proposal, so an agent may do it: nothing
+        // is applied, and the person can always propose again.
+        ("POST", "changesets", id, "reject") => {
+            only(body, &[])?;
+            let mut c: Value = get(tx, w, col, id).await?;
+            if !["pending", "approved"].contains(&text(&c, "status")) {
+                return Err(ApiError::new(
+                    409,
+                    "VERSION_CONFLICT",
+                    "この変更案はすでに処理されています",
+                ));
+            }
+            c["status"] = json!("rejected");
+            c["rejected_by"] = json!(actor.id);
+            c["rejected_at"] = json!(now());
+            // A rejected proposal can never be applied, approval or not.
+            c["approved_hash"] = Value::Null;
+            put(tx, w, col, id, &c).await?;
+            Ok(c)
+        }
         ("POST", "changesets", id, "apply") => {
+            only(body, &[])?;
             let mut c: Value = get(tx, w, col, id).await?;
             validate_preview(tx, w, &c).await?;
+            // Applying is allowed for the person who approved this exact
+            // content, whichever surface they are on. It is never allowed
+            // because a caller says it was approved.
             if c["status"] != "approved"
+                || c["approved_hash"].is_null()
                 || c["approved_hash"] != c["hash"]
                 || c["approved_by"] != actor.id
             {
@@ -1619,6 +1685,7 @@ async fn dispatch_inner(
             let human = Actor {
                 id: actor.id.clone(),
                 agent: false,
+                connection: actor.connection.clone(),
             };
             let mut output = vec![];
             for op in ops {
@@ -1628,6 +1695,8 @@ async fn dispatch_inner(
             }
             c["status"] = json!("applied");
             c["applied_at"] = json!(now());
+            c["applied_by"] = json!(actor.id);
+            c["applied_by_connection"] = json!(actor.connection);
             put(tx, w, col, id, &c).await?;
             Ok(json!({"changeset":c,"results":output}))
         }
@@ -1827,26 +1896,92 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
             ));
         }
     }
-    // Validate the complete batch without changing the live plan.
+    // Validate the complete batch without changing the live plan, and record
+    // what each operation would do while the effect is observable.
+    //
+    // The diff is captured here, inside the savepoint, rather than being
+    // re-derived later: only here is both the state before an operation and
+    // the state after it available, in order, without touching the live plan.
     tx.savepoint("preview_validation").await?;
     let human = Actor {
         id: actor.id.clone(),
         agent: false,
+        connection: actor.connection.clone(),
     };
     let mut validation = Ok(());
+    let mut changes = Vec::new();
     for op in &ops {
-        if let Err(error) =
-            dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await
-        {
-            validation = Err(error);
-            break;
+        match describe_operation(tx, &human, w, op).await {
+            Ok(change) => changes.push(change),
+            Err(error) => {
+                validation = Err(error);
+                break;
+            }
         }
     }
     tx.rollback_to_savepoint("preview_validation").await?;
     validation?;
-    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"status":"pending","actor":actor.id,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
+    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"changes":changes,"status":"pending","actor":actor.id,"proposed_by_connection":actor.connection,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
     put(tx, w, "changesets", text(&c, "id"), &c).await?;
     Ok(c)
+}
+
+/// Runs one proposed operation and records what it did.
+///
+/// The caller is inside a savepoint that will be rolled back, so this is a
+/// dry run: the returned description is what a person will be shown, and the
+/// plan is untouched.
+async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation) -> Result<Value> {
+    let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
+    let collection = parts.get(3).copied().unwrap_or("");
+    // `actions` operate on an item; everything else names its own collection.
+    let (target_collection, target_id) = if collection == "actions" {
+        ("items", parts.get(4).copied().unwrap_or(""))
+    } else {
+        (collection, parts.get(4).copied().unwrap_or(""))
+    };
+    let before: Option<Value> = if target_id.is_empty() {
+        None
+    } else {
+        get(tx, w, target_collection, target_id).await.ok()
+    };
+
+    let result = dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+
+    // The identifier of what the operation actually touched: for a create it
+    // only exists in the result.
+    let id = if target_id.is_empty() {
+        result["id"].as_str().unwrap_or("").to_owned()
+    } else {
+        target_id.to_owned()
+    };
+    let after: Option<Value> = if id.is_empty() {
+        None
+    } else {
+        get(tx, w, target_collection, &id).await.ok()
+    };
+    let effect = match (&before, &after) {
+        (None, Some(_)) => "created",
+        (Some(_), None) => "deleted",
+        (Some(_), Some(_)) => "updated",
+        (None, None) => "unknown",
+    };
+    let title = after
+        .as_ref()
+        .or(before.as_ref())
+        .and_then(|value| value["title"].as_str())
+        .unwrap_or("")
+        .to_owned();
+    Ok(json!({
+        "method": op.method,
+        "path": op.path,
+        "collection": target_collection,
+        "id": id,
+        "title": title,
+        "effect": effect,
+        "before": before,
+        "after": after,
+    }))
 }
 async fn validate_preview(tx: &mut Tx, w: &str, c: &Value) -> Result<()> {
     if text(c, "expires_at") < now().as_str()

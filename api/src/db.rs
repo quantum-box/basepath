@@ -446,6 +446,12 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         include_str!("../migrations/sqlite/0003_mcp_connections.sql"),
         include_str!("../migrations/mysql/0003_mcp_connections.sql"),
     ),
+    (
+        4,
+        "audit connection",
+        include_str!("../migrations/sqlite/0004_audit_connection.sql"),
+        include_str!("../migrations/mysql/0004_audit_connection.sql"),
+    ),
 ];
 
 /// The schema version this build expects. Readiness compares against it, so a

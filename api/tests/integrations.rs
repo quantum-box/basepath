@@ -354,6 +354,7 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
     let actor = pathbase_api::service::Actor {
         id: "us_verified".into(),
         agent: false,
+        connection: None,
     };
     service.provision_personal(&actor).await.unwrap();
     let ws = service

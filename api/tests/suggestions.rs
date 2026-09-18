@@ -132,7 +132,8 @@ async fn permissions_and_stale_goal_version_are_enforced() {
             &service,
             &Actor {
                 id: "outsider".into(),
-                agent: false
+                agent: false,
+                connection: None
             },
             "POST",
             "/v1/workspaces/organization/ai/suggestions/preview",

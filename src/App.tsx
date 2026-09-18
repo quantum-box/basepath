@@ -30,6 +30,7 @@ import {
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
 import { McpConnections } from "./McpConnections";
+import { ChangeApproval, changeRouteFromPath } from "./ChangeApproval";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { AiSuggestions } from "./AiSuggestions";
@@ -421,6 +422,12 @@ export function App() {
   const [sidebar, setSidebar] = useState(false);
   const [selectingTenant, setSelectingTenant] = useState(
     window.location.pathname === "/tenants",
+  );
+  // A deep link from the conversation lands here. Approval needs this origin
+  // and this session, so the link goes to a real screen rather than back into
+  // the AI host.
+  const [changeRoute, setChangeRoute] = useState(() =>
+    changeRouteFromPath(window.location.pathname),
   );
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -926,6 +933,19 @@ export function App() {
         }}
         backLabel="ログイン画面に戻る"
         backPendingLabel="ログアウト中…"
+      />
+    );
+  // The approval deep link, once the person is signed in. It comes after the
+  // sign-in and tenant screens on purpose: approving needs a real session.
+  if (changeRoute)
+    return (
+      <ChangeApproval
+        route={changeRoute}
+        store={store}
+        onClose={() => {
+          setChangeRoute(null);
+          window.history.replaceState({}, "", "/");
+        }}
       />
     );
   if (selectingTenant && store.me.mode === "tachyon")

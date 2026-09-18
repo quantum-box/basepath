@@ -76,6 +76,7 @@ fn actor(id: &str) -> Actor {
     Actor {
         id: id.into(),
         agent: false,
+        connection: None,
     }
 }
 
