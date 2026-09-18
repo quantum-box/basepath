@@ -85,7 +85,7 @@ GitHub ActionsではPRと`main`へのpushで、次の4ジョブを実行しま�
 
 ## 現在の範囲
 
-PathBase用のTachyonクライアント登録、issuer、コールバック登録、Field接続環境は未提供のため、実環境でのログイン・複数アカウントでの招待・Fieldデータ取得は未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB、ホスト型MCPは別途実装が必要です。
+実環境（`https://pathbase-v2.txcloud.app`）でのTachyonログインとテナント選択は2026-09-18に確認済みです。Fieldデータの取得は未確認で、Fieldが`pathbase-local`クライアントのトークンを委譲認証で受け付けず401を返します。テナントに依らず401のため利用者の権限不足ではなく、Tachyon / Field側の受入設定が残っています（詳細は`docs/implementation-qa.md`）。複数アカウントでの招待も未検証です。招待は相手がPathBaseへログインすると画面内に届き、メールは送信しません。個人領域とローカル確認用領域は招待できません。外部通知、担当者指定、自動双方向同期、組織ポリシーの詳細設定、分散DB、ホスト型MCPは別途実装が必要です。
 
 `.openai/hosting.json`、`worker/index.js`、`scripts/prepare-sites-build.mjs`、`tests/sites-worker.test.mjs`は既存構成を維持しています。`npm run build`は`dist/client/index.html`、`dist/server/index.js`、`dist/.openai/hosting.json`を生成します。Sites用workerは静的配信であり、それだけではRust APIは公開されません。外部へのデプロイは行っていません。
 
