@@ -172,3 +172,110 @@ test("a host without tool support fails with a reason the UI can explain", async
   const { error } = await loadPlanView(host);
   assert.equal(error.code, "HOST_UNSUPPORTED");
 });
+
+const { localDateIn, weekBounds, weekFrom, nodeIds, findNode } =
+  await import("../src/shared/viewModel.ts");
+const { pruneSelection } = await import("../src/shared/useTreeState.ts");
+
+test("today belongs to the workspace's timezone, not the viewer's device", () => {
+  // 2026-09-18T15:30Z is already the 19th in Tokyo and still the 18th in UTC.
+  const instant = new Date("2026-09-18T15:30:00Z");
+  assert.equal(localDateIn("Asia/Tokyo", instant), "2026-09-19");
+  assert.equal(localDateIn("UTC", instant), "2026-09-18");
+  assert.equal(localDateIn("America/Los_Angeles", instant), "2026-09-18");
+  // An unknown timezone must not blank the screen.
+  assert.match(localDateIn("Not/AZone", instant), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("the week runs Monday to Sunday, as the server requires", () => {
+  assert.deepEqual(weekBounds("2026-09-18"), {
+    start: "2026-09-14",
+    end: "2026-09-20",
+  });
+  // A Monday is its own week start, and a Sunday belongs to the week before.
+  assert.deepEqual(weekBounds("2026-09-14"), {
+    start: "2026-09-14",
+    end: "2026-09-20",
+  });
+  assert.deepEqual(weekBounds("2026-09-20"), {
+    start: "2026-09-14",
+    end: "2026-09-20",
+  });
+  assert.deepEqual(weekBounds("nonsense"), {
+    start: "nonsense",
+    end: "nonsense",
+  });
+});
+
+test("the week view keeps habit occurrences and unscheduled work visible", () => {
+  const week = weekFrom({
+    start: "2026-09-14",
+    end: "2026-09-20",
+    timezone: "Asia/Tokyo",
+    days: [
+      {
+        date: "2026-09-18",
+        entries: [
+          {
+            item: {
+              id: "h1",
+              title: "習慣",
+              version: 2,
+              fields: { assignee_id: "us_a" },
+            },
+            label: "habit",
+            occurrence_key: "h1:2026-09-18",
+            status: "skip",
+          },
+        ],
+      },
+    ],
+    unscheduled: [{ id: "u1", title: "日付未定" }],
+  });
+  assert.equal(week.days[0].entries[0].status, "skip");
+  assert.equal(week.days[0].entries[0].assignee, "us_a");
+  assert.equal(week.days[0].entries[0].version, 2);
+  assert.equal(week.unscheduled[0].title, "日付未定");
+  // A response without days is not a week.
+  assert.equal(weekFrom({}), null);
+  assert.equal(weekFrom(undefined), null);
+});
+
+test("a selection that left the tree is dropped rather than shown", () => {
+  const nodes = treeFrom(graph).nodes;
+  const ids = nodeIds(nodes);
+  assert.equal(pruneSelection("g1", ids), "g1");
+  assert.equal(pruneSelection("gone", ids), "");
+  assert.equal(pruneSelection("", ids), "");
+  assert.equal(findNode(nodes, "a1").title, "行動");
+  assert.equal(findNode(nodes, "gone"), null);
+});
+
+test("an action carries what a proposal needs, without inventing it", () => {
+  const [first] = actionsFrom({
+    local_date: "2026-09-18",
+    items: [
+      {
+        item: {
+          id: "a1",
+          title: "行動",
+          version: 7,
+          due_date: "2026-09-30",
+          fields: { assignee_id: "us_a" },
+        },
+        completed: false,
+        occurrence_key: "a1:2026-09-18",
+      },
+    ],
+  }).actions;
+  assert.equal(first.version, 7);
+  assert.equal(first.dueDate, "2026-09-30");
+  assert.equal(first.assignee, "us_a");
+  // A missing version falls back to 1 rather than to undefined, which would
+  // be sent as a malformed expected_version.
+  const [fallback] = actionsFrom({
+    items: [{ item: { id: "a2", title: "版なし" }, occurrence_key: "k" }],
+  }).actions;
+  assert.equal(fallback.version, 1);
+  assert.equal(fallback.assignee, null);
+});

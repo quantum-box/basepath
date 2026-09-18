@@ -23,7 +23,8 @@ import {
   emptyPlanView,
   type PlanView,
 } from "../src/shared/viewModel";
-import { PlanViewPanel } from "../src/shared/PlanView";
+import { PlanViewPanel, type ActionRequest } from "../src/shared/PlanView";
+import { useTreeState } from "../src/shared/useTreeState";
 import "../src/shared/planView.css";
 
 const APP_INFO = { name: "Basepath", version: "1.0.0" };
@@ -75,8 +76,15 @@ function BasepathApp() {
     null,
   );
   const [stale, setStale] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [limit, setLimit] = useState<number | undefined>(undefined);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   /** Only the newest load may write to the view. */
   const generation = useRef(0);
+  // Folding and selection reset when the workspace does: a node id from one
+  // plan means nothing in another.
+  const tree = useTreeState(view.workspace?.id ?? "");
 
   const { app, isConnected, error } = useApp({
     appInfo: APP_INFO,
@@ -114,15 +122,24 @@ function BasepathApp() {
 
   useHostStyleVariables(app);
 
-  const refresh = useCallback(async () => {
-    if (!app) return;
+  const hostFor = useCallback(() => {
+    if (!app) return null;
     const capabilities = app.getHostCapabilities();
-    const host = new McpAppHost((params) => app.callServerTool(params), {
+    return new McpAppHost((params) => app.callServerTool(params), {
       serverTools: Boolean(capabilities?.serverTools),
     });
+  }, [app]);
+
+  const refresh = useCallback(async () => {
+    const host = hostFor();
+    if (!host) return;
     const ticket = ++generation.current;
     setLoading(true);
-    const { view: next, error: failure } = await loadPlanView(host);
+    const { view: next, error: failure } = await loadPlanView(host, {
+      workspaceId: workspaceId || undefined,
+      includeWeek: true,
+      limit,
+    });
     if (ticket !== generation.current) return;
     setLoading(false);
     setStale(false);
@@ -132,16 +149,59 @@ function BasepathApp() {
     }
     setProblem(null);
     setView(next);
-  }, [app]);
+  }, [hostFor, workspaceId, limit]);
 
   useEffect(() => {
     if (isConnected) void refresh();
   }, [isConnected, refresh]);
 
+  /**
+   * Proposes an action completion.
+   *
+   * The MCP tool creates a change set; nothing is applied here. The result is
+   * reported as what it is — a proposal awaiting the person's approval — and
+   * the view is reloaded so the next render shows the server's current state
+   * rather than an optimistic guess.
+   */
+  const propose = useCallback(
+    async ({ action, intent }: ActionRequest) => {
+      const host = hostFor();
+      if (!host || !view.workspace) return;
+      const key = action.occurrenceKey || action.id;
+      if (busyAction) return; // a second click must not send a second proposal
+      setBusyAction(key);
+      setNotice(null);
+      try {
+        await host.call("pathbase_complete_action", {
+          workspace_id: view.workspace.id,
+          item_id: action.id,
+          expected_version: action.version,
+          local_date: view.localDate,
+          idempotency_key: `${intent}:${key}:${action.version}`,
+        });
+        setNotice(
+          "変更案を作成しました。Basepathで内容を確認して承認すると反映されます。",
+        );
+      } catch (failure) {
+        if (failure instanceof HostError) {
+          const described = problemFor(failure);
+          setNotice(`${described.title}: ${described.detail}`);
+        } else {
+          setNotice("提案を作成できませんでした。");
+        }
+      } finally {
+        setBusyAction(null);
+        await refresh();
+      }
+    },
+    [hostFor, view.workspace, view.localDate, busyAction, refresh],
+  );
+
   if (error) {
     return (
       <PlanViewPanel
         view={emptyPlanView}
+        tree={tree}
         problem={{
           title: "ホストに接続できませんでした",
           detail: error.message,
@@ -153,9 +213,19 @@ function BasepathApp() {
   return (
     <PlanViewPanel
       view={view}
+      tree={tree}
       loading={loading && !problem}
       problem={problem ? { ...problem, retry: () => void refresh() } : null}
       stale={stale}
+      onSelectWorkspace={(id) => {
+        setNotice(null);
+        setLimit(undefined);
+        setWorkspaceId(id);
+      }}
+      onPropose={(request) => void propose(request)}
+      busyAction={busyAction}
+      notice={notice}
+      onExpand={() => setLimit(200)}
     />
   );
 }

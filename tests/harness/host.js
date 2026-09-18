@@ -41,12 +41,58 @@ const defaults = {
     local_date: "2026-09-18",
     items: [
       {
-        item: { id: "a1", title: "今日の行動" },
+        item: {
+          id: "a1",
+          title: "今日の行動",
+          version: 3,
+          due_date: "2026-09-20",
+          fields: { assignee_id: "us_me" },
+        },
         completed: false,
         occurrence_key: "a1:2026-09-18",
       },
     ],
   },
+  pathbase_get_week: {
+    start: "2026-09-14",
+    end: "2026-09-20",
+    timezone: "Asia/Tokyo",
+    days: [
+      { date: "2026-09-14", entries: [] },
+      {
+        date: "2026-09-18",
+        entries: [
+          {
+            item: {
+              id: "a1",
+              title: "今日の行動",
+              scheduled_time: "09:00",
+              version: 3,
+              fields: {},
+            },
+            label: "scheduled",
+          },
+          {
+            item: { id: "h1", title: "毎日の習慣", version: 1, fields: {} },
+            label: "habit",
+            occurrence_key: "h1:2026-09-18",
+            status: "missed",
+          },
+        ],
+      },
+      {
+        date: "2026-09-20",
+        entries: [
+          {
+            item: { id: "a1", title: "今日の行動", version: 3, fields: {} },
+            label: "due",
+          },
+        ],
+      },
+    ],
+    unscheduled: [{ id: "u1", title: "日付未定の項目" }],
+  },
+  pathbase_complete_action: { id: "change_1", status: "pending" },
 };
 
 window.__calls = [];

@@ -11,7 +11,13 @@
  * Nothing here decides what a person is allowed to do. Authorization is the
  * Rust service's, on every call, in every host.
  */
-import { buildPlanView, emptyPlanView, type PlanView } from "./viewModel";
+import {
+  buildPlanView,
+  emptyPlanView,
+  localDateIn,
+  weekBounds,
+  type PlanView,
+} from "./viewModel";
 
 export type HostKind = "mcp" | "web" | "fixture";
 
@@ -142,6 +148,15 @@ export class WebHost implements PlanHost {
             local_date: args.local_date,
           })}`,
         );
+      case "pathbase_get_week":
+        return this.request(
+          "GET",
+          `/v1/workspaces/${workspace}/calendar${query({
+            start: args.start,
+            end: args.end,
+            timezone: args.timezone,
+          })}`,
+        );
       default:
         throw new HostError(`unsupported tool ${tool}`, "NOT_FOUND", 404);
     }
@@ -157,28 +172,46 @@ export class WebHost implements PlanHost {
  */
 export async function loadPlanView(
   host: PlanHost,
-  options: { workspaceId?: string; localDate?: string; limit?: number } = {},
+  options: {
+    workspaceId?: string;
+    localDate?: string;
+    limit?: number;
+    /** Also load the week around `localDate`. */
+    includeWeek?: boolean;
+  } = {},
 ): Promise<{ view: PlanView; error: HostError | null }> {
   try {
     const context = await host.call("pathbase_get_context", {});
     const view = buildPlanView({ context, workspaceId: options.workspaceId });
     const workspace = view.workspace;
     if (!workspace) return { view, error: null };
-    const [graph, today] = await Promise.all([
+    // "Today" belongs to the workspace, not to the viewer's device.
+    const localDate = options.localDate || localDateIn(workspace.timezone);
+    const bounds = weekBounds(localDate);
+    const [graph, today, week] = await Promise.all([
       host.call("pathbase_get_graph", {
         workspace_id: workspace.id,
         ...(options.limit ? { limit: String(options.limit) } : {}),
       }),
       host.call("pathbase_get_today", {
         workspace_id: workspace.id,
-        local_date: options.localDate ?? "",
+        local_date: localDate,
       }),
+      options.includeWeek
+        ? host.call("pathbase_get_week", {
+            workspace_id: workspace.id,
+            start: bounds.start,
+            end: bounds.end,
+            timezone: workspace.timezone,
+          })
+        : Promise.resolve(undefined),
     ]);
     return {
       view: buildPlanView({
         context,
         graph,
         today,
+        week,
         workspaceId: workspace.id,
       }),
       error: null,
