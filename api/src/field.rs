@@ -5,7 +5,7 @@ use crate::{
 };
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Duration;
 #[derive(Clone)]
 pub struct FieldClient {
@@ -138,7 +138,30 @@ impl FieldClient {
                 ))
             }
             200 => {}
-            _ => return Err(upstream()),
+            // Keep the upstream status visible. Collapsing every unexpected
+            // response into one opaque 503 is what made the Field failure hard
+            // to diagnose; the status alone carries no user or token data.
+            status => {
+                // Field's own error envelope is operational text, not user or
+                // token data, and it is the only way to tell an upstream
+                // rejection apart from a Field-side fault.
+                let body = r.json::<Value>().await.unwrap_or(Value::Null);
+                let code = body.get("code").and_then(Value::as_str).unwrap_or("");
+                let message = body
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .chars()
+                    .take(200)
+                    .collect::<String>();
+                let mut error = upstream();
+                error.details = json!({
+                    "upstream_status": status,
+                    "upstream_code": code,
+                    "upstream_message": message,
+                });
+                return Err(error);
+            }
         }
         r.json().await.map_err(|_| {
             ApiError::new(
