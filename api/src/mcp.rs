@@ -293,6 +293,15 @@ impl Mcp {
             "pathbase_get_planning" => ("GET", format!("{base}/planning"), json!({})),
             "pathbase_get_alignment" => ("GET", format!("{base}/alignment"), json!({})),
             "pathbase_get_dashboard" => ("GET", format!("{base}/dashboard"), json!({})),
+            "pathbase_get_review_queue" => ("GET", format!("{base}/review"), json!({})),
+            "pathbase_get_goal_timeline" => (
+                "GET",
+                format!(
+                    "{base}/items/{}/timeline",
+                    args["item_id"].as_str().unwrap_or("")
+                ),
+                json!({}),
+            ),
             "pathbase_list_changes" => ("GET", format!("{base}/changesets"), json!({})),
             "pathbase_get_change" => (
                 "GET",
@@ -425,6 +434,14 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
         // `cycle_id` selects a period other than the one today falls in, which
         // is how a caller looks at the last quarter or the next one.
         "pathbase_get_planning" => (&["workspace_id"], &["workspace_id", "cycle_id"]),
+        "pathbase_get_review_queue" => (
+            &["workspace_id"],
+            &["workspace_id", "cycle_id", "stale_days"],
+        ),
+        "pathbase_get_goal_timeline" => (
+            &["workspace_id", "item_id"],
+            &["workspace_id", "item_id", "as_of"],
+        ),
         "pathbase_get_alignment" | "pathbase_get_dashboard" => (
             &["workspace_id"],
             &["workspace_id", "owner_kind", "owner_id", "cycle_id"],
@@ -514,6 +531,8 @@ fn tools() -> Vec<Tool> {
         read("pathbase_get_planning", "Get the workspace's planning periods and which one today falls in, with the previous and next period, how many items each holds, how much work belongs to no period, and the person's own words from their last finalized weekly review. Periods are the workspace's own local dates. Report the period that is there; creating one, or carrying work into it, is a change to propose."),
         read("pathbase_get_alignment", "Get one workspace's goal alignment: each goal's owner (organization, team or person), its period, what it is `part_of`, what it `contributes_to`, what rolls up into it, and how much work sits beneath it. `part_of` is structure and `contributes_to` is contribution — they are different questions, so do not merge them. A goal connected to nothing above it is reported as an orphan, which is normal for a top-level goal. This is one workspace's graph: goals in someone's personal workspace are not in it and cannot be reached from it."),
         read("pathbase_get_dashboard", "Get the goal dashboard. Four different things are reported and none of them substitutes for another: `action_completion` (what was planned and what happened; `rate` is null when nothing was planned), `metric_progress` (derived from observations by the method the goal names; null when it names none, and `metrics[].status` says which are unmeasured or stale), `self_assessment` (the person's own judgement), and `health` (somebody's stated view, with their name and the date). `suggested_health` is derived from listed signals and is a suggestion only — it is never the health. Report these separately. Do not average them, do not present completion as progress toward a goal, and do not treat a goal with no metric as 0%."),
+        read("pathbase_get_review_queue", "Get what a goal review needs in front of it, as three separate lists: goals nobody has ever checked in on, goals whose last check-in is older than `stale_days` (default 14), and goals somebody has said are at risk or off track — plus the ones that moved recently. Silence and a warning are different things, so do not merge the first list into the others."),
+        read("pathbase_get_goal_timeline", "Get everything recorded about one goal in order: when it was created, check-ins and their corrections, observations on its metrics, records written about it, alignment changes, and whether it was carried over from an earlier period. With `as_of` (RFC 3339) it replays to that moment and reports what the goal said *then* — use it to answer what was believed at the time, not what is believed now."),
         read("pathbase_list_changes", "List saved change sets and their current status, so a UI can show what is awaiting approval."),
         read("pathbase_get_change", "Get one change set: its operations, status, approval and expiry."),
         read("pathbase_list_templates", "List versioned templates and their creation previews."),

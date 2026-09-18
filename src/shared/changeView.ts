@@ -64,6 +64,12 @@ const REVIEWABLE = [
   ["learnings", "学び"],
   ["challenges", "課題"],
   ["next_focus", "次週の重点"],
+  // A check-in: the status, the judgement, and the words behind both.
+  ["health", "状況"],
+  ["self_assessment", "自己評価"],
+  ["comment", "コメント"],
+  ["results", "成果"],
+  ["blockers", "課題"],
 ] as const;
 
 const FIELD_LABELS = new Map<string, string>(

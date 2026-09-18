@@ -5568,3 +5568,141 @@ button:disabled {
     overflow-x: auto;
   }
 }
+
+.review-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.review-intro,
+.review-list,
+.review-history {
+  padding: 22px;
+}
+.review-intro p,
+.review-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.review-note {
+  margin-bottom: 6px;
+}
+.review-list ul,
+.review-checkins ul,
+.review-timeline ol {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.review-list li + li,
+.review-checkins li + li,
+.review-timeline li + li {
+  border-top: 1px solid #edf0f5;
+}
+.review-list li button {
+  width: 100%;
+  text-align: left;
+  padding: 11px 0;
+  background: none;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+.review-list li button > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.review-list small,
+.review-checkin-head small,
+.review-timeline small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.review-checkin-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.review-checkin-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.review-checkin-form textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+.review-checkin-form textarea,
+.review-checkin-form select {
+  border: 1px solid #dfe5ef;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: inherit;
+  line-height: 1.6;
+}
+.review-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+.review-checkins h4,
+.review-timeline h4 {
+  margin: 18px 0 0;
+  font-size: 13px;
+}
+.review-checkins li {
+  padding: 11px 0;
+}
+.review-checkins li[data-superseded="true"] {
+  opacity: 0.68;
+}
+.review-checkins li[data-superseded="true"] p {
+  text-decoration: line-through;
+}
+.review-checkins li[data-standing="true"] strong {
+  color: var(--accent, #c2703a);
+}
+.review-checkin-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.review-checkins p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.review-timeline li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.review-event-kind {
+  border: 1px solid #e6eaf1;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 11px;
+}
+.review-event-at {
+  color: var(--muted);
+  font-size: 11px;
+}
+.review-event-summary {
+  flex: 1;
+  min-inline-size: 140px;
+}
+@media (max-width: 600px) {
+  .review-checkin-form {
+    grid-template-columns: 1fr;
+  }
+}

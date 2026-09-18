@@ -194,6 +194,132 @@ fn workspace_today(workspace: &Workspace) -> NaiveDate {
         .unwrap_or_else(|_| Utc::now().date_naive())
 }
 
+/// The check-in that currently stands for a goal.
+///
+/// Corrections are appended with `supersedes_id`, so the standing one is the
+/// newest that nothing supersedes. The ones it replaced stay readable — which
+/// is the whole reason a correction is a new record rather than an edit.
+fn standing_checkin<'a>(checkins: &'a [Checkin], item: &str) -> Option<&'a Checkin> {
+    let mut live: Vec<&Checkin> = checkins
+        .iter()
+        .filter(|checkin| {
+            checkin.item_id == item
+                && !checkins
+                    .iter()
+                    .any(|other| other.supersedes_id.as_deref() == Some(&checkin.id))
+        })
+        .collect();
+    live.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    live.last().copied()
+}
+
+/// Writes a check-in and projects its judgement onto the goal.
+///
+/// The goal carries the current answer so a dashboard does not have to replay
+/// the history for every row; the history is where it came from. Both are
+/// written in one transaction, so there is no moment where the goal says one
+/// thing and its newest check-in says another.
+async fn record_checkin(
+    tx: &mut Tx,
+    actor: &Actor,
+    w: &str,
+    item_id: &str,
+    body: &Value,
+) -> Result<Value> {
+    let mut item: Item = get(tx, w, "items", item_id).await?;
+    guard_personal_goal(tx, actor, w, &item).await?;
+    if !["outcome", "milestone"].contains(&item.kind.as_str()) {
+        return Err(ApiError::invalid(
+            "チェックインを記録できるのは目標と節目だけです",
+        ));
+    }
+    let health = body["health"].as_str().filter(|value| !value.is_empty());
+    if let Some(status) = health {
+        if !["on_track", "at_risk", "off_track"].contains(&status) {
+            return Err(ApiError::invalid(
+                "状況はon_track / at_risk / off_trackのいずれかです",
+            ));
+        }
+    }
+    let assessment = body["self_assessment"].as_f64();
+    if assessment.is_some_and(|value| !(0.0..=100.0).contains(&value)) {
+        return Err(ApiError::invalid("自己評価は0〜100で指定してください"));
+    }
+    for field in ["comment", "results", "blockers", "next_focus"] {
+        if text(body, field).chars().count() > 20_000 {
+            return Err(ApiError::invalid("各入力は20000文字以内にしてください"));
+        }
+    }
+    // A check-in that says nothing is not a check-in.
+    if health.is_none()
+        && assessment.is_none()
+        && ["comment", "results", "blockers", "next_focus"]
+            .iter()
+            .all(|field| text(body, field).trim().is_empty())
+    {
+        return Err(ApiError::invalid(
+            "状況・自己評価・コメントのいずれかを入力してください",
+        ));
+    }
+    let mut observation_ids = Vec::new();
+    for value in body["observation_ids"].as_array().unwrap_or(&vec![]) {
+        let id = value.as_str().unwrap_or_default().to_owned();
+        // A check-in may only point at measurements that exist here.
+        let _: Observation = get(tx, w, "observations", &id).await?;
+        observation_ids.push(id);
+    }
+    let supersedes = body["supersedes_id"]
+        .as_str()
+        .filter(|value| !value.is_empty());
+    if let Some(id) = supersedes {
+        let previous: Checkin = get(tx, w, "checkins", id).await?;
+        if previous.item_id != item_id {
+            return Err(ApiError::invalid("別の目標のチェックインは訂正できません"));
+        }
+    }
+
+    let checkin = Checkin {
+        id: new_id("checkin"),
+        workspace_id: w.into(),
+        item_id: item_id.into(),
+        health: health.map(str::to_owned),
+        self_assessment: assessment,
+        comment: text(body, "comment").into(),
+        results: text(body, "results").into(),
+        blockers: text(body, "blockers").into(),
+        next_focus: text(body, "next_focus").into(),
+        observation_ids,
+        // The author and the time are the server's: a judgement signed as
+        // someone else, or backdated, is not a judgement.
+        author: actor.id.clone(),
+        created_at: now(),
+        supersedes_id: supersedes.map(str::to_owned),
+    };
+    put(tx, w, "checkins", &checkin.id, &checkin).await?;
+
+    // Project the newest standing judgement onto the goal.
+    let checkins: Vec<Checkin> = list(tx, w, "checkins").await?;
+    if let Some(standing) = standing_checkin(&checkins, item_id) {
+        if let Some(status) = &standing.health {
+            item.fields.health = Some(GoalHealth {
+                status: status.clone(),
+                note: standing.comment.chars().take(2000).collect(),
+                set_at: standing.created_at.clone(),
+                set_by: standing.author.clone(),
+            });
+        }
+        if let Some(value) = standing.self_assessment {
+            item.fields.self_assessment = Some(value);
+            item.fields.assessed_at = Some(standing.created_at.clone());
+        }
+        item.version += 1;
+        item.updated_at = now();
+        validate_item(tx, &item).await?;
+        put(tx, w, "items", item_id, &item).await?;
+    }
+    value(checkin)
+}
+
 /// How far a metric has moved from where it started toward where it is going.
 ///
 /// `None` when nothing has been observed. Not zero: "we have not measured
@@ -420,6 +546,259 @@ async fn alignment_graph(tx: &mut Tx, w: &str, query: &HashMap<String, String>) 
         "people": people,
         "unowned_goals": unowned,
         "orphan_goals": nodes.iter().filter(|node| node["orphan"] == true).count(),
+    }))
+}
+
+/// Everything that has happened to one goal, in order.
+///
+/// Assembled from what was already recorded rather than from a separate event
+/// log: check-ins, observations on its metrics, records written about it, the
+/// item it was carried over from, and the audit trail. A second log would be a
+/// second thing to keep true.
+///
+/// `as_of` replays it to a moment: what the goal said then, not what it says
+/// now. That is the difference between a history and a changelog — a history
+/// lets you ask what someone believed at the time.
+async fn item_timeline(
+    tx: &mut Tx,
+    w: &str,
+    id: &str,
+    query: &HashMap<String, String>,
+) -> Result<Value> {
+    let item: Item = get(tx, w, "items", id).await?;
+    let as_of = query.get("as_of").filter(|value| !value.is_empty());
+    if let Some(moment) = as_of {
+        timestamp(moment)?;
+    }
+    let within = |when: &str| as_of.is_none_or(|moment| when <= moment.as_str());
+
+    let mut events: Vec<Value> = Vec::new();
+    if within(&item.created_at) {
+        events.push(json!({
+            "at": item.created_at,
+            "kind": "created",
+            "actor": Value::Null,
+            "summary": format!("{}を作成", item.title),
+        }));
+    }
+    if let Some(source) = &item.fields.carried_from {
+        if within(&item.created_at) {
+            events.push(json!({
+                "at": item.created_at,
+                "kind": "carried_over",
+                "actor": Value::Null,
+                "summary": "前の期間から引き継ぎ",
+                "ref": source,
+            }));
+        }
+    }
+
+    let checkins: Vec<Checkin> = list(tx, w, "checkins").await?;
+    let mine: Vec<&Checkin> = checkins
+        .iter()
+        .filter(|checkin| checkin.item_id == id && within(&checkin.created_at))
+        .collect();
+    for checkin in &mine {
+        events.push(json!({
+            "at": checkin.created_at,
+            "kind": if checkin.supersedes_id.is_some() { "checkin_correction" } else { "checkin" },
+            "actor": checkin.author,
+            "summary": checkin.health.clone().unwrap_or_else(|| "チェックイン".into()),
+            "ref": checkin.id,
+        }));
+    }
+
+    let metrics: Vec<Metric> = list(tx, w, "metrics").await?;
+    let observations: Vec<Observation> = list(tx, w, "observations").await?;
+    for observation in &observations {
+        let Some(metric) = metrics
+            .iter()
+            .find(|metric| metric.id == observation.metric_id && metric.item_id == id)
+        else {
+            continue;
+        };
+        if !within(&observation.observed_at) {
+            continue;
+        }
+        events.push(json!({
+            "at": observation.observed_at,
+            "kind": if observation.supersedes_id.is_some() { "observation_correction" } else { "observation" },
+            "actor": Value::Null,
+            "summary": format!("{} {} {}", metric.name, observation.value, observation.unit),
+            "ref": observation.id,
+        }));
+    }
+
+    for record in list::<Record>(tx, w, "records").await? {
+        if record.item_ids.contains(&item.id) && within(&record.happened_at) {
+            events.push(json!({
+                "at": record.happened_at,
+                "kind": format!("record_{}", record.record_type),
+                "actor": record.author,
+                "summary": record.body.chars().take(200).collect::<String>(),
+                "ref": record.id,
+            }));
+        }
+    }
+
+    // Alignment: the relation itself is the only record that knows which two
+    // items a link joined — the audited request path carries neither.
+    for relation in list::<Relation>(tx, w, "relations").await? {
+        if relation.source_id != item.id && relation.target_id != item.id {
+            continue;
+        }
+        // A link made before relations were timestamped has no honest date, so
+        // it is left out rather than dated with when this was read.
+        let Some(at) = relation.created_at.filter(|at| within(at)) else {
+            continue;
+        };
+        events.push(json!({
+            "at": at,
+            "kind": "alignment_changed",
+            "actor": Value::Null,
+            "summary": format!(
+                "{} {}",
+                relation.relation_type,
+                if relation.source_id == item.id { "→" } else { "←" }
+            ),
+            "ref": relation.id,
+        }));
+    }
+
+    // Everything else structural is in the audit trail, which already records
+    // who did what and through which connection.
+    let sql = format!(
+        "SELECT actor,command,created_at,origin,connection FROM audit          WHERE workspace_id=? ORDER BY seq{}",
+        tx.lock_reads()
+    );
+    for row in tx.fetch_all(&sql, &params![w]).await? {
+        let command = row.text(1)?;
+        let at = row.text(2)?;
+        if !command.contains(id) || !within(&at) {
+            continue;
+        }
+        // The creation and the check-ins are already above, from the records
+        // themselves; the audit adds what has no document of its own.
+        let kind = if command.contains("/checkins") || command.contains("/health") {
+            continue;
+        } else if command.starts_with("PATCH") {
+            "edited"
+        } else if command.starts_with("POST") {
+            continue;
+        } else {
+            "changed"
+        };
+        events.push(json!({
+            "at": at,
+            "kind": kind,
+            "actor": row.text(0)?,
+            "summary": command,
+            "origin": row.text(3)?,
+            "connection": row.opt_text(4)?.filter(|value| !value.is_empty()),
+        }));
+    }
+
+    events.sort_by(|a, b| {
+        a["at"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["at"].as_str().unwrap_or_default())
+    });
+
+    // The state at that moment, replayed from the check-ins that existed then.
+    let standing = mine
+        .iter()
+        .filter(|checkin| {
+            !mine
+                .iter()
+                .any(|other| other.supersedes_id.as_deref() == Some(&checkin.id))
+        })
+        .max_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    Ok(json!({
+        "item_id": id,
+        "title": item.title,
+        "as_of": as_of,
+        "events": events,
+        "state": {
+            // Absent when nobody had said anything by then, which is a real
+            // answer about that moment.
+            "health": standing.and_then(|checkin| checkin.health.clone()),
+            "self_assessment": standing.and_then(|checkin| checkin.self_assessment),
+            "checkin_id": standing.map(|checkin| checkin.id.clone()),
+            "checked_in_at": standing.map(|checkin| checkin.created_at.clone()),
+            "checked_in_by": standing.map(|checkin| checkin.author.clone()),
+        },
+    }))
+}
+
+/// What a review meeting needs in front of it.
+///
+/// Three lists, because they call for different conversations: goals nobody
+/// has said anything about, goals somebody has said are in trouble, and goals
+/// that moved. A single "needs attention" list would merge the first two, and
+/// silence is not the same as a warning.
+async fn review_queue(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
+    let stale_days: i64 = query
+        .get("stale_days")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(14)
+        .clamp(1, 365);
+    let wanted_cycle = query.get("cycle_id").map(String::as_str);
+
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let checkins: Vec<Checkin> = list(tx, w, "checkins").await?;
+    let cutoff = (Utc::now() - chrono::Duration::days(stale_days)).to_rfc3339();
+
+    let mut never = Vec::new();
+    let mut at_risk = Vec::new();
+    let mut updated = Vec::new();
+    let mut stale = Vec::new();
+    for item in items.iter().filter(|item| {
+        item.archived_at.is_none()
+            && ["outcome", "milestone"].contains(&item.kind.as_str())
+            && wanted_cycle.is_none_or(|cycle| item.fields.cycle_id.as_deref() == Some(cycle))
+    }) {
+        let standing = standing_checkin(&checkins, &item.id);
+        let entry = json!({
+            "id": item.id,
+            "title": item.title,
+            "owner": item.fields.owner,
+            "health": standing.and_then(|checkin| checkin.health.clone()),
+            "last_checkin_at": standing.map(|checkin| checkin.created_at.clone()),
+            "last_checkin_by": standing.map(|checkin| checkin.author.clone()),
+            "blockers": standing.map(|checkin| checkin.blockers.clone()).unwrap_or_default(),
+            "next_focus": standing.map(|checkin| checkin.next_focus.clone()).unwrap_or_default(),
+        });
+        match standing {
+            // Nobody has ever said anything about this one.
+            None => never.push(entry),
+            Some(checkin) => {
+                if checkin.created_at.as_str() < cutoff.as_str() {
+                    stale.push(entry.clone());
+                } else {
+                    updated.push(entry.clone());
+                }
+                if checkin.health.as_deref() == Some("at_risk")
+                    || checkin.health.as_deref() == Some("off_track")
+                {
+                    at_risk.push(entry);
+                }
+            }
+        }
+    }
+
+    Ok(json!({
+        "workspace_id": w,
+        "stale_days": stale_days,
+        // Never checked in — silence, not a warning.
+        "never_checked_in": never,
+        // Checked in once, but not lately.
+        "stale": stale,
+        // Somebody said these are in trouble.
+        "at_risk": at_risk,
+        // Moved since the cutoff.
+        "recently_updated": updated,
     }))
 }
 
@@ -1743,6 +2122,7 @@ async fn dispatch_inner(
                 "changesets",
                 "weekly_reviews",
                 "cycles",
+                "checkins",
             ];
             let mut result = json!({"workspace_id":w});
             for col in cols {
@@ -1925,6 +2305,7 @@ async fn dispatch_inner(
                 "changesets",
                 "weekly_reviews",
                 "cycles",
+                "checkins",
             ]
             .contains(&col) =>
         {
@@ -1974,6 +2355,7 @@ async fn dispatch_inner(
                     "changesets",
                     "weekly_reviews",
                     "cycles",
+                    "checkins",
                 ]
                 .contains(&col) =>
         {
@@ -2049,6 +2431,7 @@ async fn dispatch_inner(
                     target_id: parent.into(),
                     relation_type: "part_of".into(),
                     rationale: String::new(),
+                    created_at: Some(now()),
                     version: 1,
                 };
                 validate_relation(tx, &r).await?;
@@ -2259,6 +2642,7 @@ async fn dispatch_inner(
                 target_id: title(body, "target_id", 200)?,
                 relation_type: title(body, "type", 40)?,
                 rationale: text(body, "rationale").into(),
+                created_at: Some(now()),
                 version: 1,
             };
             validate_relation(tx, &r).await?;
@@ -2440,31 +2824,53 @@ async fn dispatch_inner(
         ("GET", "planning", "", "") => planning_context(tx, w, query).await,
         ("GET", "alignment", "", "") => alignment_graph(tx, w, query).await,
         ("GET", "dashboard", "", "") => dashboard(tx, w, query).await,
+        ("GET", "review", "", "") => review_queue(tx, w, query).await,
         // Stating how a goal is going.
         //
-        // A separate route rather than a field a client sets, because the
-        // author and the time are the point: "at risk" with nobody's name on
-        // it is a rumour. The server stamps both, so they cannot be supplied.
+        // A shorthand for a check-in that records only the status, so that
+        // nothing ever changes a goal's health without leaving a record of who
+        // said so and when.
         ("POST", "items", id, "health") if !id.is_empty() => {
             only(body, &["status", "note", "expected_version"])?;
-            let mut item: Item = get(tx, w, "items", id).await?;
-            guard_personal_goal(tx, actor, w, &item).await?;
+            let item: Item = get(tx, w, "items", id).await?;
             version(body, item.version)?;
-            if !["outcome", "milestone"].contains(&item.kind.as_str()) {
-                return Err(ApiError::invalid("状況を記録できるのは目標と節目だけです"));
-            }
-            item.fields.health = Some(GoalHealth {
-                status: text(body, "status").into(),
-                note: text(body, "note").chars().take(2000).collect(),
-                set_at: now(),
-                set_by: actor.id.clone(),
-            });
-            item.version += 1;
-            item.updated_at = now();
-            validate_item(tx, &item).await?;
-            put(tx, w, "items", id, &item).await?;
-            value(item)
+            record_checkin(
+                tx,
+                actor,
+                w,
+                id,
+                &json!({"health": body["status"], "comment": body["note"]}),
+            )
+            .await?;
+            get::<Value>(tx, w, "items", id).await
         }
+        // A full check-in: the status, the author's own assessment, and the
+        // words that explain both.
+        ("POST", "items", id, "checkins") if !id.is_empty() => {
+            only(
+                body,
+                &[
+                    "health",
+                    "self_assessment",
+                    "comment",
+                    "results",
+                    "blockers",
+                    "next_focus",
+                    "observation_ids",
+                    "supersedes_id",
+                ],
+            )?;
+            record_checkin(tx, actor, w, id, body).await
+        }
+        ("GET", "items", id, "checkins") if !id.is_empty() => {
+            let _: Item = get(tx, w, "items", id).await?;
+            let mut checkins: Vec<Checkin> = list(tx, w, "checkins").await?;
+            checkins.retain(|checkin| checkin.item_id == id);
+            checkins.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            let standing = standing_checkin(&checkins, id).map(|checkin| checkin.id.clone());
+            Ok(json!({"items":checkins,"standing_id":standing}))
+        }
+        ("GET", "items", id, "timeline") if !id.is_empty() => item_timeline(tx, w, id, query).await,
         ("POST", "cycles", "", "") => {
             only(
                 body,
@@ -2725,6 +3131,7 @@ async fn dispatch_inner(
                 "views",
                 "weekly_reviews",
                 "cycles",
+                "checkins",
             ] {
                 backup[col] = value(list::<Value>(tx, w, col).await?)?;
             }
@@ -2893,11 +3300,17 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
         // the week reviewed — that stays an act they perform in Basepath.
         let weekly_draft =
             p.len() == 5 && p[3] == "weekly-reviews" && p[4] == "draft" && op.method == "POST";
+        // A check-in draft, written by an AI from what actually happened. The
+        // person reads the words and approves them; nothing sets a goal's
+        // health until they do.
+        let checkin_draft =
+            p.len() == 6 && p[3] == "items" && p[5] == "checkins" && op.method == "POST";
         if p.len() < 4
             || p[0] != "v1"
             || p[1] != "workspaces"
             || p[2] != w
             || !(weekly_draft
+                || checkin_draft
                 || [
                     "items",
                     "relations",
@@ -2977,9 +3390,13 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     let collection = parts.get(3).copied().unwrap_or("");
     // `actions` operate on an item; a weekly review draft is addressed by its
     // week rather than by a row id; everything else names its own collection.
+    let checkin = collection == "items" && parts.get(5) == Some(&"checkins");
     let (target_collection, target_id) = match collection {
         "actions" => ("items", parts.get(4).copied().unwrap_or("")),
         "weekly-reviews" => ("weekly_reviews", ""),
+        // A check-in is the thing being written; showing the item's diff
+        // would hide the words the person is actually approving.
+        _ if checkin => ("checkins", ""),
         _ => (collection, parts.get(4).copied().unwrap_or("")),
     };
     // What the operation would replace. For a review draft that is the newest
@@ -2987,6 +3404,14 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     // words next to the proposed ones instead of an unexplained creation.
     let before: Option<Value> = if collection == "weekly-reviews" {
         latest_weekly_review(tx, w, text(&op.body, "week_start")).await?
+    } else if checkin {
+        // What this would supersede: the person sees their own last words
+        // next to the proposed ones.
+        let item = parts.get(4).copied().unwrap_or("");
+        let checkins: Vec<Checkin> = list(tx, w, "checkins").await?;
+        standing_checkin(&checkins, item)
+            .map(serde_json::to_value)
+            .transpose()?
     } else if target_id.is_empty() {
         None
     } else {
@@ -3027,6 +3452,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
                         .as_str()
                         .map(|week| format!("{week}の週次レビュー"))
                 })
+                .or_else(|| value["item_id"].as_str().map(|_| "チェックイン".to_owned()))
         })
         .unwrap_or_default();
     Ok(json!({
@@ -3148,6 +3574,7 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             "views",
             "weekly_reviews",
             "cycles",
+            "checkins",
         ],
     )?;
     if b["schema_version"] != 1 {
@@ -3162,13 +3589,14 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         "views",
         "weekly_reviews",
         "cycles",
+        "checkins",
     ];
     let mut count = 0;
     for col in cols {
         let Some(docs) = b[col].as_array() else {
             // Collections added after the backup format existed are optional:
             // an older export simply has none of them.
-            if ["weekly_reviews", "cycles"].contains(&col) {
+            if ["weekly_reviews", "cycles", "checkins"].contains(&col) {
                 continue;
             }
             return Err(ApiError::invalid("バックアップに必要な一覧がありません"));
@@ -3221,6 +3649,20 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         timestamp(&o.observed_at)?;
         if let Some(id) = o.supersedes_id {
             let _: Observation = get(tx, w, "observations", &id).await?;
+        }
+    }
+    for checkin in list::<Checkin>(tx, w, "checkins").await? {
+        let _: Item = get(tx, w, "items", &checkin.item_id).await?;
+        timestamp(&checkin.created_at)?;
+        if checkin
+            .health
+            .as_deref()
+            .is_some_and(|status| !["on_track", "at_risk", "off_track"].contains(&status))
+        {
+            return Err(ApiError::invalid("チェックインの状況が不正です"));
+        }
+        if let Some(id) = checkin.supersedes_id {
+            let _: Checkin = get(tx, w, "checkins", &id).await?;
         }
     }
     for cycle in list::<Cycle>(tx, w, "cycles").await? {
