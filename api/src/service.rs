@@ -194,6 +194,248 @@ fn workspace_today(workspace: &Workspace) -> NaiveDate {
         .unwrap_or_else(|_| Utc::now().date_naive())
 }
 
+const MEMORY_KINDS: [&str; 6] = [
+    "fact",
+    "preference",
+    "decision",
+    "learning",
+    "context",
+    "episode",
+];
+
+/// Refuses anything but the person's own workspace.
+///
+/// This is the boundary the whole feature rests on, so it is one function and
+/// every memory route calls it. Memory is Personal OS only: it is not moved,
+/// inherited or synced into a shared workspace, and an organization goal that
+/// a personal goal contributes to gives the organization no path back here.
+async fn personal_only(tx: &mut Tx, w: &str) -> Result<Workspace> {
+    let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+    let workspace: Workspace = serde_json::from_str(
+        &tx.fetch_optional(&sql, &params![w])
+            .await?
+            .ok_or_else(ApiError::missing)?
+            .text(0)?,
+    )?;
+    if workspace.scope != "個人" {
+        // 404 rather than 403: whether a shared workspace *could* hold memory
+        // is not a question with a useful answer. There is no such thing.
+        return Err(ApiError::new(
+            404,
+            "NOT_FOUND",
+            "記憶は個人のワークスペースにのみ保存されます",
+        ));
+    }
+    Ok(workspace)
+}
+
+fn validate_memory(memory: &Memory) -> Result<()> {
+    if !MEMORY_KINDS.contains(&memory.kind.as_str()) {
+        return Err(ApiError::invalid(&format!(
+            "種類は{}のいずれかです",
+            MEMORY_KINDS.join(" / ")
+        )));
+    }
+    if memory.title.trim().is_empty() || memory.title.chars().count() > 200 {
+        return Err(ApiError::invalid("タイトルの長さを確認してください"));
+    }
+    if memory.body.chars().count() > 20_000 {
+        return Err(ApiError::invalid("本文は20000文字以内にしてください"));
+    }
+    // A guess with nothing behind it is not a fact, whatever it is labelled.
+    // This is the one promotion that must never happen quietly.
+    if memory.kind == "fact" && memory.source.trim().is_empty() && memory.evidence_ids.is_empty() {
+        return Err(ApiError::invalid(
+            "factには出典または根拠が必要です。出典のない推測はcontextやlearningとして保存してください",
+        ));
+    }
+    if memory
+        .confidence
+        .is_some_and(|value| !(0.0..=1.0).contains(&value))
+    {
+        return Err(ApiError::invalid("確度は0〜1で指定してください"));
+    }
+    // A confidence on something the person stated would be a machine's
+    // estimate of a person's own words.
+    if memory.status == "verified" && memory.confidence.is_some() {
+        return Err(ApiError::invalid("本人が確認した記憶に確度は付きません"));
+    }
+    for value in [&memory.observed_at, &memory.valid_from, &memory.valid_to]
+        .into_iter()
+        .flatten()
+    {
+        timestamp(value)?;
+    }
+    if let (Some(from), Some(to)) = (&memory.valid_from, &memory.valid_to) {
+        if to < from {
+            return Err(ApiError::invalid("有効期間の終了が開始より前です"));
+        }
+    }
+    if memory.topics.len() > 32 || memory.people.len() > 32 {
+        return Err(ApiError::invalid("トピック・関係者は32件までです"));
+    }
+    Ok(())
+}
+
+/// Builds a memory from a request body, with the caller unable to choose the
+/// things that have to be true rather than claimed.
+async fn memory_from(
+    tx: &mut Tx,
+    actor: &Actor,
+    w: &str,
+    body: &Value,
+    status: &str,
+) -> Result<Memory> {
+    let stamp = now();
+    let evidence_ids: Vec<String> = body["evidence_ids"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    // Evidence has to exist, here. A citation to nothing is worse than none.
+    for id in &evidence_ids {
+        let found = exists(tx, w, "records", id).await?
+            || exists(tx, w, "items", id).await?
+            || exists(tx, w, "observations", id).await?;
+        if !found {
+            return Err(ApiError::invalid(&format!(
+                "根拠 {id} がこのワークスペースに見つかりません"
+            )));
+        }
+    }
+    let item_ids: Vec<String> = body["item_ids"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in &item_ids {
+        let _: Item = get(tx, w, "items", id).await?;
+    }
+    let strings = |key: &str| -> Vec<String> {
+        body[key]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(|value| value.trim().chars().take(120).collect::<String>())
+                    .filter(|value| !value.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Ok(Memory {
+        id: new_id("memory"),
+        workspace_id: w.into(),
+        kind: text(body, "kind").into(),
+        title: text(body, "title").trim().into(),
+        body: text(body, "body").into(),
+        // Not from the body: whether a person confirmed this is the one claim
+        // that must not be forgeable.
+        status: status.into(),
+        source: text(body, "source").chars().take(500).collect(),
+        evidence_ids,
+        observed_at: body["observed_at"].as_str().map(str::to_owned),
+        valid_from: body["valid_from"].as_str().map(str::to_owned),
+        valid_to: body["valid_to"].as_str().map(str::to_owned),
+        confidence: if status == "proposed" {
+            body["confidence"].as_f64()
+        } else {
+            None
+        },
+        supersedes_id: body["supersedes_id"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        archived_at: None,
+        excluded_from_retrieval: body["excluded_from_retrieval"].as_bool().unwrap_or(false),
+        item_ids,
+        topics: strings("topics"),
+        people: strings("people"),
+        author: actor.id.clone(),
+        created_at: stamp.clone(),
+        updated_at: stamp,
+        version: 1,
+    })
+}
+
+/// Character bigrams of a title, for noticing that two memories say the same
+/// thing.
+///
+/// Bigrams rather than words because Japanese does not put spaces between
+/// them, and a memory about 毎週金曜の振り返り would otherwise be one token
+/// that matches nothing. Deliberately crude either way: this reports, it never
+/// merges.
+fn memory_tokens(memory: &Memory) -> HashSet<String> {
+    let normalized: Vec<char> = memory
+        .title
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    normalized
+        .windows(2)
+        .map(|pair| pair.iter().collect::<String>())
+        .collect()
+}
+
+/// Memories that may be saying the same thing.
+///
+/// Reported, never merged. Two records of one fact are a question for the
+/// person — which of these is right, or are they about different things —
+/// and answering it by deleting one is how a memory quietly loses something.
+fn possible_duplicates(memories: &[Memory]) -> Vec<Value> {
+    let mut groups = Vec::new();
+    let live: Vec<&Memory> = memories
+        .iter()
+        .filter(|memory| memory.archived_at.is_none())
+        .collect();
+    for (index, memory) in live.iter().enumerate() {
+        let tokens = memory_tokens(memory);
+        if tokens.is_empty() {
+            continue;
+        }
+        let similar: Vec<Value> = live
+            .iter()
+            .skip(index + 1)
+            .filter(|other| other.kind == memory.kind)
+            .filter_map(|other| {
+                let theirs = memory_tokens(other);
+                let shared = tokens.intersection(&theirs).count();
+                let union = tokens.union(&theirs).count();
+                if union == 0 {
+                    return None;
+                }
+                let overlap = shared as f64 / union as f64;
+                (overlap >= 0.6).then(|| {
+                    json!({"id":other.id,"title":other.title,"status":other.status,
+                           "overlap":(overlap * 100.0).round()})
+                })
+            })
+            .collect();
+        if !similar.is_empty() {
+            groups.push(json!({
+                "id": memory.id,
+                "title": memory.title,
+                "kind": memory.kind,
+                "status": memory.status,
+                "similar": similar,
+            }));
+        }
+    }
+    groups
+}
+
 /// The check-in that currently stands for a goal.
 ///
 /// Corrections are appended with `supersedes_id`, so the standing one is the
@@ -2123,9 +2365,16 @@ async fn dispatch_inner(
                 "weekly_reviews",
                 "cycles",
                 "checkins",
+                "memories",
             ];
+            let personal = personal_only(tx, w).await.is_ok();
             let mut result = json!({"workspace_id":w});
             for col in cols {
+                // A shared workspace has no memory key at all. An empty list
+                // would suggest there could be one here, and there cannot.
+                if col == "memories" && !personal {
+                    continue;
+                }
                 result[col] = value(list::<Value>(tx, w, col).await?)?;
             }
             result["notifications"] = value(
@@ -2825,6 +3074,205 @@ async fn dispatch_inner(
         ("GET", "alignment", "", "") => alignment_graph(tx, w, query).await,
         ("GET", "dashboard", "", "") => dashboard(tx, w, query).await,
         ("GET", "review", "", "") => review_queue(tx, w, query).await,
+        // --- Personal memory -------------------------------------------
+        //
+        // Every route here begins with `personal_only`. Memory belongs to one
+        // person's own workspace and has no presence in a shared one, so the
+        // boundary is checked in one place and checked every time.
+        ("GET", "memories", "", "") => {
+            personal_only(tx, w).await?;
+            let mut memories: Vec<Memory> = list(tx, w, "memories").await?;
+            let superseded: HashSet<String> = memories
+                .iter()
+                .filter_map(|memory| memory.supersedes_id.clone())
+                .collect();
+            if query.get("archived").is_none_or(|value| value != "true") {
+                memories.retain(|memory| memory.archived_at.is_none());
+            }
+            // Kept, but never handed to a model. The person asked their own
+            // Basepath to hold this and no AI to read it, and an AI asking
+            // nicely is still an AI asking.
+            if actor.agent {
+                memories.retain(|memory| !memory.excluded_from_retrieval);
+            }
+            if let Some(kind) = query.get("kind") {
+                memories.retain(|memory| &memory.kind == kind);
+            }
+            if let Some(status) = query.get("status") {
+                memories.retain(|memory| &memory.status == status);
+            }
+            if query.get("current").is_some_and(|value| value == "true") {
+                // What still stands: not superseded, and inside its window.
+                let stamp = now();
+                memories.retain(|memory| {
+                    !superseded.contains(&memory.id)
+                        && memory
+                            .valid_to
+                            .as_deref()
+                            .is_none_or(|to| to >= stamp.as_str())
+                        && memory
+                            .valid_from
+                            .as_deref()
+                            .is_none_or(|from| from <= stamp.as_str())
+                });
+            }
+            memories.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            Ok(json!({
+                "items": memories,
+                "superseded_ids": superseded.into_iter().collect::<Vec<_>>(),
+            }))
+        }
+        ("GET", "memories", "duplicates", "") => {
+            personal_only(tx, w).await?;
+            let memories: Vec<Memory> = list(tx, w, "memories").await?;
+            // Reported for the person to decide about. Nothing is merged, and
+            // nothing is deleted: that would lose whichever one was right.
+            Ok(json!({"groups": possible_duplicates(&memories), "merged": false}))
+        }
+        ("GET", "memories", id, "") if !id.is_empty() => {
+            personal_only(tx, w).await?;
+            let memory: Memory = get(tx, w, "memories", id).await?;
+            if actor.agent && memory.excluded_from_retrieval {
+                // Not "forbidden": to an AI this memory does not exist, which
+                // is what the person asked for.
+                return Err(ApiError::missing());
+            }
+            value(memory)
+        }
+        // The person writing in their own memory. An agent cannot reach this
+        // route at all — the agent guard above refuses every non-GET — so
+        // anything written here was written by them.
+        ("POST", "memories", "", "") if !actor.agent => {
+            personal_only(tx, w).await?;
+            only(
+                body,
+                &[
+                    "kind",
+                    "title",
+                    "body",
+                    "source",
+                    "evidence_ids",
+                    "observed_at",
+                    "valid_from",
+                    "valid_to",
+                    "supersedes_id",
+                    "excluded_from_retrieval",
+                    "item_ids",
+                    "topics",
+                    "people",
+                ],
+            )?;
+            let memory = memory_from(tx, actor, w, body, "verified").await?;
+            validate_memory(&memory)?;
+            if let Some(previous) = &memory.supersedes_id {
+                let _: Memory = get(tx, w, "memories", previous).await?;
+            }
+            put(tx, w, "memories", &memory.id, &memory).await?;
+            value(memory)
+        }
+        // What an AI suggests. It is a candidate, not a memory: it is stored
+        // as `proposed` and is not treated as something the person said until
+        // they confirm it.
+        ("POST", "memories", "proposals", "") => {
+            personal_only(tx, w).await?;
+            only(
+                body,
+                &[
+                    "kind",
+                    "title",
+                    "body",
+                    "source",
+                    "evidence_ids",
+                    "observed_at",
+                    "valid_from",
+                    "valid_to",
+                    "confidence",
+                    "supersedes_id",
+                    "item_ids",
+                    "topics",
+                    "people",
+                ],
+            )?;
+            let memory = memory_from(tx, actor, w, body, "proposed").await?;
+            validate_memory(&memory)?;
+            if let Some(previous) = &memory.supersedes_id {
+                let _: Memory = get(tx, w, "memories", previous).await?;
+            }
+            put(tx, w, "memories", &memory.id, &memory).await?;
+            // Named so the person can see what this may be a duplicate of
+            // before they confirm it.
+            let all: Vec<Memory> = list(tx, w, "memories").await?;
+            let mut result = value(&memory)?;
+            result["possible_duplicates"] = json!(possible_duplicates(&all)
+                .into_iter()
+                .filter(|group| group["id"] == json!(memory.id))
+                .collect::<Vec<_>>());
+            Ok(result)
+        }
+        ("POST", "memories", id, "verify") if !id.is_empty() && !actor.agent => {
+            personal_only(tx, w).await?;
+            only(body, &["expected_version"])?;
+            let mut memory: Memory = get(tx, w, "memories", id).await?;
+            version(body, memory.version)?;
+            if memory.status != "proposed" {
+                return Err(ApiError::invalid("この記憶はすでに確認済みです"));
+            }
+            memory.status = "verified".into();
+            // The machine's estimate of its own guess stops being meaningful
+            // once a person has said the thing is true.
+            memory.confidence = None;
+            memory.version += 1;
+            memory.updated_at = now();
+            validate_memory(&memory)?;
+            put(tx, w, "memories", id, &memory).await?;
+            value(memory)
+        }
+        ("PATCH", "memories", id, "") if !id.is_empty() && !actor.agent => {
+            personal_only(tx, w).await?;
+            only(
+                body,
+                &[
+                    "expected_version",
+                    "title",
+                    "body",
+                    "source",
+                    "observed_at",
+                    "valid_from",
+                    "valid_to",
+                    "excluded_from_retrieval",
+                    "topics",
+                    "people",
+                    "archived_at",
+                ],
+            )?;
+            let old: Memory = get(tx, w, "memories", id).await?;
+            version(body, old.version)?;
+            let mut v = value(&old)?;
+            for (key, val) in body.as_object().unwrap() {
+                if key != "expected_version" {
+                    v[key] = val.clone();
+                }
+            }
+            let mut memory: Memory = serde_json::from_value(v)?;
+            if memory.archived_at.is_some() {
+                memory.archived_at = Some(now());
+            }
+            memory.version += 1;
+            memory.updated_at = now();
+            validate_memory(&memory)?;
+            put(tx, w, "memories", id, &memory).await?;
+            value(memory)
+        }
+        // Deleting for real. Archiving keeps it and supersede keeps the older
+        // version; this removes it, because a person's own memory is theirs to
+        // be rid of and a product that only ever hides things is not honest
+        // about what it still holds.
+        ("DELETE", "memories", id, "") if !id.is_empty() && !actor.agent => {
+            personal_only(tx, w).await?;
+            let memory: Memory = get(tx, w, "memories", id).await?;
+            remove(tx, w, "memories", &memory.id).await?;
+            Ok(json!({"deleted": id}))
+        }
         // Stating how a goal is going.
         //
         // A shorthand for a check-in that records only the status, so that
@@ -3132,7 +3580,11 @@ async fn dispatch_inner(
                 "weekly_reviews",
                 "cycles",
                 "checkins",
+                "memories",
             ] {
+                if col == "memories" && personal_only(tx, w).await.is_err() {
+                    continue;
+                }
                 backup[col] = value(list::<Value>(tx, w, col).await?)?;
             }
             Ok(backup)
@@ -3305,12 +3757,19 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
         // health until they do.
         let checkin_draft =
             p.len() == 6 && p[3] == "items" && p[5] == "checkins" && op.method == "POST";
+        // A memory candidate. Only the proposal route, never the one that
+        // writes a verified memory: approving a change set means agreeing to
+        // the words, and a memory the person has confirmed is a different
+        // claim from one an AI suggested.
+        let memory_proposal =
+            p.len() == 5 && p[3] == "memories" && p[4] == "proposals" && op.method == "POST";
         if p.len() < 4
             || p[0] != "v1"
             || p[1] != "workspaces"
             || p[2] != w
             || !(weekly_draft
                 || checkin_draft
+                || memory_proposal
                 || [
                     "items",
                     "relations",
@@ -3391,12 +3850,14 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     // `actions` operate on an item; a weekly review draft is addressed by its
     // week rather than by a row id; everything else names its own collection.
     let checkin = collection == "items" && parts.get(5) == Some(&"checkins");
+    let memory = collection == "memories" && parts.get(4) == Some(&"proposals");
     let (target_collection, target_id) = match collection {
         "actions" => ("items", parts.get(4).copied().unwrap_or("")),
         "weekly-reviews" => ("weekly_reviews", ""),
         // A check-in is the thing being written; showing the item's diff
         // would hide the words the person is actually approving.
         _ if checkin => ("checkins", ""),
+        _ if memory => ("memories", ""),
         _ => (collection, parts.get(4).copied().unwrap_or("")),
     };
     // What the operation would replace. For a review draft that is the newest
@@ -3453,6 +3914,11 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
                         .map(|week| format!("{week}の週次レビュー"))
                 })
                 .or_else(|| value["item_id"].as_str().map(|_| "チェックイン".to_owned()))
+                .or_else(|| {
+                    value["kind"]
+                        .as_str()
+                        .map(|kind| format!("記憶の候補（{kind}）"))
+                })
         })
         .unwrap_or_default();
     Ok(json!({
@@ -3575,6 +4041,7 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             "weekly_reviews",
             "cycles",
             "checkins",
+            "memories",
         ],
     )?;
     if b["schema_version"] != 1 {
@@ -3590,13 +4057,14 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         "weekly_reviews",
         "cycles",
         "checkins",
+        "memories",
     ];
     let mut count = 0;
     for col in cols {
         let Some(docs) = b[col].as_array() else {
             // Collections added after the backup format existed are optional:
             // an older export simply has none of them.
-            if ["weekly_reviews", "cycles", "checkins"].contains(&col) {
+            if ["weekly_reviews", "cycles", "checkins", "memories"].contains(&col) {
                 continue;
             }
             return Err(ApiError::invalid("バックアップに必要な一覧がありません"));
@@ -3649,6 +4117,22 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         timestamp(&o.observed_at)?;
         if let Some(id) = o.supersedes_id {
             let _: Observation = get(tx, w, "observations", &id).await?;
+        }
+    }
+    // Memory only exists in a personal workspace, so a backup carrying it can
+    // only be restored into one. Letting it through here would put someone's
+    // private memory into a shared workspace by way of a file.
+    let memories: Vec<Memory> = list(tx, w, "memories").await?;
+    if !memories.is_empty() {
+        personal_only(tx, w).await?;
+        for memory in memories {
+            validate_memory(&memory)?;
+            if !["verified", "proposed"].contains(&memory.status.as_str()) {
+                return Err(ApiError::invalid("記憶の状態が不正です"));
+            }
+            if let Some(id) = memory.supersedes_id {
+                let _: Memory = get(tx, w, "memories", &id).await?;
+            }
         }
     }
     for checkin in list::<Checkin>(tx, w, "checkins").await? {

@@ -117,6 +117,89 @@ pub struct Recurrence {
     #[serde(default)]
     pub weekdays: Vec<u8>,
 }
+/// One thing a person's own Basepath remembers for them.
+///
+/// # Personal only
+///
+/// Memory exists in a personal workspace and nowhere else. It is not moved,
+/// inherited or synced into a shared one, and an organization goal that a
+/// personal goal contributes to gives the organization no path back here.
+/// Putting something in a shared workspace is how a person shares it; a
+/// product that copied their memory across on their behalf would be making
+/// that decision for them.
+///
+/// A future organization memory is a different entity with its own storage and
+/// its own ids. Sharing this one would make the boundary a convention rather
+/// than a fact.
+///
+/// # Kinds
+///
+/// Separated because they behave differently and age differently:
+///
+/// - `fact` — something stable the person stated. Needs a source.
+/// - `preference` — how they like to work, and what they avoid.
+/// - `decision` — what was decided, and why.
+/// - `learning` — what experience taught them.
+/// - `context` — background on a project, person or topic, true for now.
+/// - `episode` — something that happened, at a time.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Memory {
+    pub id: String,
+    pub workspace_id: String,
+    pub kind: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    /// `verified` — the person put it here or confirmed it.
+    /// `proposed` — an AI suggested it, and nobody has confirmed it yet.
+    ///
+    /// Never set by the caller: the route decides, because "the person said
+    /// so" is exactly the claim that must not be forgeable.
+    pub status: String,
+    /// Where this came from, in the person's own words.
+    #[serde(default)]
+    pub source: String,
+    /// Records, items or observations in this workspace that back it up.
+    #[serde(default)]
+    pub evidence_ids: Vec<String>,
+    /// When the thing happened, as distinct from when it was written down.
+    #[serde(default)]
+    pub observed_at: Option<String>,
+    /// The window this is true in. A preference from two jobs ago is not
+    /// wrong; it is no longer current, and those are different.
+    #[serde(default)]
+    pub valid_from: Option<String>,
+    #[serde(default)]
+    pub valid_to: Option<String>,
+    /// How sure the proposer was, 0–1. Only a proposal has one: a thing the
+    /// person stated is not accompanied by a machine's estimate of it.
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    /// The memory this corrects. Corrections append.
+    #[serde(default)]
+    pub supersedes_id: Option<String>,
+    #[serde(default)]
+    pub archived_at: Option<String>,
+    /// Kept, but never handed to an AI.
+    ///
+    /// Some things a person wants their own Basepath to hold and no model to
+    /// read. Deleting is the other option and it is theirs too; this is for
+    /// what they want to keep.
+    #[serde(default)]
+    pub excluded_from_retrieval: bool,
+    #[serde(default)]
+    pub item_ids: Vec<String>,
+    #[serde(default)]
+    pub topics: Vec<String>,
+    #[serde(default)]
+    pub people: Vec<String>,
+    pub author: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+}
+
 /// One update on how a goal is going.
 ///
 /// Append-only. A check-in that turns out to be wrong is corrected by writing

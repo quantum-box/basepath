@@ -8,6 +8,7 @@
 - 5種類のテンプレート、任意の日付・時刻、週の実施回数、実施日ごとの完了・見送り・再開、アーカイブと復元
 - 4種類の関連、循環検出、次の一歩、メモの下書き、学び・振り返りの追記履歴
 - 自己評価と成果指標を分離。出典・日時・単位付き観測、訂正履歴、未計測表示。行動の完了で目標の達成率を変更しない
+- Personal Memory（事実・好み・決定・学び・背景・出来事）。**個人ワークスペース専用**で、共有側へ移動も同期もされない。AIの候補は本人が確認するまでverifiedにならず、出典のない推測はfactにできない。有効期間・訂正履歴・AI非開示の指定・export/delete
 - 目標のチェックイン・履歴・レビュー。訂正は追記で元の記録を残し、`as_of`でその時点に何が信じられていたかを再生できる。レビューは「沈黙」と「警告」を別リストにする
 - 目標ダッシュボード。行動の実施・指標の進捗・自己評価・状況を混ぜずに並べる。集計方法に既定値を置かず、方法未設定の目標は導出進捗を出さない。未計測を0%にしない。各数値から観測へ辿れる
 - 組織・チーム・個人を担当とするGoal Alignment。`part_of`（構造）と`contributes_to`（貢献）を分けたまま、上位未接続の目標も確認できる。1ワークスペース内のグラフで、個人ワークスペースの目標は含めない
@@ -95,7 +96,7 @@ discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）と`/.we
 
 配布パッケージは`plugin/<host>/`（manifest・接続先・アイコン）と`skills/`から`npm run build:plugin`で組み立てます。hostごとの差分は`scripts/build-plugin.mjs`の`LAYOUTS`の1行だけで、ワークフローにhost名が出てきたらbuildが失敗します。手順・接続導線・検証済み/未検証の切り分けは[docs/chatgpt-plugin.md](docs/chatgpt-plugin.md)と[docs/claude-connector.md](docs/claude-connector.md)を参照してください。claude.ai / Claude Desktopはカスタムコネクタ（URLのみ、インストール不要）で、会話内UIに対応します。Claude CodeはCLIなので会話内UIは約束しません。
 
-23個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
+25個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 
 ## 検証
 

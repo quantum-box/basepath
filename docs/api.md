@@ -28,6 +28,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
 | `GET /v1/workspaces/{w}/dashboard` | 行動の実施・指標の進捗・自己評価・状況を分けて返す |
 | `GET /v1/workspaces/{w}/review` | 未チェックイン／停滞／要注意／最近更新の4リスト |
+| `GET /v1/workspaces/{w}/memories` | 個人の記憶（個人ワークスペースのみ） |
 | `GET /v1/workspaces/{w}/items/{id}/checkins` | チェックイン全履歴と現在有効なもの |
 | `GET /v1/workspaces/{w}/items/{id}/timeline?as_of=` | 目標に起きたことの時系列と、その時点の状態 |
 | `GET /v1/workspaces/{w}/cycles` | 計画期間一覧 |
@@ -114,6 +115,35 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 通常の記録はnote / review / learning / checkin。実行履歴を偽装できないようcompletionなどは専用操作だけが生成します。記録・観測の訂正はsupersedes_idで追記し、元データは保持します。
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
+
+## Personal Memory
+
+**個人のワークスペースにだけ存在します。** 共有ワークスペースへ移動・継承・自動同期する機能はありません。個人目標が組織目標に貢献していても、組織側からPersonal Memoryへ辿る経路はありません。共有ワークスペースに置くこと自体が「共有する」という行為であり、製品が本人の代わりにその判断をしてはいけないからです。
+
+将来Organization Memoryを作る場合も、このテーブル・ID・検索indexは共有しません。共有すると境界が「事実」ではなく「慣習」になります。
+
+種類は `fact` / `preference` / `decision` / `learning` / `context` / `episode`。意味が違い、古び方も違うので分けます。
+
+| ルート | 内容 |
+| --- | --- |
+| `GET /v1/workspaces/{w}/memories?kind=&status=&current=&archived=` | 一覧。`current=true`は「いま有効なもの」（supersedeされておらず、有効期間内） |
+| `GET /v1/workspaces/{w}/memories/duplicates` | 似ている記憶の報告。**統合も削除もしません** |
+| `POST /v1/workspaces/{w}/memories` | 本人が書く。`status`は`verified` |
+| `POST /v1/workspaces/{w}/memories/proposals` | AIの候補。`status`は`proposed` |
+| `POST /v1/workspaces/{w}/memories/{id}/verify` | 本人が候補を確認する |
+| `PATCH` / `DELETE /v1/workspaces/{w}/memories/{id}` | 編集・整理（archive）・削除 |
+
+**`status`はリクエストで指定できません。** 「本人が言った」は偽装されてはいけない主張なので、ルートが決めます。AI接続は`changesets/preview`に`memories/proposals`だけを含められ、`memories`（verified）は含められません。承認は「その言葉でよい」であって「自分が言った」ではないからです。
+
+**出典のない推測はfactにできません**（422）。`context`や`learning`として、何に基づくかを添えて記録します。根拠（`evidence_ids`）はそのワークスペースに実在するものだけを指せます。
+
+**確度は候補にだけ付きます。** 本人が述べたことに機械の確度が付くのは、本人の言葉への機械の推定を並べることになります。確認すると確度は消えます。
+
+`excluded_from_retrieval`を立てた記憶は、AI接続には**存在しません**（一覧から除外され、直接取得は404）。本人には見えます。捨てるのではなく持っておきたいもののためです。
+
+`valid_from` / `valid_to`で有効期間を持てます。前職の好みは**間違いではなく**、いま有効ではないだけです。訂正は`supersedes_id`で追記し、元は残ります。
+
+記憶を含むバックアップは個人ワークスペースにしか復元できません（ファイル経由で境界を越えられないように）。
 
 ## Check-in・履歴・レビュー
 
