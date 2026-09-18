@@ -5,7 +5,7 @@ User decisions (2026-09-12): preserve the existing UI; API in Rust; reuse Field 
 ## Runtime contracts
 
 - Tachyon canonical identity and memberships: `GET /v1/me` with the current bearer token; the verified `user.id` identifies the user and `tenants` supplies the selectable tenant list.
-- Tenant discovery: `POST /get_tenants?required_action=field:ViewSalesAnalytics`, with `x-operator-id` and `x-platform-id`.
+- Tenant discovery: `POST /get_tenants?required_action=field:ListTenants`, with `x-operator-id` and `x-platform-id`.
 - Field tasks: `GET /v1/erp/sales-tasks?limit=50&offset=N` and `GET /v1/erp/sales-tasks/{id}`, using camelCase response fields and the user's task permissions.
 - Field metrics: `GET /v1/erp/sales-contracts/metrics`. Missing observations remain missing.
 - Configure the registered OIDC issuer and client explicitly. Authentication failures return 401; permission failures return 403.
