@@ -29,6 +29,7 @@ import {
   type RecordEntry,
 } from "./api";
 import { FieldIntegration } from "./FieldIntegration";
+import { McpConnections } from "./McpConnections";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { AiSuggestions } from "./AiSuggestions";
@@ -834,17 +835,18 @@ export function App() {
             fields: {
               assignee_id: data.get("assignee_id") || null,
               priority: data.get("priority") || null,
-              recurrence: frequency || weekdays.length
-                ? {
-                    mode: recurrenceMode,
-                    times_per_week:
-                      recurrenceMode === "fixed_schedule"
-                        ? weekdays.length
-                        : frequency,
-                    timezone: store.settings.timezone,
-                    weekdays,
-                  }
-                : null,
+              recurrence:
+                frequency || weekdays.length
+                  ? {
+                      mode: recurrenceMode,
+                      times_per_week:
+                        recurrenceMode === "fixed_schedule"
+                          ? weekdays.length
+                          : frequency,
+                      timezone: store.settings.timezone,
+                      weekdays,
+                    }
+                  : null,
             },
           });
         } else if (modal?.kind === "initiative" && selectedRaw) {
@@ -2245,6 +2247,7 @@ export function App() {
                 store={store}
                 workspaceId={currentWorkspace?.id || "personal"}
               />
+              <McpConnections store={store} />
               <StorageSettings
                 store={store}
                 workspaceId={currentWorkspace?.id || "personal"}

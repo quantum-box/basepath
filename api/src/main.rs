@@ -121,36 +121,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::net::Ipv4Addr::LOCALHOST
     };
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
-    let remote_mcp = match std::env::var("PATHBASE_MCP_TOKEN") {
-        Ok(mcp_token) => {
-            if mcp_token.len() < 32 {
-                return Err("PATHBASE_MCP_TOKEN must contain at least 32 characters".into());
-            }
-            let actor_id = std::env::var("PATHBASE_MCP_ACTOR_ID")
-                .map_err(|_| "PATHBASE_MCP_ACTOR_ID is required when remote MCP is enabled")?;
-            if actor_id.trim().is_empty() {
-                return Err("PATHBASE_MCP_ACTOR_ID must not be empty".into());
-            }
-            let allowed_hosts = std::env::var("PATHBASE_MCP_ALLOWED_HOSTS")
-                .unwrap_or_else(|_| "localhost,127.0.0.1,::1".into())
-                .split(',')
-                .map(str::trim)
-                .filter(|host| !host.is_empty())
-                .map(String::from)
-                .collect::<Vec<_>>();
-            if allowed_hosts.is_empty() {
-                return Err("PATHBASE_MCP_ALLOWED_HOSTS must contain at least one host".into());
-            }
-            Some(pathbase_api::mcp::remote_router(
-                service.clone(),
-                actor_id,
-                mcp_token,
-                allowed_hosts,
-            ))
-        }
-        Err(std::env::VarError::NotPresent) => None,
-        Err(error) => return Err(error.into()),
-    };
+    let remote_mcp =
+        pathbase_api::remote_mcp_router(service.clone(), auth.as_ref()).map_err(|e| e.message)?;
     let api = pathbase_api::router_with_mcp(
         HttpState {
             service,

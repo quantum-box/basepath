@@ -223,6 +223,21 @@ struct TokenResponse {
 struct CognitoAccessClaims {
     token_use: Option<String>,
     client_id: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    exp: Option<i64>,
+}
+
+/// What a protected resource learns from a verified access token.
+#[derive(Clone, Debug)]
+pub struct VerifiedAccessToken {
+    /// The OAuth client the token was issued to. This is the audience: a
+    /// token minted for one client must not be accepted by another.
+    pub client_id: String,
+    /// Scopes the authorization server itself put in the token, if any.
+    pub scopes: Vec<String>,
+    pub expires_at: Option<i64>,
 }
 #[derive(Deserialize)]
 struct InitiateAuthResponse {
@@ -637,6 +652,19 @@ impl TachyonAuth {
     /// session cookie: pool issuer, pool JWKS signature, expiry, `token_use` and
     /// the App Client this deployment is pinned to.
     async fn validate_cognito_access_token(&self, token: &str) -> Result<()> {
+        let verified = self.inspect_access_token(token).await?;
+        if Some(verified.client_id.as_str()) != self.config.cognito_client_id.as_deref() {
+            return Err(unauthorized());
+        }
+        Ok(())
+    }
+
+    /// Verifies an access token's signature, issuer, expiry and `token_use`
+    /// without pinning it to the web sign-in client.
+    ///
+    /// The caller decides which OAuth client it will accept, so the MCP
+    /// endpoint can require its own client and refuse a browser token.
+    pub async fn inspect_access_token(&self, token: &str) -> Result<VerifiedAccessToken> {
         let issuer = self
             .config
             .cognito_issuer
@@ -676,10 +704,16 @@ impl TachyonAuth {
         if claims.token_use.as_deref() != Some("access") {
             return Err(unauthorized());
         }
-        if claims.client_id.as_deref() != self.config.cognito_client_id.as_deref() {
-            return Err(unauthorized());
-        }
-        Ok(())
+        Ok(VerifiedAccessToken {
+            client_id: claims.client_id.ok_or_else(unauthorized)?,
+            scopes: claims
+                .scope
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+            expires_at: claims.exp,
+        })
     }
     async fn establish_cognito_session(
         &self,

@@ -1,3 +1,5 @@
+use crate::auth::TachyonAuth;
+use crate::mcp_auth::{self, McpIdentity, ResourceConfig};
 use crate::service::{Actor, Service};
 use axum::{
     extract::Request,
@@ -16,23 +18,36 @@ use rmcp::{
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 #[derive(Clone)]
 pub struct Mcp {
     service: Service,
-    actor: Actor,
+    /// The actor for a stdio session, where there is no per-request token.
+    /// `None` on the hosted endpoint: each request carries its own identity.
+    actor: Option<Actor>,
 }
 
-pub fn remote_router<S>(
-    service: Service,
-    actor_id: String,
-    token: String,
-    allowed_hosts: Vec<String>,
-) -> Router<S>
+/// Everything the MCP endpoint needs to answer "who is calling, and may they?".
+#[derive(Clone)]
+pub struct RemoteMcp {
+    pub service: Service,
+    pub auth: Arc<TachyonAuth>,
+    pub resource: Arc<ResourceConfig>,
+}
+
+/// The hosted MCP endpoint.
+///
+/// Identity comes from an OAuth access token issued to this deployment's MCP
+/// client, never from a shared secret and never from the browser session
+/// cookie. The per-user delegation is looked up on every request, so a
+/// disconnect takes effect immediately across execution environments.
+pub fn remote_router<S>(remote: RemoteMcp, allowed_hosts: Vec<String>) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
+    let service = remote.service.clone();
     let transport: StreamableHttpService<Mcp, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(Mcp::for_actor(service.clone(), actor_id.clone())),
+        move || Ok(Mcp::hosted(service.clone())),
         Default::default(),
         StreamableHttpServerConfig::default()
             .with_allowed_hosts(allowed_hosts)
@@ -41,44 +56,191 @@ where
     Router::new()
         .fallback_service(transport)
         .layer(middleware::from_fn(move |request, next| {
-            authenticate_remote(request, next, token.clone())
+            authenticate_remote(request, next, remote.clone())
         }))
 }
 
-async fn authenticate_remote(request: Request, next: Next, token: String) -> Response {
-    let supplied = request
+fn challenge(
+    resource: &ResourceConfig,
+    error: Option<(&str, &str)>,
+    status: StatusCode,
+    body: Value,
+) -> Response {
+    (
+        status,
+        [(header::WWW_AUTHENTICATE, resource.challenge(error))],
+        axum::Json(body),
+    )
+        .into_response()
+}
+
+async fn authenticate_remote(mut request: Request, next: Next, remote: RemoteMcp) -> Response {
+    let Some(presented) = request
         .headers()
         .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    if supplied != Some(format!("Bearer {token}").as_str()) {
-        return (
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return challenge(
+            &remote.resource,
+            None,
             StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            axum::Json(json!({"error":"UNAUTHENTICATED","message":"MCP Bearer token is required"})),
+            json!({"error":"UNAUTHENTICATED","message":"MCP requires an OAuth access token"}),
+        );
+    };
+
+    let verified = match remote.auth.inspect_access_token(presented).await {
+        Ok(verified) => verified,
+        Err(error) => {
+            return challenge(
+                &remote.resource,
+                Some(("invalid_token", "the access token is not valid")),
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::UNAUTHORIZED),
+                json!({"error":"INVALID_TOKEN","message":"アクセストークンを確認できません"}),
+            )
+        }
+    };
+    // Audience: a token issued to the web sign-in client is not a token for
+    // this resource, however valid it is.
+    if verified.client_id != remote.resource.client_id {
+        return challenge(
+            &remote.resource,
+            Some((
+                "invalid_token",
+                "the access token was issued for another resource",
+            )),
+            StatusCode::UNAUTHORIZED,
+            json!({"error":"INVALID_AUDIENCE","message":"このMCPエンドポイント向けのトークンではありません"}),
+        );
+    }
+    // Canonical identity and the user id PathBase authorizes against come from
+    // Tachyon, not from a claim the client could shape.
+    let identity = match remote.auth.verify_identity(presented).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            return challenge(
+                &remote.resource,
+                Some(("invalid_token", "the access token is not valid")),
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::UNAUTHORIZED),
+                json!({"error":"INVALID_TOKEN","message":"利用者を確認できません"}),
+            )
+        }
+    };
+
+    // The person's own workspace is theirs whether they arrive through the
+    // browser or through an AI client, and provisioning is idempotent.
+    let actor = Actor {
+        id: identity.id.clone(),
+        agent: true,
+    };
+    if let Err(error) = remote.service.provision_personal(&actor).await {
+        return (
+            StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            axum::Json(error),
         )
             .into_response();
     }
+
+    let client_name = request
+        .headers()
+        .get("mcp-client-name")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("MCP client")
+        .to_owned();
+    let connection = match mcp_auth::ensure_pending(
+        &remote.service.db,
+        &identity.id,
+        &remote.resource.client_id,
+        &client_name,
+    )
+    .await
+    {
+        Ok(connection) => connection,
+        Err(error) => {
+            return (
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                axum::Json(error),
+            )
+                .into_response()
+        }
+    };
+    if connection.status != "active" {
+        let error = mcp_auth::insufficient_scope(mcp_auth::SCOPE_READ, &connection);
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(json!({
+                "error": error.code,
+                "message": error.message,
+                "consent_url": remote.resource.consent_url,
+            })),
+        )
+            .into_response();
+    }
+
+    request
+        .extensions_mut()
+        .insert(McpIdentity { actor, connection });
     next.run(request).await
 }
 impl Mcp {
+    /// Local stdio MCP, which only runs in the explicit local preview.
     pub fn new(service: Service) -> Self {
         Self::for_actor(service, "local-owner")
     }
     pub fn for_actor(service: Service, actor_id: impl Into<String>) -> Self {
         Self {
             service,
-            actor: Actor {
+            actor: Some(Actor {
                 id: actor_id.into(),
                 agent: true,
-            },
+            }),
         }
     }
-    pub async fn call(&self, name: &str, args: Value) -> crate::model::Result<Value> {
+    /// The hosted endpoint, where identity arrives with each request.
+    pub fn hosted(service: Service) -> Self {
+        Self {
+            service,
+            actor: None,
+        }
+    }
+
+    /// Who this request is for, and whether they may attempt `tool`.
+    ///
+    /// The hosted endpoint reads the identity the authentication middleware
+    /// attached to the HTTP request, so naming a different workspace or actor
+    /// in the tool arguments cannot change it.
+    fn authorize(
+        &self,
+        tool: &str,
+        extensions: &rmcp::model::Extensions,
+    ) -> crate::model::Result<Actor> {
+        if let Some(actor) = &self.actor {
+            return Ok(actor.clone());
+        }
+        let identity = extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<McpIdentity>())
+            .ok_or_else(|| {
+                crate::model::ApiError::new(401, "UNAUTHENTICATED", "MCPの認証情報がありません")
+            })?;
+        identity.require(mcp_auth::required_scope(tool))?;
+        Ok(identity.actor.clone())
+    }
+    pub async fn call(
+        &self,
+        name: &str,
+        args: Value,
+        extensions: &rmcp::model::Extensions,
+    ) -> crate::model::Result<Value> {
+        // Scope first: an unauthorized caller learns nothing about which
+        // arguments a tool would have accepted.
+        let actor = self.authorize(name, extensions)?;
         validate_arguments(name, &args)?;
         let w = args["workspace_id"].as_str().unwrap_or("");
         let id = args["item_id"].as_str().unwrap_or("");
         let base = format!("/v1/workspaces/{w}");
-        let actor = self.actor.clone();
         let mut q = HashMap::new();
         for key in ["query", "kind", "state", "cursor", "local_date", "limit"] {
             if let Some(v) = args[key].as_str() {
@@ -288,10 +450,10 @@ impl ServerHandler for Mcp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let result = self.call(&request.name, args).await;
+        let result = self.call(&request.name, args, &context.extensions).await;
         let (mut value, error) = match result {
             Ok(v) => (v, false),
             Err(e) => (serde_json::to_value(e).unwrap(), true),
@@ -311,7 +473,7 @@ impl ServerHandler for Mcp {
     async fn read_resource(
         &self,
         r: ReadResourceRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
         let p: Vec<_> = r
             .uri
@@ -326,6 +488,7 @@ impl ServerHandler for Mcp {
             .call(
                 "pathbase_get_item",
                 json!({"workspace_id":p[0],"item_id":p[2]}),
+                &context.extensions,
             )
             .await
             .map_err(|e| ErrorData::invalid_params(e.message, None))?;

@@ -603,7 +603,34 @@ test("mobile navigation opens the workspace manager page and returns home", asyn
   await expect(page.locator("main")).toBeFocused();
 });
 
-test("closing settings returns keyboard focus to its trigger", async ({ page }) => {
+test("settings explains that an AI connection must be allowed first", async ({
+  page,
+}) => {
+  await openApp(page);
+  // The utility navigation can sit below the fold, so drive it the way the
+  // sibling focus test does rather than scrolling.
+  const settings = page
+    .getByRole("navigation", { name: "ユーティリティ" })
+    .getByRole("button", { name: "設定", exact: true });
+  await settings.focus();
+  await settings.press("Enter");
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "AIクライアントの接続" }),
+  ).toBeVisible();
+  // Nothing is connected yet, and the screen says what that means rather than
+  // showing an empty list with no explanation.
+  await expect(
+    dialog.getByText("まだ接続はありません", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("許可するまでAI側は何も読み取れません", { exact: false }),
+  ).toBeVisible();
+});
+
+test("closing settings returns keyboard focus to its trigger", async ({
+  page,
+}) => {
   await openApp(page);
   const settings = page
     .getByRole("navigation", { name: "ユーティリティ" })
@@ -616,23 +643,45 @@ test("closing settings returns keyboard focus to its trigger", async ({ page }) 
   await expect(settings).toBeFocused();
 });
 
-test("weekly review saves, finalizes, and remains usable at 390px", async ({ page }) => {
+test("weekly review saves, finalizes, and remains usable at 390px", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openApp(page);
-  await page.getByRole("button", { name: "メニューを開く", exact: true }).click();
+  await page
+    .getByRole("button", { name: "メニューを開く", exact: true })
+    .click();
   await page
     .getByRole("navigation", { name: "メインメニュー" })
     .getByRole("button", { name: "振り返り", exact: true })
     .click();
-  await expect(page.getByRole("heading", { name: "週次レビュー", exact: true })).toBeVisible();
-  await expect(page.getByText("行動完了率とは別指標", { exact: true })).toBeVisible();
-  await page.getByLabel("学び", { exact: true }).fill("E2E: 小さな完了を確認できた");
+  await expect(
+    page.getByRole("heading", { name: "週次レビュー", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("行動完了率とは別指標", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("学び", { exact: true })
+    .fill("E2E: 小さな完了を確認できた");
   await page.getByLabel("課題", { exact: true }).fill("E2E: 未計測を埋める");
-  await page.getByLabel("次週の重点", { exact: true }).fill("E2E: 観測を続ける");
+  await page
+    .getByLabel("次週の重点", { exact: true })
+    .fill("E2E: 観測を続ける");
   await page.getByRole("button", { name: "下書き保存", exact: true }).click();
   await expect(page.getByText("下書き保存済み", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "レビューを確定", exact: true }).click();
-  await expect(page.getByRole("heading", { name: /確定済みレビュー/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: "訂正版を作成", exact: true })).toBeVisible();
-  expect(await page.locator(".weekly-review-screen").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page
+    .getByRole("button", { name: "レビューを確定", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: /確定済みレビュー/ }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "訂正版を作成", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page
+      .locator(".weekly-review-screen")
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
 });
