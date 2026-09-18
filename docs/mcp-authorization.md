@@ -59,6 +59,44 @@ of them and not the others, and would come back after a redeploy. The row in
 `mcp_connections` is the single answer every execution environment reads, and a
 disconnect is therefore immediate rather than eventual.
 
+## Transport
+
+The endpoint is **stateless** Streamable HTTP with JSON responses
+(`stateful_mode: false`, `json_response: true`).
+
+It runs on Lambda: consecutive requests from one client reach different
+execution environments, any of which can be cold. A session pinned to one
+process would work until it did not, so there is no session. Every request
+carries its own access token and is answered on its own.
+
+What that means for a client:
+
+- `initialize` returns capabilities and **no** `Mcp-Session-Id`. There is
+  nothing to send back on later requests.
+- Responses are `application/json`, not `text/event-stream`. There is no SSE
+  framing to parse.
+- `GET` on the endpoint is refused: there is no server-initiated stream to
+  open. The endpoint does not advertise a transport feature it does not have.
+- `Host` is validated against the deployment's own hostnames, which stops a
+  DNS-rebinding attempt from reaching the tools. `Origin` is validated when
+  `PATHBASE_MCP_ALLOWED_ORIGINS` is set; non-browser clients send none.
+- Every response carries `Cache-Control: no-store`, and the Cloudflare Worker
+  in front forwards the request and response unchanged (including
+  `Authorization` and `Mcp-Protocol-Version`).
+
+State that has to survive lives in the shared database: the delegation, the
+plan, the change sets, the audit trail. A redeploy or a cold start loses
+nothing, because there is nothing in a process worth keeping.
+
+## Tool annotations
+
+`annotations` describe the real effect, not a comfortable default. A change set
+may contain `DELETE` operations, so `pathbase_preview_changes`,
+`pathbase_propose_plan` and `pathbase_apply_changes` are marked
+`destructiveHint: true` even though a person approves in between.
+`pathbase_get_graph` returns at most `limit` nodes (default and maximum 200)
+and reports `truncated`; a truncated graph is a slice, not the plan.
+
 ## Secrets
 
 - The manifest never contains a client secret: both OAuth clients are public
