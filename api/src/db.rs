@@ -402,12 +402,55 @@ impl Tx {
 #[derive(Clone)]
 enum PoolKind {
     Sqlite(SqlitePool),
-    MySql(MySqlPool),
+    /// The pool, and the options to open a connection *outside* it.
+    ///
+    /// The migration lock has to be held by one session for the whole run, and
+    /// taking that session from the pool would spend one of the very few
+    /// connections an execution environment has — with the default of two, a
+    /// migrating cold start would then starve its own transactions.
+    MySql(MySqlPool, Box<sqlx::mysql::MySqlConnectOptions>),
 }
 
 /// Advisory lock prefix held for the whole migration run; the database name
 /// is appended so deployments sharing a cluster do not serialize.
 const MIGRATION_LOCK: &str = "pathbase:migrate";
+
+/// The migration lock, and the one connection that holds it.
+///
+/// A MySQL advisory lock belongs to the session that took it. Keeping the
+/// connection here is what makes the release actually release: handing the
+/// name back to the pool would run `RELEASE_LOCK` on whichever connection came
+/// up, which is usually not the one holding it.
+struct MigrationLock {
+    name: String,
+    connection: sqlx::MySqlConnection,
+}
+
+impl MigrationLock {
+    /// Releases the lock, and says so if it could not.
+    ///
+    /// `SELECT RELEASE_LOCK(?)`, not `DO RELEASE_LOCK(?)`: the `DO` form is
+    /// accepted but observably does not release the lock when sqlx sends it as
+    /// a prepared statement, which left every migrating process holding the
+    /// lock for the life of its pooled connection. A failure here is not fatal
+    /// — the lock expires with the session — but it makes the next process
+    /// wait, so it is worth seeing in the logs rather than swallowing.
+    async fn release(mut self) {
+        let released = sqlx::query_scalar::<_, i64>("SELECT RELEASE_LOCK(?)")
+            .bind(&self.name)
+            .fetch_one(&mut self.connection)
+            .await;
+        if !matches!(released, Ok(1)) {
+            eprintln!(
+                "warning: the migration lock was not released ({released:?}); \
+                 the next process to open this database may wait for it"
+            );
+        }
+        // Closing the session releases anything still held, whatever happened
+        // above.
+        let _ = sqlx::Connection::close(self.connection).await;
+    }
+}
 /// Primary key of the single `database_identity` row.
 const IDENTITY_ROW: &str = "singleton";
 
@@ -616,7 +659,7 @@ impl Db {
                     )
                 })?;
             return Ok(Self {
-                pool: PoolKind::MySql(pool),
+                pool: PoolKind::MySql(pool, Box::new(mysql_options(url)?)),
                 dialect: Dialect::MySql,
             });
         }
@@ -651,7 +694,7 @@ impl Db {
                 dialect: self.dialect,
                 write: false,
             }),
-            PoolKind::MySql(pool) => Ok(Tx {
+            PoolKind::MySql(pool, _) => Ok(Tx {
                 kind: TxKind::MySql(pool.begin().await.map_err(storage_error)?),
                 dialect: self.dialect,
                 write: false,
@@ -672,7 +715,7 @@ impl Db {
                 dialect: self.dialect,
                 write: true,
             }),
-            PoolKind::MySql(pool) => Ok(Tx {
+            PoolKind::MySql(pool, _) => Ok(Tx {
                 kind: TxKind::MySql(pool.begin().await.map_err(storage_error)?),
                 dialect: self.dialect,
                 write: true,
@@ -701,7 +744,9 @@ impl Db {
         }
         let lock = self.lock_migrations().await?;
         let result = self.migrate_locked().await;
-        self.unlock_migrations(&lock).await;
+        if let Some(lock) = lock {
+            lock.release().await;
+        }
         result
     }
 
@@ -710,9 +755,9 @@ impl Db {
     /// MySQL advisory locks are server-wide, not per database, so the name
     /// carries the database: two deployments sharing one TiDB cluster (a
     /// per-PR preview and production) must not serialize against each other.
-    async fn migration_lock_name(&self, pool: &MySqlPool) -> Result<String> {
+    async fn migration_lock_name(connection: &mut sqlx::MySqlConnection) -> Result<String> {
         let database: Option<String> = sqlx::query_scalar("SELECT DATABASE()")
-            .fetch_one(pool)
+            .fetch_one(&mut *connection)
             .await
             .map_err(storage_error)?;
         let database = database.unwrap_or_default();
@@ -723,11 +768,20 @@ impl Db {
             .collect())
     }
 
-    async fn lock_migrations(&self) -> Result<String> {
-        let PoolKind::MySql(pool) = &self.pool else {
-            return Ok(String::new());
+    async fn lock_migrations(&self) -> Result<Option<MigrationLock>> {
+        let PoolKind::MySql(_, options) = &self.pool else {
+            return Ok(None);
         };
-        let name = self.migration_lock_name(pool).await?;
+        // The lock is held by the *session* that took it, so acquiring and
+        // releasing must happen on one connection. Taking it from the pool
+        // twice can land on two, and then the release quietly does nothing
+        // while the original connection keeps the lock for as long as the pool
+        // keeps it warm — long enough for the next process to start, wait the
+        // full timeout, and fail its readiness check.
+        let mut connection = <sqlx::MySqlConnection as sqlx::Connection>::connect_with(options)
+            .await
+            .map_err(storage_error)?;
+        let name = Self::migration_lock_name(&mut connection).await?;
         let wait = setting("PATHBASE_DB_MIGRATION_LOCK_SECS", 60) as i64;
         let mut last = None;
         // Heavy contention makes TiDB answer GET_LOCK with a retryable
@@ -736,10 +790,10 @@ impl Db {
             match sqlx::query_scalar::<_, i64>("SELECT GET_LOCK(?, ?)")
                 .bind(&name)
                 .bind(wait)
-                .fetch_one(pool)
+                .fetch_one(&mut connection)
                 .await
             {
-                Ok(1) => return Ok(name),
+                Ok(1) => return Ok(Some(MigrationLock { name, connection })),
                 Ok(_) => {
                     return Err(ApiError::new(
                         503,
@@ -756,15 +810,6 @@ impl Db {
         Err(storage_error(
             last.expect("a failed attempt records its error"),
         ))
-    }
-
-    async fn unlock_migrations(&self, name: &str) {
-        if let PoolKind::MySql(pool) = &self.pool {
-            let _ = sqlx::query("DO RELEASE_LOCK(?)")
-                .bind(name)
-                .execute(pool)
-                .await;
-        }
     }
 
     async fn migrate_locked(&self) -> Result<()> {
@@ -909,7 +954,7 @@ impl Db {
     pub async fn close(&self) {
         match &self.pool {
             PoolKind::Sqlite(pool) => pool.close().await,
-            PoolKind::MySql(pool) => pool.close().await,
+            PoolKind::MySql(pool, _) => pool.close().await,
         }
     }
 }

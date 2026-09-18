@@ -41,7 +41,12 @@ jobs:
       - run: npm run check:mcp-app
       # The distributable plugin packages assemble from plugin/<host>/ and the
       # shared skills/. A package that cannot be built cannot be submitted.
+      - run: npm run check:plugin
       - run: npm run build:plugin
+      # The gate itself: the required checks still exist, the suites they are
+      # the gate for are still there, and the release checklist still says what
+      # is unverified.
+      - run: npm run gate
       # Without a built binary this checks only the dev-script binary selection;
       # the browser job runs the same file against the real API.
       - run: npm run test:smoke
@@ -108,7 +113,10 @@ jobs:
             sleep 2
           done
           echo "TiDB did not become ready"; docker logs tidb; exit 1
-      - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml --test tidb --test database_configuration --test deployment_gate --test durability --test migration
+      # The acceptance suite is here rather than in the Rust job because it is
+      # the whole user flow against the storage that ships; on SQLite it would
+      # skip and report success.
+      - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml --test tidb --test acceptance --test database_configuration --test deployment_gate --test durability --test migration
         env:
           PATHBASE_TEST_DATABASE_URL: mysql://root@127.0.0.1:4000/test
       - name: TiDB logs on failure

@@ -38,6 +38,26 @@ function restoreHeaders(response) {
   return restored ?? response;
 }
 
+/**
+ * Serves the single-page app for a URL that names no asset.
+ *
+ * `/index.html` is asked for first, and `/` second, because the asset layer
+ * canonicalises one to the other: with html handling on, a request for
+ * `/index.html` is itself answered with a redirect to `/`. Returning that
+ * redirect is how the deep link was lost in the first place, so a redirect
+ * here is followed rather than passed on.
+ */
+async function appShell(request, env) {
+  for (const pathname of ["/index.html", "/"]) {
+    const url = new URL(request.url);
+    url.pathname = pathname;
+    url.search = "";
+    const response = await env.ASSETS.fetch(new Request(url, request));
+    if (response.status < 300 || response.status >= 400) return response;
+  }
+  return new Response("Not found", { status: 404 });
+}
+
 export default {
   async fetch(request, env) {
     const requestUrl = new URL(request.url);
@@ -81,17 +101,10 @@ export default {
       response.status === 404 ||
       (response.status >= 300 && response.status < 400);
 
-    if (
-      !missing ||
-      !acceptsHtml ||
-      !["GET", "HEAD"].includes(request.method)
-    ) {
+    if (!missing || !acceptsHtml || !["GET", "HEAD"].includes(request.method)) {
       return response;
     }
 
-    const indexUrl = new URL(request.url);
-    indexUrl.pathname = "/index.html";
-    indexUrl.search = "";
-    return env.ASSETS.fetch(new Request(indexUrl, request));
+    return appShell(request, env);
   },
 };
