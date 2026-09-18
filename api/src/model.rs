@@ -65,6 +65,14 @@ pub struct ItemFields {
     /// working exactly as before, and every item in it simply has no cycle.
     #[serde(default)]
     pub cycle_id: Option<String>,
+    /// Whose goal this is: the organization, a team, or a person.
+    ///
+    /// Alignment is a graph inside one workspace. A goal owned by a person
+    /// here is a goal they chose to put where their colleagues can see it —
+    /// their private plan lives in their personal workspace and is never part
+    /// of this graph. That boundary is the whole point of having two.
+    #[serde(default)]
+    pub owner: Option<GoalOwner>,
     /// The item this was carried over from, when it was.
     ///
     /// Carrying work into the next period copies it rather than moving it, so
@@ -96,6 +104,21 @@ pub struct Recurrence {
     #[serde(default)]
     pub weekdays: Vec<u8>,
 }
+/// Who a goal belongs to.
+///
+/// `organization` is the workspace itself and carries no id. `team` names a
+/// team within it. `person` names a member, and only that member (or an owner)
+/// may change their goal — which is the separation between "the company's
+/// goal", "our team's goal" and "mine".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GoalOwner {
+    /// `organization` | `team` | `person`.
+    pub kind: String,
+    #[serde(default)]
+    pub id: String,
+}
+
 /// A planning period: a quarter, a month, a week, or something the workspace
 /// named itself.
 ///

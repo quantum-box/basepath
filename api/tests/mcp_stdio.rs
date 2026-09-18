@@ -75,7 +75,7 @@ async fn stdio_negotiates_and_requires_human_approval_before_writing() {
     assert!(initialized["capabilities"]["tools"].is_object());
     client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
     let tools = client.request(2, "tools/list", json!({}));
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 19);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 20);
     let resources = client.request(3, "resources/templates/list", json!({}));
     assert_eq!(resources["resourceTemplates"].as_array().unwrap().len(), 1);
     let prompts = client.request(4, "prompts/list", json!({}));

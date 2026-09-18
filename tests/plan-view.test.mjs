@@ -730,3 +730,174 @@ test("an unknown cadence or status degrades instead of breaking the screen", () 
   assert.equal(view.current.status, "planned");
   assert.equal(view.current.label, "2026 Q4");
 });
+
+// --- Goal alignment -----------------------------------------------------
+//
+// One workspace, one graph. `partOf` and `contributesTo` stay different
+// questions all the way to the screen.
+
+const {
+  alignmentViewFrom,
+  ownerLabel,
+  ownerKindLabel,
+  roots,
+  supporters,
+  chainUpward,
+} = await import("../src/shared/alignmentView.ts");
+
+const alignment = {
+  workspace_id: "team",
+  goals: [
+    {
+      id: "g_company",
+      title: "償却前利益を伸ばす",
+      kind: "outcome",
+      state: "active",
+      owner: { kind: "organization", id: "" },
+      cycle: { id: "cycle_q4", label: "2026 Q4" },
+      self_assessment: 30,
+      due_date: "2026-12-31",
+      part_of: [],
+      contributes_to: [],
+      supported_by: ["g_team"],
+      descendant_work: 0,
+      orphan: true,
+    },
+    {
+      id: "g_team",
+      title: "運営コストを下げる",
+      kind: "outcome",
+      state: "active",
+      owner: { kind: "team", id: "運営" },
+      cycle: null,
+      self_assessment: null,
+      due_date: null,
+      part_of: ["g_company"],
+      contributes_to: ["g_other"],
+      supported_by: ["g_person"],
+      descendant_work: 4,
+      orphan: false,
+    },
+    {
+      id: "g_person",
+      title: "発注の手戻りを減らす",
+      kind: "outcome",
+      state: "active",
+      owner: { kind: "person", id: "us_alice" },
+      cycle: null,
+      self_assessment: 60,
+      due_date: null,
+      part_of: ["g_team"],
+      contributes_to: [],
+      supported_by: [],
+      descendant_work: 2,
+      orphan: false,
+    },
+    {
+      id: "g_other",
+      title: "別の会社目標",
+      kind: "outcome",
+      state: "active",
+      owner: { kind: "organization", id: "" },
+      cycle: null,
+      self_assessment: null,
+      due_date: null,
+      part_of: [],
+      contributes_to: [],
+      supported_by: ["g_team"],
+      descendant_work: 0,
+      orphan: true,
+    },
+  ],
+  teams: ["運営"],
+  people: ["us_alice"],
+  unowned_goals: 0,
+  orphan_goals: 2,
+};
+
+test("structure and contribution stay separate all the way to the view", () => {
+  const view = alignmentViewFrom(alignment);
+  const team = view.goals.find((goal) => goal.id === "g_team");
+  // One structural parent, one contribution: different fields, different
+  // questions. Merging them would answer neither.
+  assert.deepEqual(team.partOf, ["g_company"]);
+  assert.deepEqual(team.contributesTo, ["g_other"]);
+  assert.deepEqual(team.supportedBy, ["g_person"]);
+  assert.equal(team.descendantWork, 4);
+});
+
+test("reading starts from the goals with nothing above them", () => {
+  const view = alignmentViewFrom(alignment);
+  assert.deepEqual(
+    roots(view).map((goal) => goal.id),
+    ["g_company", "g_other"],
+  );
+  // Which is normal at the top: two company goals, neither part of anything.
+  assert.equal(view.orphanGoals, 2);
+  assert.deepEqual(
+    supporters(view, view.goals[0]).map((goal) => goal.id),
+    ["g_team"],
+  );
+});
+
+test("the chain upward follows structure only", () => {
+  const view = alignmentViewFrom(alignment);
+  const mine = view.goals.find((goal) => goal.id === "g_person");
+  assert.deepEqual(
+    chainUpward(view, mine).map((goal) => goal.id),
+    ["g_team", "g_company"],
+  );
+  // Following contribution too would produce several chains and answer a
+  // different question.
+  assert.equal(chainUpward(view, view.goals[0]).length, 0);
+});
+
+test("an owner is named the way a person would name it", () => {
+  const view = alignmentViewFrom(alignment);
+  assert.equal(ownerLabel(view.goals[0].owner), "組織");
+  assert.equal(ownerLabel(view.goals[1].owner), "運営");
+  assert.equal(ownerLabel(view.goals[2].owner), "us_alice");
+  assert.equal(ownerLabel(null), "担当なし");
+  assert.equal(ownerKindLabel("organization"), "組織の目標");
+  assert.equal(ownerKindLabel("person"), "個人の目標");
+});
+
+test("an unassessed goal is unassessed, not zero", () => {
+  const view = alignmentViewFrom(alignment);
+  assert.equal(view.goals[1].selfAssessment, null);
+  assert.equal(view.goals[2].selfAssessment, 60);
+  assert.equal(view.goals[0].cycleLabel, "2026 Q4");
+  assert.equal(view.goals[1].cycleLabel, null);
+});
+
+test("a malformed owner or payload does not become a goal nobody owns", () => {
+  assert.equal(alignmentViewFrom(null), null);
+  assert.equal(alignmentViewFrom({ goals: [] }), null);
+  const view = alignmentViewFrom({
+    ...alignment,
+    goals: [{ ...alignment.goals[0], owner: { kind: "department", id: "x" } }],
+  });
+  // An owner kind this model does not have is no owner at all, rather than
+  // being quietly rendered as one.
+  assert.equal(view.goals[0].owner, null);
+  assert.equal(ownerLabel(view.goals[0].owner), "担当なし");
+});
+
+test("a goal supported through two paths is not rendered twice", () => {
+  // The graph refuses cycles, but a diamond is legal: two goals can both be
+  // supported by the same one.
+  const view = alignmentViewFrom({
+    ...alignment,
+    goals: alignment.goals.map((goal) =>
+      goal.id === "g_other" ? { ...goal, supported_by: ["g_team"] } : goal,
+    ),
+  });
+  const reachable = new Set();
+  const walk = (goal) => {
+    if (reachable.has(goal.id)) return;
+    reachable.add(goal.id);
+    for (const child of supporters(view, goal)) walk(child);
+  };
+  for (const root of roots(view)) walk(root);
+  assert.equal(reachable.size, 4, "every goal is reachable exactly once");
+});
