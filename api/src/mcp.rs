@@ -73,7 +73,7 @@ impl Mcp {
             },
         }
     }
-    pub fn call(&self, name: &str, args: Value) -> crate::model::Result<Value> {
+    pub async fn call(&self, name: &str, args: Value) -> crate::model::Result<Value> {
         validate_arguments(name, &args)?;
         let w = args["workspace_id"].as_str().unwrap_or("");
         let id = args["item_id"].as_str().unwrap_or("");
@@ -87,9 +87,17 @@ impl Mcp {
         }
         let (method, path, body) = match name {
             "pathbase_get_context" => {
+                let me = self
+                    .service
+                    .handle(&actor, "GET", "/v1/me", &q, json!({}), None)
+                    .await?;
+                let workspaces = self
+                    .service
+                    .handle(&actor, "GET", "/v1/workspaces", &q, json!({}), None)
+                    .await?;
                 return Ok(
-                    json!({"me":self.service.handle(&actor,"GET","/v1/me",&q,json!({}),None)?,"workspaces":self.service.handle(&actor,"GET","/v1/workspaces",&q,json!({}),None)?,"delegation":"proposal_only","approval":"Review pending changes in the PathBase settings screen"}),
-                )
+                    json!({"me":me,"workspaces":workspaces,"delegation":"proposal_only","approval":"Review pending changes in the PathBase settings screen"}),
+                );
             }
             "pathbase_search_items" => ("GET", format!("{base}/items"), json!({})),
             "pathbase_get_item" => ("GET", format!("{base}/items/{id}"), json!({})),
@@ -132,14 +140,16 @@ impl Mcp {
             }
             _ => return Err(crate::model::ApiError::missing()),
         };
-        self.service.handle(
-            &actor,
-            method,
-            &path,
-            &q,
-            body,
-            args["idempotency_key"].as_str(),
-        )
+        self.service
+            .handle(
+                &actor,
+                method,
+                &path,
+                &q,
+                body,
+                args["idempotency_key"].as_str(),
+            )
+            .await
     }
 }
 
@@ -280,11 +290,8 @@ impl ServerHandler for Mcp {
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let this = self.clone();
         let args = Value::Object(request.arguments.unwrap_or_default());
-        let result = tokio::task::spawn_blocking(move || this.call(&request.name, args))
-            .await
-            .map_err(|_| ErrorData::internal_error("Command failed", None))?;
+        let result = self.call(&request.name, args).await;
         let (mut value, error) = match result {
             Ok(v) => (v, false),
             Err(e) => (serde_json::to_value(e).unwrap(), true),
@@ -320,6 +327,7 @@ impl ServerHandler for Mcp {
                 "pathbase_get_item",
                 json!({"workspace_id":p[0],"item_id":p[2]}),
             )
+            .await
             .map_err(|e| ErrorData::invalid_params(e.message, None))?;
         Ok(serde_json::from_value(
             json!({"contents":[{"uri":r.uri,"mimeType":"application/json","text":v.to_string()}]}),

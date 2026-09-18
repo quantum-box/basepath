@@ -1,6 +1,7 @@
 # Prototype Instructions
 
 - Keep local Rust checks to the minimum needed for the change; run broader Rust validation in CI (user request, 2026-09-12).
+- Tachyon's `cargo_lambda` builder compiles `pathbase-api` with **rustc 1.88.0**, which is older than the 1.95.0 this repo pins for local work and GitHub Actions. A dependency whose `rust-version` exceeds 1.88 fails the Cloud App build (`error: rustc 1.88.0 is not supported by the following packages`) after GitHub CI has already gone green. Before adding or upgrading a Rust dependency, check it with `cargo +1.88.0 check --locked --manifest-path api/Cargo.toml --bin lambda-pathbase-api` (observed 2026-09-18 with sqlx 0.9, which requires 1.94; the repo therefore stays on sqlx 0.8).
 
 ## Durable product decisions
 

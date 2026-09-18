@@ -13,12 +13,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let path = std::env::var("PATHBASE_DB").unwrap_or_else(|_| "data/pathbase.sqlite3".into());
-    let service = Service::open(std::path::Path::new(&path)).map_err(|e| e.message)?;
     let local_preview = std::env::var("PATHBASE_MODE").as_deref() == Ok("local-preview");
+    let service = Service::open_from_env(local_preview)
+        .await
+        .map_err(|e| e.message)?;
     if local_preview {
         service
             .initialize(std::env::var("PATHBASE_SEED_DEMO").as_deref() == Ok("1"))
+            .await
             .map_err(|e| e.message)?;
     }
     if args.iter().any(|arg| arg == "--mcp-stdio") {

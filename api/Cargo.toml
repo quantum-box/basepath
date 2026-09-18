@@ -10,7 +10,6 @@ axum = "0.8.9"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "io-std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -25,6 +24,7 @@ jsonwebtoken = "9.3"
 base64 = "0.22"
 url = "2"
 lambda_http = "0.13"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "mysql", "sqlite", "chrono"] }
 
 [[bin]]
 name = "lambda-pathbase-api"

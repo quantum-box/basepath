@@ -7,9 +7,11 @@ PathBase has two independent state classes:
 | State | Current implementation | Restart | Horizontal scale |
 | --- | --- | --- | --- |
 | Tachyon login session | AES-256-GCM `HttpOnly` cookie | survives when the same key is configured | safe; no affinity required |
-| Workspaces, memberships, documents, audit, idempotency | `/tmp/pathbase.sqlite3` in the Lambda execution environment | **may be lost** | **not safe**; execution environments diverge |
+| Workspaces, memberships, documents, audit, idempotency | Tachyon-managed TiDB via `DATABASE_URL` (SQLx / MySQL protocol) | survives | safe; writers serialize per workspace inside the database |
 
-`GET /api/health` deliberately reports `storage_durability: ephemeral-runtime`. Do not use a successful health check as evidence that application records are durable.
+`GET /api/health` reports what the running process actually persists to: `storage: tidb` with `storage_durability: shared-durable`, or `storage: sqlite` with `storage_durability: ephemeral-runtime` for the explicit local preview. A deployment that silently came up on the preview database is therefore visible from the health endpoint; do not treat `ephemeral-runtime` in production as durable.
+
+Production refuses to start without a database: `DATABASE_URL` (or `PATHBASE_DATABASE_URL`) is required whenever `PATHBASE_MODE` is not `local-preview`, and an unreachable database is a startup error. There is no SQLite fallback, because `/tmp` is local to one execution environment and would silently fork the data.
 
 Tachyon Storage/R2 is an object store for files. Copying a live SQLite database or its WAL to R2 is not a safe database: Lambda shutdown is not a commit protocol, and multiple execution environments cannot coordinate writes through object snapshots. No bucket or external database is created by this repository change.
 
@@ -24,17 +26,39 @@ The first key encrypts new cookies; later keys decrypt old cookies. Rotate witho
 
 Removing every old key immediately invalidates existing sessions. Logout clears the browser cookie but cannot centrally revoke a copied stateless cookie; upstream Tachyon token revocation and the short access-token expiry remain the revocation boundary. PathBase intentionally does not persist a refresh token in the cookie, so a user signs in again when the access token expires.
 
-## Database migration target
+## Storage boundary
 
-Before enabling production writes, replace the concrete `rusqlite::Connection` behind `Service` with a transactional shared SQL adapter (managed PostgreSQL is the expected shape) while retaining the service and HTTP contracts. The migration must preserve:
+`api/src/db.rs` is the only module that knows which backend is in use. It exposes a transaction (`Tx`) with portable `fetch_all` / `fetch_optional` / `execute`, and a `Dialect` that renders the statements the two dialects genuinely disagree about. The business services in `service.rs`, `collaboration.rs`, and `storage.rs` contain no backend conditionals, so HTTP, MCP, and the Tauri bridge all get the same contract.
 
-- primary and foreign keys, invitation constraints, and owner invariants;
-- atomic changesets and optimistic `expected_version` checks;
-- the `(actor, workspace_id, key)` idempotency uniqueness boundary;
-- JSON document fields and the indexes currently expressed with SQLite `json_extract`;
-- UTC timestamp semantics and the audit log.
+Schema lives in `api/migrations/{sqlite,mysql}/*.sql` and is applied by `Db::migrate`. Because TiDB does not roll DDL back with the surrounding DML, each statement is applied on its own and `schema_migrations` records the version only after the whole file succeeded; re-running an applied migration is a no-op.
 
-Use an explicit `PATHBASE_DATABASE_URL` secret for the shared adapter. Do not mount SQLite on Cloud Storage FUSE or advertise a persistent disk as horizontally writable.
+Dialect differences that were resolved rather than papered over:
+
+- **Placeholders** — `?` everywhere; values are always bound, never interpolated.
+- **Upsert / insert-ignore** — `Dialect::upsert` and `Dialect::insert_ignore` render `ON CONFLICT … DO UPDATE` or `ON DUPLICATE KEY UPDATE`, and `INSERT OR IGNORE` or `INSERT IGNORE`.
+- **Insertion order** — SQLite's `rowid` ordering is replaced by an application-assigned, lexicographically sortable `seq` column. AUTO_INCREMENT is deliberately not used: TiDB allocates it per node.
+- **JSON** — document bodies are `LONGTEXT` and are parsed in Rust. The previous `json_extract` index expressions and the one `json_extract` projection are gone; nothing depends on server-side JSON paths.
+- **Collation** — every production table is `utf8mb4_bin`, matching SQLite's BINARY comparison, so ids and idempotency keys cannot collide case-insensitively.
+- **Constraints** — no `FOREIGN KEY` or `CHECK` in either schema. TiDB does not enforce the equivalents by default, and a rule that held only in local preview would hide production bugs; roles, invitation status, and reference integrity are validated in the Rust service for both backends.
+- **Savepoints** — changeset previews validate the whole batch inside a savepoint and roll back to it; `Dialect::savepoint` renders MySQL's `ROLLBACK TO SAVEPOINT` / `RELEASE SAVEPOINT` spelling.
+
+Use an explicit `DATABASE_URL` (or `PATHBASE_DATABASE_URL`) secret, issued by Tachyon alongside the app. Do not mount SQLite on Cloud Storage FUSE or advertise a persistent disk as horizontally writable.
+
+## Concurrency
+
+SQLite serialized every writer with one file lock (`BEGIN IMMEDIATE`), which is what the existing business rules — `expected_version`, cycle checks, the last-owner invariant, changeset atomicity — were written against. TiDB's pessimistic transactions do not provide that for free:
+
+- a plain `SELECT` reads the transaction's start snapshot, so a writer could decide against state another writer had already replaced; and
+- row locks are only taken by statements that modify rows, so two writers could both read version 1 and both write version 2.
+
+Two measures restore the original contract:
+
+1. **Workspace lock.** Every write transaction takes `SELECT id FROM workspaces WHERE id=? FOR UPDATE` before reading anything. Writers of one workspace serialize; different workspaces do not block each other. Routes without a workspace segment (accepting an invitation) take the lock explicitly once the target workspace is known.
+2. **Locking reads.** Inside a write transaction, every read that feeds a decision is a `FOR UPDATE` read, so it sees the latest committed row rather than the start snapshot. Read-only transactions keep their consistent snapshot.
+
+TiDB write conflicts (9007) and lock timeouts/deadlocks (1213 / 1205) surface as `409 STORAGE_CONFLICT` rather than a 500, so a client retries rather than treating the request as malformed.
+
+`api/tests/tidb.rs` proves this against a real TiDB with independent `Service` instances (separate connection pools): version conflicts, cross-instance idempotency replay, double-applied changesets, a rolled-back batch, the last-owner invariant, concurrent cycle creation, and a replay after membership was revoked. The fixture asserts `SELECT tidb_version()` succeeds, so a plain MySQL cannot stand in for the check.
 
 ## Staged migration and failure behavior
 

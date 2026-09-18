@@ -214,7 +214,7 @@ async fn remote_mcp_auth_session_permissions_and_approval_are_stable() {
     assert_eq!(denied["isError"], true);
     assert_eq!(denied["structuredContent"]["code"], "APPROVAL_REQUIRED");
 
-    let service = Service::open(&db).unwrap();
+    let service = Service::open(&db.to_string_lossy()).await.unwrap();
     service
         .handle(
             &Actor::local(),
@@ -224,6 +224,7 @@ async fn remote_mcp_auth_session_permissions_and_approval_are_stable() {
             json!({}),
             Some("human-approval"),
         )
+        .await
         .unwrap();
     let (applied, _) = request(&client, &url, Some(&session), 10, "tools/call", apply).await;
     assert_eq!(applied["isError"], false);

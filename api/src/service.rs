@@ -1,16 +1,20 @@
-use crate::{model::*, storage::*};
+use crate::{
+    db::{Db, Tx},
+    model::*,
+    params,
+    storage::*,
+};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
-};
+use std::collections::{HashMap, HashSet};
 
+/// The business service. It owns a connection pool, not a connection: several
+/// Lambda execution environments run this code against the same TiDB database,
+/// so mutual exclusion has to come from database transactions.
 #[derive(Clone)]
 pub struct Service {
-    pub db: Arc<Mutex<Connection>>,
+    pub db: Db,
 }
 #[derive(Clone, Debug)]
 pub struct Actor {
@@ -89,20 +93,19 @@ fn latest_by_occurrence(records: &[Record]) -> HashMap<String, &Record> {
     result
 }
 
-fn weekly_summary(db: &Connection, w: &str, query: &HashMap<String, String>) -> Result<Value> {
+async fn weekly_summary(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
     let (start, end) = review_week(query)?;
-    let workspace: Workspace = db
-        .query_row("SELECT body FROM workspaces WHERE id=?1", [w], |r| {
-            r.get::<_, String>(0)
-        })
-        .optional()?
-        .map(|raw| serde_json::from_str(&raw))
-        .transpose()?
-        .ok_or_else(ApiError::missing)?;
-    let items: Vec<Item> = list(db, w, "items")?;
-    let records: Vec<Record> = list(db, w, "records")?;
-    let metrics: Vec<Metric> = list(db, w, "metrics")?;
-    let observations: Vec<Observation> = list(db, w, "observations")?;
+    let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+    let workspace: Workspace = serde_json::from_str(
+        &tx.fetch_optional(&sql, &params![w])
+            .await?
+            .ok_or_else(ApiError::missing)?
+            .text(0)?,
+    )?;
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let records: Vec<Record> = list(tx, w, "records").await?;
+    let metrics: Vec<Metric> = list(tx, w, "metrics").await?;
+    let observations: Vec<Observation> = list(tx, w, "observations").await?;
     let latest_occurrences = latest_by_occurrence(&records);
     let start_s = start.to_string();
     let end_s = end.to_string();
@@ -195,20 +198,21 @@ fn weekly_summary(db: &Connection, w: &str, query: &HashMap<String, String>) -> 
         json!({"metric_id":metric.id,"item_id":metric.item_id,"name":metric.name,"unit":metric.unit,"latest":latest.map(|o| o.value),"latest_observation_id":latest.map(|o| o.id.clone()),"previous":prior.map(|o| o.value),"delta":latest.zip(prior).map(|(a,b)|a.value-b.value),"status":if latest.is_none(){"unmeasured"}else if stale{"stale"}else{"current"}})
     }).collect();
     let members: Vec<Value> = if workspace.scope == "チーム" {
-        let mut stmt =
-            db.prepare("SELECT actor,role FROM memberships WHERE workspace_id=?1 ORDER BY actor")?;
-        let rows = stmt.query_map([w], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        let memberships = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-        memberships.into_iter().map(|(actor,role)| {
+        let rows = tx
+            .fetch_all(
+                "SELECT actor,role FROM memberships WHERE workspace_id=? ORDER BY actor",
+                &params![w],
+            )
+            .await?;
+        rows.iter().map(|row| {
+            let actor = row.text(0)?;
             let counts=member_counts.get(&actor).copied().unwrap_or_default();
-            json!({"actor":actor,"role":role,"completed":counts[0],"skipped":counts[1],"incomplete":counts[2]})
-        }).collect()
+            Ok(json!({"actor":actor,"role":row.text(1)?,"completed":counts[0],"skipped":counts[1],"incomplete":counts[2]}))
+        }).collect::<Result<Vec<_>>>()?
     } else {
         vec![]
     };
-    let mut reviews: Vec<WeeklyReview> = list(db, w, "weekly_reviews")?;
+    let mut reviews: Vec<WeeklyReview> = list(tx, w, "weekly_reviews").await?;
     reviews.retain(|r| r.week_start == start_s);
     reviews.sort_by_key(|r| r.revision);
     Ok(
@@ -233,7 +237,7 @@ pub(crate) fn version(v: &Value, current: i64) -> Result<()> {
 fn fingerprint(method: &str, path: &str, body: &Value) -> String {
     format!("{:x}", Sha256::digest(format!("{method}\n{path}\n{body}")))
 }
-fn validate_item(db: &Connection, item: &Item) -> Result<()> {
+async fn validate_item(tx: &mut Tx, item: &Item) -> Result<()> {
     if item.title.trim().is_empty()
         || item.title.chars().count() > 200
         || item.description.chars().count() > 10000
@@ -258,29 +262,28 @@ fn validate_item(db: &Connection, item: &Item) -> Result<()> {
         return Err(ApiError::invalid("優先度を確認してください"));
     }
     if let Some(assignee) = &item.fields.assignee_id {
-        let member: Option<String> = db
-            .query_row(
-                "SELECT actor FROM memberships WHERE workspace_id=?1 AND actor=?2",
-                params![item.workspace_id, assignee],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let member = role(tx, &item.workspace_id, assignee).await?;
         if member.is_none() {
             return Err(ApiError::invalid(
                 "担当者は現在のワークスペースメンバーから選択してください",
             ));
         }
-        let workspace: Workspace = serde_json::from_str(&db.query_row(
-            "SELECT body FROM workspaces WHERE id=?1",
-            [&item.workspace_id],
-            |row| row.get::<_, String>(0),
-        )?)?;
+        let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+        let workspace: Workspace = serde_json::from_str(
+            &tx.fetch_one(&sql, &params![&item.workspace_id])
+                .await?
+                .text(0)?,
+        )?;
         if workspace.scope == "個人" {
-            let owner: String = db.query_row(
-                "SELECT actor FROM memberships WHERE workspace_id=?1 AND role='owner' LIMIT 1",
-                [&item.workspace_id],
-                |row| row.get(0),
-            )?;
+            let sql = format!(
+                "SELECT actor FROM memberships WHERE workspace_id=? AND role='owner' \
+                 ORDER BY actor LIMIT 1{}",
+                tx.lock_reads()
+            );
+            let owner = tx
+                .fetch_one(&sql, &params![&item.workspace_id])
+                .await?
+                .text(0)?;
             if assignee != &owner {
                 return Err(ApiError::invalid("個人領域では本人だけを担当者にできます"));
             }
@@ -331,17 +334,13 @@ fn validate_item(db: &Connection, item: &Item) -> Result<()> {
         }
     }
     if let Some(id) = &item.fields.next_action_id {
-        let next: Item = get(db, &item.workspace_id, "items", id)?;
+        let next: Item = get(tx, &item.workspace_id, "items", id).await?;
         if next.kind != "action" {
             return Err(ApiError::invalid("次の一歩には行動を指定してください"));
         }
     }
     if let Some(actor) = &item.fields.assignee {
-        let member: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id=?1 AND actor=?2)",
-            params![item.workspace_id, actor],
-            |row| row.get(0),
-        )?;
+        let member = role(tx, &item.workspace_id, actor).await?.is_some();
         if !member {
             return Err(ApiError::invalid(
                 "担当者は同じワークスペースのメンバーから選んでください",
@@ -351,8 +350,8 @@ fn validate_item(db: &Connection, item: &Item) -> Result<()> {
     Ok(())
 }
 
-fn create_notification(
-    db: &Connection,
+async fn create_notification(
+    tx: &mut Tx,
     item: &Item,
     recipient: &str,
     kind: &str,
@@ -376,25 +375,22 @@ fn create_notification(
         created_at: now(),
         read_at: None,
     };
-    db.execute(
-        "INSERT OR IGNORE INTO documents(workspace_id,collection,id,body) VALUES(?1,'notifications',?2,?3)",
-        params![item.workspace_id, notification.id, serde_json::to_string(&notification)?],
-    )?;
+    let workspace_id = item.workspace_id.clone();
+    let id = notification.id.clone();
+    put_new(tx, &workspace_id, "notifications", &id, &notification).await?;
     Ok(())
 }
 
-fn sync_due_notifications(db: &Connection, workspace_id: &str, actor: &str) -> Result<()> {
-    let workspace: Workspace = serde_json::from_str(&db.query_row(
-        "SELECT body FROM workspaces WHERE id=?1",
-        [workspace_id],
-        |row| row.get::<_, String>(0),
-    )?)?;
+async fn sync_due_notifications(tx: &mut Tx, workspace_id: &str, actor: &str) -> Result<()> {
+    let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+    let workspace: Workspace =
+        serde_json::from_str(&tx.fetch_one(&sql, &params![workspace_id]).await?.text(0)?)?;
     let timezone: chrono_tz::Tz = workspace
         .timezone
         .parse()
         .map_err(|_| ApiError::invalid("ワークスペースのタイムゾーンが不正です"))?;
     let today = Utc::now().with_timezone(&timezone).date_naive();
-    for item in list::<Item>(db, workspace_id, "items")? {
+    for item in list::<Item>(tx, workspace_id, "items").await? {
         if item.archived_at.is_some()
             || item.state == "done"
             || item.fields.assignee_id.as_deref() != Some(actor)
@@ -413,13 +409,13 @@ fn sync_due_notifications(db: &Connection, workspace_id: &str, actor: &str) -> R
             1..=7 => ("due_soon", format!("7日以内が期限です: 「{}」", item.title)),
             _ => continue,
         };
-        create_notification(db, &item, actor, kind, raw_due, title)?;
+        create_notification(tx, &item, actor, kind, raw_due, title).await?;
     }
     Ok(())
 }
-fn validate_relation(db: &Connection, r: &Relation) -> Result<()> {
-    let _: Item = get(db, &r.workspace_id, "items", &r.source_id)?;
-    let _: Item = get(db, &r.workspace_id, "items", &r.target_id)?;
+async fn validate_relation(tx: &mut Tx, r: &Relation) -> Result<()> {
+    let _: Item = get(tx, &r.workspace_id, "items", &r.source_id).await?;
+    let _: Item = get(tx, &r.workspace_id, "items", &r.target_id).await?;
     if r.source_id == r.target_id {
         return Err(ApiError::new(
             422,
@@ -432,7 +428,7 @@ fn validate_relation(db: &Connection, r: &Relation) -> Result<()> {
     {
         return Err(ApiError::invalid("不明な関係です"));
     }
-    let all: Vec<Relation> = list(db, &r.workspace_id, "relations")?;
+    let all: Vec<Relation> = list(tx, &r.workspace_id, "relations").await?;
     let same: Vec<_> = all
         .iter()
         .filter(|x| x.id != r.id && x.relation_type == r.relation_type)
@@ -476,11 +472,25 @@ fn validate_relation(db: &Connection, r: &Relation) -> Result<()> {
 }
 
 impl Service {
-    pub fn provision_personal(&self, actor: &Actor) -> Result<()> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "Storage unavailable"))?;
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    /// Opens the database for the current runtime mode and applies migrations.
+    pub async fn open_from_env(local_preview: bool) -> Result<Self> {
+        let db = crate::db::connect_from_env(local_preview).await?;
+        db.migrate().await?;
+        Ok(Self { db })
+    }
+
+    /// Opens a database by URL (or local file path) and applies migrations.
+    pub async fn open(url: &str) -> Result<Self> {
+        let db = Db::connect(url).await?;
+        db.migrate().await?;
+        Ok(Self { db })
+    }
+
+    pub async fn provision_personal(&self, actor: &Actor) -> Result<()> {
         let w = format!("personal-{:x}", Sha256::digest(actor.id.as_bytes()));
         let workspace = Workspace {
             id: w.clone(),
@@ -491,44 +501,37 @@ impl Service {
             local: false,
             version: 1,
         };
-        db.execute(
-            "INSERT OR IGNORE INTO workspaces VALUES(?1,?2)",
-            params![w, serde_json::to_string(&workspace)?],
-        )?;
-        db.execute(
-            "INSERT OR IGNORE INTO memberships VALUES(?1,?2,'owner')",
-            params![w, actor.id],
-        )?;
-        Ok(())
+        let mut tx = self.db.begin_write().await?;
+        let sql = tx
+            .dialect()
+            .insert_ignore("workspaces", &["id", "body", "seq"]);
+        tx.execute(
+            &sql,
+            &params![&w, serde_json::to_string(&workspace)?, sequence()],
+        )
+        .await?;
+        let sql = tx
+            .dialect()
+            .insert_ignore("memberships", &["workspace_id", "actor", "role"]);
+        tx.execute(&sql, &params![&w, &actor.id, "owner"]).await?;
+        tx.commit().await
     }
 
-    pub fn open(path: &std::path::Path) -> Result<Self> {
-        if let Some(p) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(p)
-                .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "保存先を作成できません"))?;
+    /// Seeds the local preview workspaces. Never runs against production.
+    pub async fn initialize(&self, demo: bool) -> Result<()> {
+        let mut tx = self.db.begin_write().await?;
+        let empty = tx
+            .fetch_one("SELECT COUNT(*) FROM workspaces", &[])
+            .await?
+            .int(0)?
+            == 0;
+        if empty {
+            crate::seed::seed(&mut tx, demo).await?;
         }
-        let db = Connection::open(path)?;
-        crate::storage::migrate(&db)?;
-        Ok(Self {
-            db: Arc::new(Mutex::new(db)),
-        })
+        tx.commit().await
     }
-    pub fn initialize(&self, demo: bool) -> Result<()> {
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "保存処理を再起動してください"))?;
-        if db.query_row("SELECT COUNT(*) FROM workspaces", [], |r| {
-            r.get::<_, i64>(0)
-        })? == 0
-        {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            crate::seed::seed(&tx, demo)?;
-            tx.commit()?;
-        }
-        Ok(())
-    }
-    pub fn handle(
+
+    pub async fn handle(
         &self,
         actor: &Actor,
         method: &str,
@@ -538,8 +541,9 @@ impl Service {
         key: Option<&str>,
     ) -> Result<Value> {
         self.handle_internal(actor, (method, path), query, body, key, None)
+            .await
     }
-    pub fn handle_derived(
+    pub async fn handle_derived(
         &self,
         actor: &Actor,
         original_path: &str,
@@ -547,16 +551,18 @@ impl Service {
         operation: Operation,
         key: Option<&str>,
     ) -> Result<Value> {
+        let fingerprint = fingerprint("POST", original_path, original_body);
         self.handle_internal(
             actor,
             (&operation.method, &operation.path),
             &HashMap::new(),
             operation.body,
             key,
-            Some(fingerprint("POST", original_path, original_body)),
+            Some(fingerprint),
         )
+        .await
     }
-    fn handle_internal(
+    async fn handle_internal(
         &self,
         actor: &Actor,
         route: (&str, &str),
@@ -566,10 +572,6 @@ impl Service {
         fingerprint_override: Option<String>,
     ) -> Result<Value> {
         let (method, path) = route;
-        let mut db = self
-            .db
-            .lock()
-            .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "保存処理を再起動してください"))?;
         let parts: Vec<_> = path.trim_matches('/').split('/').collect();
         let w = if parts.get(1) == Some(&"workspaces") {
             parts.get(2).copied().unwrap_or("")
@@ -585,15 +587,24 @@ impl Service {
             && parts.as_slice() != ["v1", "workspaces", w, "leave"]
             && !notification_read
             && !suggestion_preview;
-        if !w.is_empty() {
-            authorize(&db, &actor.id, w, workspace_write)?;
-        }
         if method == "GET" {
-            if parts.get(3) == Some(&"snapshot") && !w.is_empty() {
-                sync_due_notifications(&db, w, &actor.id)?;
+            let mut tx = self.db.begin_read().await?;
+            if !w.is_empty() {
+                authorize(&mut tx, &actor.id, w, workspace_write).await?;
             }
-            let tx = db.transaction()?;
-            return dispatch(&tx, actor, method, path, query, &body);
+            if parts.get(3) == Some(&"snapshot") && !w.is_empty() {
+                // Derived reminders are written inside their own transaction so
+                // a read request never holds a write lock it does not need.
+                drop(tx);
+                let mut write = self.db.begin_write().await?;
+                write.lock_workspace(w).await?;
+                authorize(&mut write, &actor.id, w, false).await?;
+                sync_due_notifications(&mut write, w, &actor.id).await?;
+                write.commit().await?;
+                tx = self.db.begin_read().await?;
+                authorize(&mut tx, &actor.id, w, workspace_write).await?;
+            }
+            return dispatch(&mut tx, actor, method, path, query, &body).await;
         }
         let key = key
             .filter(|k| !k.is_empty() && k.len() <= 200)
@@ -611,53 +622,85 @@ impl Service {
             ));
         }
         let fp = fingerprint_override.unwrap_or_else(|| fingerprint(method, path, &body));
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut tx = self.db.begin_write().await?;
+        // Serialize writers of this workspace before reading anything, so a
+        // read-then-write sequence cannot interleave with another execution
+        // environment's.
+        tx.lock_workspace(w).await?;
         // Recheck inside the write transaction, including before an idempotent replay.
         if !w.is_empty() {
-            authorize(&tx, &actor.id, w, workspace_write)?;
+            authorize(&mut tx, &actor.id, w, workspace_write).await?;
         }
-        crate::collaboration::authorize_route(&tx, actor, method, &parts)?;
+        crate::collaboration::authorize_route(&mut tx, actor, method, &parts).await?;
         let idempotency_actor = format!(
             "{}:{}",
             actor.id,
             if actor.agent { "agent" } else { "human" }
         );
-        let prior:Option<(String,String)>=tx.query_row("SELECT fingerprint,response FROM idempotency WHERE actor=?1 AND workspace_id=?2 AND key=?3",params![idempotency_actor,w,key],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
-        if let Some((hash, response)) = prior {
-            if hash != fp {
+        let sql = format!(
+            "SELECT fingerprint,response FROM idempotency \
+             WHERE actor=? AND workspace_id=? AND `key`=?{}",
+            tx.lock_reads()
+        );
+        let prior = tx
+            .fetch_optional(&sql, &params![&idempotency_actor, w, key])
+            .await?;
+        if let Some(row) = prior {
+            if row.text(0)? != fp {
                 return Err(ApiError::new(
                     409,
                     "IDEMPOTENCY_CONFLICT",
                     "この再送キーは別の入力で使用されています",
                 ));
             }
-            let response = serde_json::from_str(&response)?;
-            crate::collaboration::authorize_replay(&tx, method, &parts, &response)?;
+            let response: Value = serde_json::from_str(&row.text(1)?)?;
+            crate::collaboration::authorize_replay(&mut tx, method, &parts, &response).await?;
             return Ok(response);
         }
-        let result = dispatch(&tx, actor, method, path, query, &body)?;
+        let result = dispatch(&mut tx, actor, method, path, query, &body).await?;
         tx.execute(
-            "INSERT INTO idempotency VALUES(?1,?2,?3,?4,?5,?6)",
-            params![idempotency_actor, w, key, fp, result.to_string(), now()],
-        )?;
+            "INSERT INTO idempotency(actor,workspace_id,`key`,fingerprint,response,created_at) \
+             VALUES(?,?,?,?,?,?)",
+            &params![&idempotency_actor, w, key, fp, result.to_string(), now()],
+        )
+        .await?;
         tx.execute(
-            "INSERT INTO audit VALUES(?1,?2,?3,?4,?5,?6)",
-            params![
+            "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq) \
+             VALUES(?,?,?,?,?,?,?)",
+            &params![
                 new_id("audit"),
                 w,
-                actor.id,
+                &actor.id,
                 if actor.agent { "mcp" } else { "ui" },
                 format!("{method} {path}"),
-                now()
+                now(),
+                sequence()
             ],
-        )?;
-        tx.commit()?;
+        )
+        .await?;
+        tx.commit().await?;
         Ok(result)
     }
 }
 
-pub fn dispatch(
-    db: &Connection,
+/// Routes one request against an open transaction.
+///
+/// Boxed because plan templates, onboarding, and approved changesets re-enter
+/// `dispatch` for each derived operation; a plain `async fn` would need an
+/// infinitely sized future.
+pub fn dispatch<'a>(
+    tx: &'a mut Tx,
+    actor: &'a Actor,
+    method: &'a str,
+    path: &'a str,
+    query: &'a HashMap<String, String>,
+    body: &'a Value,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
+    Box::pin(dispatch_inner(tx, actor, method, path, query, body))
+}
+
+async fn dispatch_inner(
+    tx: &mut Tx,
     actor: &Actor,
     method: &str,
     path: &str,
@@ -665,8 +708,8 @@ pub fn dispatch(
     body: &Value,
 ) -> Result<Value> {
     let p: Vec<_> = path.trim_matches('/').split('/').collect();
-    if let Some(result) = crate::collaboration::dispatch(db, actor, method, &p, body) {
-        return result;
+    if crate::collaboration::routes(method, &p) {
+        return crate::collaboration::dispatch(tx, actor, method, &p, body).await;
     }
     match (method, p.as_slice()) {
         ("GET", ["v1", "me"]) => {
@@ -674,16 +717,17 @@ pub fn dispatch(
                 json!({"id":actor.id,"name":"やまだ はるか","mode":"local-preview","agent":actor.agent}),
             )
         }
-        ("GET", ["v1", "workspaces"]) => return value(memberships(db, &actor.id)?),
+        ("GET", ["v1", "workspaces"]) => return value(memberships(tx, &actor.id).await?),
         ("GET", ["v1", "templates"]) => return Ok(templates()),
         ("GET", ["v1", "settings"]) => {
-            let raw: Option<String> = db
-                .query_row(
-                    "SELECT body FROM settings WHERE actor=?1",
-                    [&actor.id],
-                    |r| r.get(0),
+            let raw = tx
+                .fetch_optional(
+                    "SELECT body FROM settings WHERE actor=?",
+                    &params![&actor.id],
                 )
-                .optional()?;
+                .await?
+                .map(|row| row.text(0))
+                .transpose()?;
             return Ok(raw
                 .map(|x| serde_json::from_str(&x))
                 .transpose()?
@@ -697,7 +741,11 @@ pub fn dispatch(
             {
                 return Err(ApiError::invalid("設定値を確認してください"));
             }
-            db.execute("INSERT INTO settings VALUES(?1,?2) ON CONFLICT(actor) DO UPDATE SET body=excluded.body",params![actor.id,body.to_string()])?;
+            let sql = tx
+                .dialect()
+                .upsert("settings", &["actor", "body"], &["actor"], &["body"]);
+            tx.execute(&sql, &params![&actor.id, body.to_string()])
+                .await?;
             return Ok(body.clone());
         }
         _ => {}
@@ -713,11 +761,12 @@ pub fn dispatch(
         p.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
     let notification_read = method == "PATCH" && col == "notifications" && suffix == "read";
     authorize(
-        db,
+        tx,
         &actor.id,
         w,
         method != "GET" && !suggestion_preview && !notification_read,
-    )?;
+    )
+    .await?;
     if actor.agent
         && method != "GET"
         && !(col == "changesets" && (id == "preview" || suffix == "apply"))
@@ -729,7 +778,7 @@ pub fn dispatch(
         ));
     }
     match (method, col, id, suffix) {
-        ("GET", "weekly-review", "", "") => weekly_summary(db, w, query),
+        ("GET", "weekly-review", "", "") => weekly_summary(tx, w, query).await,
         ("POST", "weekly-reviews", "draft", "") => {
             only(
                 body,
@@ -751,7 +800,7 @@ pub fn dispatch(
                     ));
                 }
             }
-            let mut reviews: Vec<WeeklyReview> = list(db, w, "weekly_reviews")?;
+            let mut reviews: Vec<WeeklyReview> = list(tx, w, "weekly_reviews").await?;
             reviews.retain(|r| r.week_start == start.to_string());
             reviews.sort_by_key(|r| r.revision);
             let latest = reviews.last();
@@ -785,12 +834,12 @@ pub fn dispatch(
             review.challenges = text(body, "challenges").into();
             review.next_focus = text(body, "next_focus").into();
             let review_id = review.id.clone();
-            put(db, w, "weekly_reviews", &review_id, &review)?;
+            put(tx, w, "weekly_reviews", &review_id, &review).await?;
             value(review)
         }
         ("POST", "weekly-reviews", id, "finalize") if !id.is_empty() => {
             only(body, &["expected_version"])?;
-            let mut review: WeeklyReview = get(db, w, "weekly_reviews", id)?;
+            let mut review: WeeklyReview = get(tx, w, "weekly_reviews", id).await?;
             version(body, review.version)?;
             if review.status != "draft" {
                 return Err(ApiError::new(
@@ -809,11 +858,11 @@ pub fn dispatch(
             review.version += 1;
             review.updated_at = now();
             review.finalized_at = Some(review.updated_at.clone());
-            put(db, w, "weekly_reviews", id, &review)?;
+            put(tx, w, "weekly_reviews", id, &review).await?;
             value(review)
         }
         ("POST", "ai", "suggestions", "preview") if !actor.agent => {
-            crate::suggestions::preview(db, w, body)
+            crate::suggestions::preview(tx, w, body).await
         }
         ("GET", "snapshot", "", "") => {
             let cols = [
@@ -828,10 +877,11 @@ pub fn dispatch(
             ];
             let mut result = json!({"workspace_id":w});
             for col in cols {
-                result[col] = value(list::<Value>(db, w, col)?)?;
+                result[col] = value(list::<Value>(tx, w, col).await?)?;
             }
             result["notifications"] = value(
-                list::<Notification>(db, w, "notifications")?
+                list::<Notification>(tx, w, "notifications")
+                    .await?
                     .into_iter()
                     .filter(|notification| notification.recipient == actor.id)
                     .collect::<Vec<_>>(),
@@ -844,8 +894,8 @@ pub fn dispatch(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(200)
                 .clamp(1, 200);
-            let items: Vec<Item> = list(db, w, "items")?;
-            let relations: Vec<Relation> = list(db, w, "relations")?;
+            let items: Vec<Item> = list(tx, w, "items").await?;
+            let relations: Vec<Relation> = list(tx, w, "relations").await?;
             let items: Vec<_> = items
                 .into_iter()
                 .filter(|i| i.archived_at.is_none())
@@ -884,8 +934,8 @@ pub fn dispatch(
             if timezone.parse::<chrono_tz::Tz>().is_err() {
                 return Err(ApiError::invalid("タイムゾーンを確認してください"));
             }
-            let items: Vec<Item> = list(db, w, "items")?;
-            let records: Vec<Record> = list(db, w, "records")?;
+            let items: Vec<Item> = list(tx, w, "items").await?;
+            let records: Vec<Record> = list(tx, w, "records").await?;
             let active: Vec<_> = items
                 .iter()
                 .filter(|item| item.archived_at.is_none())
@@ -947,8 +997,8 @@ pub fn dispatch(
             });
             date(&Some(d.clone()))?;
             let day = NaiveDate::parse_from_str(&d, "%Y-%m-%d").unwrap();
-            let items: Vec<Item> = list(db, w, "items")?;
-            let records: Vec<Record> = list(db, w, "records")?;
+            let items: Vec<Item> = list(tx, w, "items").await?;
+            let records: Vec<Record> = list(tx, w, "records").await?;
             let items: Vec<Value> = items
                 .into_iter()
                 .filter(|i| {
@@ -986,9 +1036,14 @@ pub fn dispatch(
             Ok(json!({"local_date":d,"items":items}))
         }
         ("GET", "audit", "", "") => {
-            let mut q=db.prepare("SELECT id,command,created_at,origin,actor FROM audit WHERE workspace_id=?1 ORDER BY rowid DESC LIMIT 100")?;
-            let rows=q.query_map([w],|r|Ok(json!({"id":r.get::<_,String>(0)?,"command":r.get::<_,String>(1)?,"created_at":r.get::<_,String>(2)?,"origin":r.get::<_,String>(3)?,"actor":r.get::<_,String>(4)?})))?;
-            value(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+            let rows = tx
+                .fetch_all(
+                    "SELECT id,command,created_at,origin,actor FROM audit \
+                     WHERE workspace_id=? ORDER BY seq DESC LIMIT 100",
+                    &params![w],
+                )
+                .await?;
+            value(rows.iter().map(|r| Ok(json!({"id":r.text(0)?,"command":r.text(1)?,"created_at":r.text(2)?,"origin":r.text(3)?,"actor":r.text(4)?}))).collect::<Result<Vec<_>>>()?)
         }
         ("GET", col, "", "")
             if [
@@ -1003,7 +1058,7 @@ pub fn dispatch(
             ]
             .contains(&col) =>
         {
-            let mut items: Vec<Value> = list(db, w, col)?;
+            let mut items: Vec<Value> = list(tx, w, col).await?;
             items.retain(|i| {
                 (col != "items"
                     || query.get("archived").is_some_and(|v| v == "true")
@@ -1051,7 +1106,7 @@ pub fn dispatch(
                 ]
                 .contains(&col) =>
         {
-            get(db, w, col, id)
+            get(tx, w, col, id).await
         }
         ("POST", "items", "", "") => {
             only(
@@ -1091,9 +1146,9 @@ pub fn dispatch(
                     serde_json::from_value(body["fields"].clone())?
                 },
             };
-            validate_item(db, &item)?;
+            validate_item(tx, &item).await?;
             if let Some(reference) = &item.fields.field_reference {
-                if let Some(existing) = list::<Item>(db, w, "items")?.into_iter().find(|i| {
+                if let Some(existing) = list::<Item>(tx, w, "items").await?.into_iter().find(|i| {
                     i.fields.field_reference.as_ref().is_some_and(|r| {
                         r.tenant_id == reference.tenant_id
                             && r.external_id == reference.external_id
@@ -1103,16 +1158,17 @@ pub fn dispatch(
                     return value(existing);
                 }
             }
-            put(db, w, "items", &item.id, &item)?;
+            put(tx, w, "items", &item.id, &item).await?;
             if let Some(assignee) = &item.fields.assignee_id {
                 create_notification(
-                    db,
+                    tx,
                     &item,
                     assignee,
                     "assignment",
                     &item.version.to_string(),
                     format!("「{}」の担当になりました", item.title),
-                )?;
+                )
+                .await?;
             }
             if let Some(parent) = body["parent_id"].as_str() {
                 let r = Relation {
@@ -1124,8 +1180,8 @@ pub fn dispatch(
                     rationale: String::new(),
                     version: 1,
                 };
-                validate_relation(db, &r)?;
-                put(db, w, "relations", &r.id, &r)?;
+                validate_relation(tx, &r).await?;
+                put(tx, w, "relations", &r.id, &r).await?;
             }
             value(item)
         }
@@ -1145,7 +1201,7 @@ pub fn dispatch(
                     "archived_at",
                 ],
             )?;
-            let old: Item = get(db, w, "items", id)?;
+            let old: Item = get(tx, w, "items", id).await?;
             version(body, old.version)?;
             let mut v = value(&old)?;
             for (key, val) in body.as_object().unwrap() {
@@ -1178,46 +1234,48 @@ pub fn dispatch(
             item.title = item.title.trim().into();
             item.version += 1;
             item.updated_at = now();
-            validate_item(db, &item)?;
+            validate_item(tx, &item).await?;
             if old.fields.recurrence != item.fields.recurrence {
                 /* Historical definitions stay in immutable records. */
                 let rec = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],"record_type":"recurrence_change","body":serde_json::to_string(&old.fields.recurrence)?,"happened_at":now(),"created_at":now(),"author":actor.id});
-                put(db, w, "records", text(&rec, "id"), &rec)?;
+                put(tx, w, "records", text(&rec, "id"), &rec).await?;
             }
             if old.fields.assignee_id != item.fields.assignee_id {
                 let record = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],"record_type":"assignment_change","body":json!({"from":old.fields.assignee_id,"to":item.fields.assignee_id}).to_string(),"happened_at":now(),"created_at":now(),"author":actor.id});
-                put(db, w, "records", text(&record, "id"), &record)?;
+                put(tx, w, "records", text(&record, "id"), &record).await?;
                 if let Some(assignee) = &item.fields.assignee_id {
                     create_notification(
-                        db,
+                        tx,
                         &item,
                         assignee,
                         "assignment",
                         &item.version.to_string(),
                         format!("「{}」の担当になりました", item.title),
-                    )?;
+                    )
+                    .await?;
                 }
             }
             if old.start_date != item.start_date || old.due_date != item.due_date {
                 let record = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],"record_type":"schedule_change","body":json!({"start_date":{"from":old.start_date,"to":item.start_date},"due_date":{"from":old.due_date,"to":item.due_date}}).to_string(),"happened_at":now(),"created_at":now(),"author":actor.id});
-                put(db, w, "records", text(&record, "id"), &record)?;
+                put(tx, w, "records", text(&record, "id"), &record).await?;
                 if let Some(assignee) = &item.fields.assignee_id {
                     create_notification(
-                        db,
+                        tx,
                         &item,
                         assignee,
                         "due_date",
                         item.due_date.as_deref().unwrap_or("none"),
                         format!("「{}」の期限が更新されました", item.title),
-                    )?;
+                    )
+                    .await?;
                 }
             }
-            put(db, w, "items", id, &item)?;
+            put(tx, w, "items", id, &item).await?;
             value(item)
         }
         ("PATCH", "notifications", id, "read") if !id.is_empty() => {
             only(body, &["read"])?;
-            let mut notification: Notification = get(db, w, "notifications", id)?;
+            let mut notification: Notification = get(tx, w, "notifications", id).await?;
             if notification.recipient != actor.id {
                 return Err(ApiError::missing());
             }
@@ -1226,7 +1284,7 @@ pub fn dispatch(
             } else {
                 Some(now())
             };
-            put(db, w, "notifications", id, &notification)?;
+            put(tx, w, "notifications", id, &notification).await?;
             value(notification)
         }
         ("POST", "actions", id, "complete" | "reopen" | "skip") => {
@@ -1234,7 +1292,7 @@ pub fn dispatch(
                 body,
                 &["expected_version", "local_date", "completed_at", "note"],
             )?;
-            let mut item: Item = get(db, w, "items", id)?;
+            let mut item: Item = get(tx, w, "items", id).await?;
             version(body, item.version)?;
             if item.kind != "action"
                 || item.archived_at.is_some()
@@ -1260,7 +1318,7 @@ pub fn dispatch(
                 }
             }
             let occurrence = format!("{id}:{d}");
-            let records: Vec<Record> = list(db, w, "records")?;
+            let records: Vec<Record> = list(tx, w, "records").await?;
             let prior = records
                 .iter()
                 .rev()
@@ -1303,18 +1361,19 @@ pub fn dispatch(
                 occurrence_key: Some(occurrence),
                 supersedes_id: prior.map(|r| r.id.clone()),
             };
-            put(db, w, "items", id, &item)?;
-            put(db, w, "records", &rec.id, &rec)?;
+            put(tx, w, "items", id, &item).await?;
+            put(tx, w, "records", &rec.id, &rec).await?;
             if suffix == "complete" {
                 if let Some(assignee) = item.fields.assignee_id.clone() {
                     create_notification(
-                        db,
+                        tx,
                         &item,
                         &assignee,
                         "completion",
                         rec.occurrence_key.as_deref().unwrap_or(&rec.id),
                         format!("「{}」が完了しました", item.title),
-                    )?;
+                    )
+                    .await?;
                 }
             }
             Ok(json!({"item":item,"record":rec,"outcome_updated":false}))
@@ -1330,14 +1389,14 @@ pub fn dispatch(
                 rationale: text(body, "rationale").into(),
                 version: 1,
             };
-            validate_relation(db, &r)?;
-            put(db, w, col, &r.id, &r)?;
+            validate_relation(tx, &r).await?;
+            put(tx, w, col, &r.id, &r).await?;
             value(r)
         }
         ("DELETE", "relations", id, "") => {
-            let r: Relation = get(db, w, col, id)?;
+            let r: Relation = get(tx, w, col, id).await?;
             version(body, r.version)?;
-            remove(db, w, col, id)?;
+            remove(tx, w, col, id).await?;
             Ok(json!({"id":id,"deleted":true}))
         }
         ("POST", "records", "", "") => {
@@ -1355,7 +1414,7 @@ pub fn dispatch(
             let ids: Vec<String> =
                 serde_json::from_value(body.get("item_ids").cloned().unwrap_or(json!([])))?;
             for id in &ids {
-                let _: Item = get(db, w, "items", id)?;
+                let _: Item = get(tx, w, "items", id).await?;
             }
             let kind = body["record_type"].as_str().unwrap_or("note");
             if !["note", "review", "learning", "checkin"].contains(&kind) {
@@ -1363,7 +1422,7 @@ pub fn dispatch(
             }
             let supersedes: Option<String> = serde_json::from_value(body["supersedes_id"].clone())?;
             if let Some(id) = &supersedes {
-                let old: Record = get(db, w, col, id)?;
+                let old: Record = get(tx, w, col, id).await?;
                 if old.record_type != kind {
                     return Err(ApiError::invalid("同じ種類の記録だけ訂正できます"));
                 }
@@ -1386,7 +1445,7 @@ pub fn dispatch(
                 occurrence_key: None,
                 supersedes_id: supersedes,
             };
-            put(db, w, col, &r.id, &r)?;
+            put(tx, w, col, &r.id, &r).await?;
             value(r)
         }
         ("POST", "metrics", "", "") => {
@@ -1420,9 +1479,9 @@ pub fn dispatch(
                 period_end: serde_json::from_value(body["period_end"].clone())?,
                 version: 1,
             };
-            let _: Item = get(db, w, "items", &m.item_id)?;
+            let _: Item = get(tx, w, "items", &m.item_id).await?;
             validate_metric(&m)?;
-            put(db, w, col, &m.id, &m)?;
+            put(tx, w, col, &m.id, &m).await?;
             value(m)
         }
         ("POST", "observations", "", "") => {
@@ -1437,7 +1496,7 @@ pub fn dispatch(
                     "supersedes_id",
                 ],
             )?;
-            let metric: Metric = get(db, w, "metrics", text(body, "metric_id"))?;
+            let metric: Metric = get(tx, w, "metrics", text(body, "metric_id")).await?;
             if text(body, "unit") != metric.unit {
                 return Err(ApiError::new(
                     422,
@@ -1452,11 +1511,12 @@ pub fn dispatch(
             timestamp(&observed)?;
             let supersedes: Option<String> = serde_json::from_value(body["supersedes_id"].clone())?;
             if let Some(id) = &supersedes {
-                let old: Observation = get(db, w, col, id)?;
+                let old: Observation = get(tx, w, col, id).await?;
                 if old.metric_id != metric.id {
                     return Err(ApiError::invalid("同じ指標の観測だけ訂正できます"));
                 }
-                if list::<Observation>(db, w, col)?
+                if list::<Observation>(tx, w, col)
+                    .await?
                     .iter()
                     .any(|o| o.supersedes_id.as_ref() == Some(id))
                 {
@@ -1480,7 +1540,7 @@ pub fn dispatch(
                 created_at: now(),
                 supersedes_id: supersedes,
             };
-            put(db, w, col, &o.id, &o)?;
+            put(tx, w, col, &o.id, &o).await?;
             value(o)
         }
         ("POST", "views", "", "") => {
@@ -1489,27 +1549,28 @@ pub fn dispatch(
                 return Err(ApiError::invalid("不明なビューです"));
             }
             let v = json!({"id":new_id("view"),"workspace_id":w,"name":title(body,"name",200)?,"type":body["type"],"filters":body.get("filters").cloned().unwrap_or(json!({})),"version":1});
-            put(db, w, col, text(&v, "id"), &v)?;
+            put(tx, w, col, text(&v, "id"), &v).await?;
             Ok(v)
         }
         ("POST", "views", id, "query") => {
-            let view: Value = get(db, w, "views", id)?;
+            let view: Value = get(tx, w, "views", id).await?;
             let filters: HashMap<String, String> = serde_json::from_value(view["filters"].clone())?;
             dispatch(
-                db,
+                tx,
                 actor,
                 "GET",
                 &format!("/v1/workspaces/{w}/items"),
                 &filters,
                 &Value::Null,
             )
+            .await
         }
-        ("POST", "templates", id, "apply") => apply_template(db, actor, w, id, body),
-        ("POST", "onboarding", "complete", "") => complete_onboarding(db, actor, w, body),
-        ("POST", "changesets", "preview", "") => preview(db, actor, w, body),
+        ("POST", "templates", id, "apply") => apply_template(tx, actor, w, id, body).await,
+        ("POST", "onboarding", "complete", "") => complete_onboarding(tx, actor, w, body).await,
+        ("POST", "changesets", "preview", "") => preview(tx, actor, w, body).await,
         ("POST", "changesets", id, "approve") if !actor.agent => {
-            let mut c: Value = get(db, w, col, id)?;
-            validate_preview(db, w, &c)?;
+            let mut c: Value = get(tx, w, col, id).await?;
+            validate_preview(tx, w, &c).await?;
             if c["status"] != "pending" {
                 return Err(ApiError::new(
                     409,
@@ -1520,12 +1581,12 @@ pub fn dispatch(
             c["approved_by"] = json!(actor.id);
             c["status"] = json!("approved");
             c["approved_hash"] = c["hash"].clone();
-            put(db, w, col, id, &c)?;
+            put(tx, w, col, id, &c).await?;
             Ok(c)
         }
         ("POST", "changesets", id, "apply") => {
-            let mut c: Value = get(db, w, col, id)?;
-            validate_preview(db, w, &c)?;
+            let mut c: Value = get(tx, w, col, id).await?;
+            validate_preview(tx, w, &c).await?;
             if c["status"] != "approved"
                 || c["approved_hash"] != c["hash"]
                 || c["approved_by"] != actor.id
@@ -1543,18 +1604,13 @@ pub fn dispatch(
             };
             let mut output = vec![];
             for op in ops {
-                output.push(dispatch(
-                    db,
-                    &human,
-                    &op.method,
-                    &op.path,
-                    &HashMap::new(),
-                    &op.body,
-                )?);
+                output.push(
+                    dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?,
+                );
             }
             c["status"] = json!("applied");
             c["applied_at"] = json!(now());
-            put(db, w, col, id, &c)?;
+            put(tx, w, col, id, &c).await?;
             Ok(json!({"changeset":c,"results":output}))
         }
         ("POST", "exports", "", "") if !actor.agent => {
@@ -1569,16 +1625,16 @@ pub fn dispatch(
                 "views",
                 "weekly_reviews",
             ] {
-                backup[col] = value(list::<Value>(db, w, col)?)?;
+                backup[col] = value(list::<Value>(tx, w, col).await?)?;
             }
             Ok(backup)
         }
-        ("POST", "imports", "", "") if !actor.agent => import(db, w, body),
+        ("POST", "imports", "", "") if !actor.agent => import(tx, w, body).await,
         _ => Err(ApiError::missing()),
     }
 }
 
-fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) -> Result<Value> {
+async fn complete_onboarding(tx: &mut Tx, actor: &Actor, w: &str, body: &Value) -> Result<Value> {
     only(
         body,
         &[
@@ -1599,7 +1655,8 @@ fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) ->
     }
     let due_date: Option<String> = serde_json::from_value(body["due_date"].clone())?;
     date(&due_date)?;
-    if list::<Item>(db, w, "items")?
+    if list::<Item>(tx, w, "items")
+        .await?
         .iter()
         .any(|item| item.archived_at.is_none())
     {
@@ -1612,7 +1669,7 @@ fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) ->
 
     let base = format!("/v1/workspaces/{w}");
     let mut goal = dispatch(
-        db,
+        tx,
         actor,
         "POST",
         &format!("{base}/items"),
@@ -1624,7 +1681,8 @@ fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) ->
             "due_date": due_date,
             "fields": { "icon": "target" }
         }),
-    )?;
+    )
+    .await?;
 
     let initiative_title = text(body, "initiative_title").trim();
     let action_title = text(body, "action_title").trim();
@@ -1635,13 +1693,13 @@ fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) ->
             return Err(ApiError::invalid("取り組みは200文字以内で入力してください"));
         }
         initiative = dispatch(
-            db,
+            tx,
             actor,
             "POST",
             &format!("{base}/items"),
             &HashMap::new(),
             &json!({"title":initiative_title,"kind":"initiative","parent_id":goal["id"],"fields":{"icon":"flag"}}),
-        )?;
+        ).await?;
     }
     if !action_title.is_empty() {
         if action_title.chars().count() > 200 {
@@ -1649,21 +1707,23 @@ fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) ->
         }
         let parent = initiative["id"].as_str().or_else(|| goal["id"].as_str());
         action = dispatch(
-            db,
+            tx,
             actor,
             "POST",
             &format!("{base}/items"),
             &HashMap::new(),
             &json!({"title":action_title,"kind":"action","parent_id":parent}),
-        )?;
+        )
+        .await?;
         goal = dispatch(
-            db,
+            tx,
             actor,
             "PATCH",
             &format!("{base}/items/{}", text(&goal, "id")),
             &HashMap::new(),
             &json!({"expected_version":goal["version"],"fields":{"next_action_id":action["id"]}}),
-        )?;
+        )
+        .await?;
     }
 
     let mut metric = Value::Null;
@@ -1676,13 +1736,14 @@ fn complete_onboarding(db: &Connection, actor: &Actor, w: &str, body: &Value) ->
         let mut metric_body = candidate.clone();
         metric_body["item_id"] = goal["id"].clone();
         metric = dispatch(
-            db,
+            tx,
             actor,
             "POST",
             &format!("{base}/metrics"),
             &HashMap::new(),
             &metric_body,
-        )?;
+        )
+        .await?;
     }
     Ok(json!({"goal":goal,"initiative":initiative,"action":action,"metric":metric}))
 }
@@ -1703,21 +1764,22 @@ fn validate_metric(m: &Metric) -> Result<()> {
     }
     Ok(())
 }
-fn workspace_version(db: &Connection, w: &str) -> Result<String> {
+async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
     let mut parts = String::new();
     for col in ["items", "relations", "metrics", "views"] {
-        parts.push_str(&serde_json::to_string(&list::<Value>(db, w, col)?)?);
+        parts.push_str(&serde_json::to_string(&list::<Value>(tx, w, col).await?)?);
     }
-    let mut q =
-        db.prepare("SELECT actor,role FROM memberships WHERE workspace_id=?1 ORDER BY actor")?;
-    for row in q.query_map([w], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })? {
-        parts.push_str(&format!("{:?}", row?));
+    let sql = format!(
+        "SELECT actor,role FROM memberships WHERE workspace_id=? ORDER BY actor{}",
+        tx.lock_reads()
+    );
+    let rows = tx.fetch_all(&sql, &params![w]).await?;
+    for row in &rows {
+        parts.push_str(&format!("{:?}", (row.text(0)?, row.text(1)?)));
     }
     Ok(format!("{:x}", Sha256::digest(parts)))
 }
-fn preview(db: &Connection, actor: &Actor, w: &str, b: &Value) -> Result<Value> {
+async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value> {
     only(b, &["operations", "title"])?;
     let ops: Vec<Operation> = serde_json::from_value(b["operations"].clone())?;
     if ops.is_empty() || ops.len() > 100 {
@@ -1748,26 +1810,29 @@ fn preview(db: &Connection, actor: &Actor, w: &str, b: &Value) -> Result<Value> 
         }
     }
     // Validate the complete batch without changing the live plan.
-    db.execute_batch("SAVEPOINT preview_validation")?;
+    tx.savepoint("preview_validation").await?;
     let human = Actor {
         id: actor.id.clone(),
         agent: false,
     };
-    let validation = (|| {
-        for op in &ops {
-            dispatch(db, &human, &op.method, &op.path, &HashMap::new(), &op.body)?;
+    let mut validation = Ok(());
+    for op in &ops {
+        if let Err(error) =
+            dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await
+        {
+            validation = Err(error);
+            break;
         }
-        Ok::<(), ApiError>(())
-    })();
-    db.execute_batch("ROLLBACK TO preview_validation; RELEASE preview_validation")?;
+    }
+    tx.rollback_to_savepoint("preview_validation").await?;
     validation?;
-    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"status":"pending","actor":actor.id,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(db,w)?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
-    put(db, w, "changesets", text(&c, "id"), &c)?;
+    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"status":"pending","actor":actor.id,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
+    put(tx, w, "changesets", text(&c, "id"), &c).await?;
     Ok(c)
 }
-fn validate_preview(db: &Connection, w: &str, c: &Value) -> Result<()> {
+async fn validate_preview(tx: &mut Tx, w: &str, c: &Value) -> Result<()> {
     if text(c, "expires_at") < now().as_str()
-        || text(c, "base_version") != workspace_version(db, w)?
+        || text(c, "base_version") != workspace_version(tx, w).await?
     {
         return Err(ApiError::new(
             409,
@@ -1786,7 +1851,7 @@ pub fn templates() -> Value {
         {"id":"habit","title":"習慣づくり","version":1,"preview":["目標を1つ作成","週3回取り組む習慣を追加。完了は各日ごとに記録。"]}
     ])
 }
-fn apply_template(db: &Connection, a: &Actor, w: &str, id: &str, b: &Value) -> Result<Value> {
+async fn apply_template(tx: &mut Tx, a: &Actor, w: &str, id: &str, b: &Value) -> Result<Value> {
     only(b, &["title", "description", "start_date", "due_date"])?;
     if !["free", "okr", "project", "learning", "habit"].contains(&id) {
         return Err(ApiError::missing());
@@ -1794,67 +1859,71 @@ fn apply_template(db: &Connection, a: &Actor, w: &str, id: &str, b: &Value) -> R
     let mut b = b.clone();
     b["fields"] = json!({"template":id,"template_version":1,"icon":match id{"learning"=>"graduation","project"=>"folder","habit"=>"repeat",_=>"target"}});
     let base = format!("/v1/workspaces/{w}");
-    let mut root = dispatch(db, a, "POST", &format!("{base}/items"), &HashMap::new(), &b)?;
+    let mut root = dispatch(tx, a, "POST", &format!("{base}/items"), &HashMap::new(), &b).await?;
     if ["project", "learning", "habit"].contains(&id) {
         let child = dispatch(
-            db,
+            tx,
             a,
             "POST",
             &format!("{base}/items"),
             &HashMap::new(),
             &json!({"title":if id=="project"{"計画を整理する"}else{"少しずつ練習する"},"kind":"initiative","fields":{"icon":"flag"}}),
-        )?;
+        ).await?;
         dispatch(
-            db,
+            tx,
             a,
             "POST",
             &format!("{base}/relations"),
             &HashMap::new(),
             &json!({"source_id":child["id"],"target_id":root["id"],"type":"part_of"}),
-        )?;
+        )
+        .await?;
         let fields = if id == "project" {
             json!({})
         } else {
             json!({"recurrence":{"mode":"period_quota","times_per_week":3,"timezone":"Asia/Tokyo","weekdays":[]}})
         };
         let action = dispatch(
-            db,
+            tx,
             a,
             "POST",
             &format!("{base}/items"),
             &HashMap::new(),
             &json!({"kind":"action","title":if id=="project"{"最初の一歩を書き出す"}else{"今日の練習をする"},"fields":fields}),
-        )?;
+        ).await?;
         dispatch(
-            db,
+            tx,
             a,
             "POST",
             &format!("{base}/relations"),
             &HashMap::new(),
             &json!({"source_id":action["id"],"target_id":child["id"],"type":"part_of"}),
-        )?;
+        )
+        .await?;
         root = dispatch(
-            db,
+            tx,
             a,
             "PATCH",
             &format!("{base}/items/{}", text(&root, "id")),
             &HashMap::new(),
             &json!({"expected_version":1,"fields":{"next_action_id":action["id"]}}),
-        )?;
+        )
+        .await?;
     }
     if id == "okr" {
         dispatch(
-            db,
+            tx,
             a,
             "POST",
             &format!("{base}/views"),
             &HashMap::new(),
             &json!({"name":"OKR","type":"okr","filters":{"kind":"outcome"}}),
-        )?;
+        )
+        .await?;
     }
     Ok(root)
 }
-fn import(db: &Connection, w: &str, b: &Value) -> Result<Value> {
+async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
     only(
         b,
         &[
@@ -1900,8 +1969,7 @@ fn import(db: &Connection, w: &str, b: &Value) -> Result<Value> {
                     "バックアップ内のワークスペースが不整合です",
                 ));
             }
-            let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM documents WHERE workspace_id=?1 AND collection=?2 AND id=?3)",params![w,col,id],|r|r.get(0))?;
-            if exists {
+            if exists(tx, w, col, &id).await? {
                 return Err(ApiError::new(
                     409,
                     "IMPORT_CONFLICT",
@@ -1910,45 +1978,45 @@ fn import(db: &Connection, w: &str, b: &Value) -> Result<Value> {
             }
             let mut doc = doc.clone();
             doc["workspace_id"] = json!(w);
-            put(db, w, col, &id, &doc)?;
+            put(tx, w, col, &id, &doc).await?;
             count += 1;
         }
     }
     // Validate after insertion so references can resolve independent of file order; outer transaction rolls all back on failure.
-    for i in list::<Item>(db, w, "items")? {
-        validate_item(db, &i)?;
+    for i in list::<Item>(tx, w, "items").await? {
+        validate_item(tx, &i).await?;
     }
-    for r in list::<Relation>(db, w, "relations")? {
-        validate_relation(db, &r)?;
+    for r in list::<Relation>(tx, w, "relations").await? {
+        validate_relation(tx, &r).await?;
     }
-    for m in list::<Metric>(db, w, "metrics")? {
-        let _: Item = get(db, w, "items", &m.item_id)?;
+    for m in list::<Metric>(tx, w, "metrics").await? {
+        let _: Item = get(tx, w, "items", &m.item_id).await?;
         validate_metric(&m)?;
     }
-    for r in list::<Record>(db, w, "records")? {
+    for r in list::<Record>(tx, w, "records").await? {
         for id in r.item_ids {
-            let _: Item = get(db, w, "items", &id)?;
+            let _: Item = get(tx, w, "items", &id).await?;
         }
         timestamp(&r.happened_at)?;
     }
-    for o in list::<Observation>(db, w, "observations")? {
-        let m: Metric = get(db, w, "metrics", &o.metric_id)?;
+    for o in list::<Observation>(tx, w, "observations").await? {
+        let m: Metric = get(tx, w, "metrics", &o.metric_id).await?;
         if o.unit != m.unit {
             return Err(ApiError::invalid("観測の単位が一致しません"));
         }
         timestamp(&o.observed_at)?;
         if let Some(id) = o.supersedes_id {
-            let _: Observation = get(db, w, "observations", &id)?;
+            let _: Observation = get(tx, w, "observations", &id).await?;
         }
     }
-    for review in list::<WeeklyReview>(db, w, "weekly_reviews")? {
+    for review in list::<WeeklyReview>(tx, w, "weekly_reviews").await? {
         date(&Some(review.week_start.clone()))?;
         date(&Some(review.week_end.clone()))?;
         if !["draft", "finalized"].contains(&review.status.as_str()) {
             return Err(ApiError::invalid("週次レビューの状態が不正です"));
         }
         if let Some(id) = review.supersedes_id {
-            let _: WeeklyReview = get(db, w, "weekly_reviews", &id)?;
+            let _: WeeklyReview = get(tx, w, "weekly_reviews", &id).await?;
         }
     }
     Ok(json!({"imported":count,"workspace_id":w}))

@@ -41,8 +41,8 @@ impl Client {
     }
 }
 
-#[test]
-fn stdio_negotiates_and_requires_human_approval_before_writing() {
+#[tokio::test]
+async fn stdio_negotiates_and_requires_human_approval_before_writing() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("mcp.sqlite3");
     let mut child = Command::new(env!("CARGO_BIN_EXE_pathbase-api"))
@@ -92,7 +92,7 @@ fn stdio_negotiates_and_requires_human_approval_before_writing() {
     let args = json!({"name":"pathbase_apply_changes","arguments":{"workspace_id":"personal","preview_id":id,"idempotency_key":"apply"}});
     let denied = client.request(7, "tools/call", args.clone());
     assert_eq!(denied["isError"], true);
-    let service = Service::open(&db).unwrap();
+    let service = Service::open(&db.to_string_lossy()).await.unwrap();
     let snapshot = service
         .handle(
             &Actor::local(),
@@ -102,6 +102,7 @@ fn stdio_negotiates_and_requires_human_approval_before_writing() {
             json!({}),
             None,
         )
+        .await
         .unwrap();
     assert!(snapshot["items"].as_array().unwrap().is_empty());
     service
@@ -113,6 +114,7 @@ fn stdio_negotiates_and_requires_human_approval_before_writing() {
             json!({}),
             Some("owner-approval"),
         )
+        .await
         .unwrap();
     let applied = client.request(8, "tools/call", args);
     assert_eq!(applied["isError"], false);
@@ -125,6 +127,7 @@ fn stdio_negotiates_and_requires_human_approval_before_writing() {
             json!({}),
             None,
         )
+        .await
         .unwrap();
     assert_eq!(snapshot["items"].as_array().unwrap().len(), 1);
 }

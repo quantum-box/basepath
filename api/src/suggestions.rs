@@ -1,10 +1,10 @@
 use crate::{
+    db::Tx,
     model::{ApiError, Item, Record, Result},
     service::{now, text},
     storage::{get, list},
 };
 use chrono::{Duration, Utc};
-use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -22,7 +22,7 @@ fn concise(value: &str, max: usize) -> String {
     }
 }
 
-pub(crate) fn preview(db: &Connection, workspace: &str, body: &Value) -> Result<Value> {
+pub(crate) async fn preview(tx: &mut Tx, workspace: &str, body: &Value) -> Result<Value> {
     let allowed = ["goal_id", "expected_version"];
     let object = body
         .as_object()
@@ -34,7 +34,7 @@ pub(crate) fn preview(db: &Connection, workspace: &str, body: &Value) -> Result<
     }
 
     let goal_id = text(body, "goal_id");
-    let goal: Item = get(db, workspace, "items", goal_id)?;
+    let goal: Item = get(tx, workspace, "items", goal_id).await?;
     if !["outcome", "idea", "milestone"].contains(&goal.kind.as_str()) || goal.archived_at.is_some()
     {
         return Err(ApiError::invalid("提案対象の目標を選択してください"));
@@ -50,7 +50,8 @@ pub(crate) fn preview(db: &Connection, workspace: &str, body: &Value) -> Result<
         ));
     }
 
-    let latest = list::<Record>(db, workspace, "records")?
+    let latest = list::<Record>(tx, workspace, "records")
+        .await?
         .into_iter()
         .filter(|record| record.item_ids.is_empty() || record.item_ids.contains(&goal.id))
         .max_by(|a, b| a.happened_at.cmp(&b.happened_at));

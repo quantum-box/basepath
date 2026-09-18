@@ -3,12 +3,16 @@ use pathbase_api::{service::Service, HttpState};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let path = std::env::var("PATHBASE_DB").unwrap_or_else(|_| "/tmp/pathbase.sqlite3".into());
-    let service = Service::open(std::path::Path::new(&path)).map_err(|error| error.message)?;
     let local_preview = std::env::var("PATHBASE_MODE").as_deref() == Ok("local-preview");
+    // Production requires DATABASE_URL. There is no SQLite fallback: /tmp is
+    // local to one execution environment and would silently fork the data.
+    let service = Service::open_from_env(local_preview)
+        .await
+        .map_err(|error| error.message)?;
     if local_preview {
         service
             .initialize(std::env::var("PATHBASE_SEED_DEMO").as_deref() == Ok("1"))
+            .await
             .map_err(|error| error.message)?;
     }
     let auth = if local_preview {

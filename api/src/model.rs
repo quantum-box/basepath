@@ -234,15 +234,6 @@ impl ApiError {
         Self::new(404, "NOT_FOUND", "対象が見つからないか、アクセスできません")
     }
 }
-impl From<rusqlite::Error> for ApiError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::new(
-            500,
-            "STORAGE_ERROR",
-            "保存処理に失敗しました。再試行してください",
-        )
-    }
-}
 impl From<serde_json::Error> for ApiError {
     fn from(e: serde_json::Error) -> Self {
         Self::invalid(&format!("入力形式が正しくありません: {e}"))
