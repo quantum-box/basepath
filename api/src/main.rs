@@ -29,6 +29,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    // Data migration and inventory report. Both read `DATABASE_URL` (or the
+    // local-preview SQLite path) as the target.
+    if let Some(index) = args.iter().position(|arg| arg == "--migrate-from") {
+        let source = args
+            .get(index + 1)
+            .ok_or("--migrate-from needs a source database URL or SQLite path")?;
+        let source = pathbase_api::db::Db::connect(source)
+            .await
+            .map_err(|e| e.message)?;
+        let target = pathbase_api::db::connect_from_env(local_preview)
+            .await
+            .map_err(|e| e.message)?;
+        target.migrate().await.map_err(|e| e.message)?;
+        let report = pathbase_api::migrate::migrate_data(
+            &source,
+            &target,
+            args.iter().any(|arg| arg == "--dry-run"),
+        )
+        .await
+        .map_err(|e| e.message)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        source.close().await;
+        target.close().await;
+        if !report.succeeded() {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--inventory") {
+        let db = pathbase_api::db::connect_from_env(local_preview)
+            .await
+            .map_err(|e| e.message)?;
+        let report = serde_json::json!({
+            "inventory": pathbase_api::migrate::inventory(&db).await.map_err(|e| e.message)?,
+            "integrity": pathbase_api::migrate::validate_integrity(&db).await.map_err(|e| e.message)?,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        db.close().await;
+        let passed = report["integrity"]
+            .as_array()
+            .is_some_and(|checks| checks.iter().all(|check| check["passed"] == true));
+        if !passed {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     let service = Service::open_from_env(local_preview)
         .await
         .map_err(|e| e.message)?;

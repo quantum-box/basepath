@@ -69,7 +69,40 @@ One Lambda execution environment serves one request at a time, so the pool is sm
 
 `test_before_acquire` is on: Lambda freeze/thaw can leave a connection the server has already dropped.
 
-TLS is `preferred` by default — the managed database is reached over PrivateLink, so the transport is already private, and `preferred` keeps TLS on wherever the server offers it without breaking a local cluster that serves none. Set `PATHBASE_DB_SSL_MODE=required` once the target cluster is confirmed to present a certificate; `verify_ca` and `verify_identity` are also accepted.
+**TLS.** A DSN that names its own mode wins. Tachyon issues the managed Cloud App DSN as `mysql://…?ssl-mode=REQUIRED` because TiDB Serverless requires TLS, and this process must not quietly weaken it. `PATHBASE_DB_SSL_MODE` is only consulted when the DSN says nothing — where it defaults to `preferred`, so a local cluster without TLS still works — or when an operator sets it deliberately, in which case it overrides the DSN. `disabled`, `preferred`, `required`, `verify_ca` and `verify_identity` are accepted; anything else is a startup error.
+
+## Monitoring
+
+These are the signals that mean "the database boundary is failing", and what each one looks like. None of them carries a credential: every message that could contain a DSN passes through a redaction step that replaces the password (`api/tests/durability.rs` asserts it), and no business content is put into an error message.
+
+| Signal | Where it shows | What it means |
+| --- | --- | --- |
+| Connection failure | startup exits with `DATABASE_UNAVAILABLE`; `/health/ready` returns 503 `database_unreachable` | The database is unreachable or refuses the credential. The candidate is not promoted; the previous deployment keeps serving. |
+| Pool exhaustion | requests fail with `STORAGE_ERROR` after `PATHBASE_DB_CONNECT_TIMEOUT_SECS` | More concurrent work than `PATHBASE_DB_MAX_CONNECTIONS`. The request fails rather than holding the invocation open. |
+| Migration failure | startup exits; `/health/ready` returns 503 `schema_out_of_date` | The schema this build needs is not applied. |
+| Migration lock timeout | `MIGRATION_LOCK_TIMEOUT` | Another instance has been migrating for longer than `PATHBASE_DB_MIGRATION_LOCK_SECS`. |
+| Wrong deployment | `/health/ready` returns 503 `environment_mismatch` | This process was pointed at a database another deployment claimed. |
+| Write conflict | `409 STORAGE_CONFLICT` | Another writer won the race. The client retries; it is not a server fault. |
+| Authorization refusal | `403` / `404` from the service | Ordinary access control, not a storage problem. Worth watching for rate, not for individual events. |
+
+## Backups
+
+What is **verified**:
+
+- PathBase owns a logical export/restore path — `pathbase-api --migrate-from` — and it is exercised on every CI run of the TiDB job: a database is copied into a separate, isolated database, row counts and a content digest are compared, business invariants are re-checked, and the restored copy then serves a read and a write (`api/tests/migration.rs`).
+- A migration into a non-empty target is refused, and a source that fails its integrity checks is refused before anything is written.
+
+What is **not verified here**, and must not be presented as a guarantee:
+
+- The managed data plane is a TiDB Cloud Serverless cluster (`tachyon-cloud-apps`) with its public endpoint disabled, reached over PrivateLink. Its backups are the vendor's, not something this repository or Tachyon's Terraform declares: there is no `Backup` or `BackupSchedule` resource in the platform repository.
+- Retention, point-in-time recovery, and who may trigger a restore are therefore properties of that TiDB Cloud cluster and of the account that owns it. They have **not** been confirmed from the console, so this document does not promise a PITR window.
+- A restore performed by the vendor has not been rehearsed. The rehearsal above restores from a live database, not from a vendor backup artifact.
+
+The next step to close this gap is to read the retention and PITR settings of the `tachyon-cloud-apps` cluster in the TiDB Cloud console, record them here, and rehearse a vendor restore into a throwaway database using the same comparison.
+
+## Migration and cutover
+
+`docs/runbook-tidb-cutover.md` is the operator procedure: inventory, stop writes, snapshot, dry run, migrate, verify, canary, resume — and what to do when it goes wrong. It also records why production needed no data migration.
 
 Tachyon Storage/R2 is an object store for files. Copying a live SQLite database or its WAL to R2 is not a safe database: Lambda shutdown is not a commit protocol, and multiple execution environments cannot coordinate writes through object snapshots. No bucket or external database is created by this repository change.
 
@@ -118,15 +151,24 @@ TiDB write conflicts (9007) and lock timeouts/deadlocks (1213 / 1205) surface as
 
 `api/tests/tidb.rs` proves this against a real TiDB with independent `Service` instances (separate connection pools): version conflicts, cross-instance idempotency replay, double-applied changesets, a rolled-back batch, the last-owner invariant, concurrent cycle creation, and a replay after membership was revoked. The fixture asserts `SELECT tidb_version()` succeeds, so a plain MySQL cannot stand in for the check.
 
-## Staged migration and failure behavior
+## What has actually been verified
 
-1. Put production in read-only/maintenance mode before export. Retain the source SQLite file.
-2. Run schema migration against an empty shared database, then import in foreign-key order in one controlled job. Record row counts and stable content hashes by table.
-3. Validate owner invariants, document JSON, idempotency rows, and representative read-only API projections.
-4. Deploy a single canary against the shared database. Writes must fail closed if the database is unavailable; never fall back to local SQLite.
-5. Expand instances only after concurrent create/update/idempotency tests pass. Keep SQLite read-only for rollback until the retention window ends.
+Against a real TiDB, on every CI run of the `Shared TiDB behaviour` job:
 
-If cutover validation fails before shared writes, point the app back to the retained SQLite source. After shared writes begin, do not reverse-copy automatically; stop writes and perform an operator-reviewed reconciliation. Backups, point-in-time recovery, connection limits, and restore drills are deployment responsibilities and must be proven in the chosen managed database.
+| Claim | Where |
+| --- | --- |
+| Two independent instances (separate pools) keep `expected_version`, the last-owner rule, cycle refusal, changeset atomicity, and cross-instance idempotency | `api/tests/tidb.rs` |
+| Simultaneous cold starts migrate exactly once | `api/tests/tidb.rs` |
+| State and audit history survive a redeploy, and a third instance sees another's write | `api/tests/durability.rs` |
+| A database outage fails loudly, and the retry after recovery neither duplicates nor loses the write | `api/tests/durability.rs` |
+| Pool exhaustion fails the request instead of hanging the invocation | `api/tests/durability.rs` |
+| No message carries a connection password; a DSN's `ssl-mode` is never weakened | `api/tests/durability.rs` |
+| A migration preserves counts, content digest, business invariants, history, and continues versioning | `api/tests/migration.rs` |
+| A restore into an isolated database matches the original and still serves reads and writes | `api/tests/migration.rs` |
+
+Observed once in the real deployment, not in CI: a candidate that could not reach a database failed its readiness proof and the previously deployed version kept serving (2026-09-18, `dep_01m2t9gsrttb6wvvh3gvkv3z2a`).
+
+Not verified: the managed cluster's own backup retention and point-in-time recovery — see [Backups](#backups).
 
 ## Local preview
 

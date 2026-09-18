@@ -100,7 +100,7 @@ jobs:
             sleep 2
           done
           echo "TiDB did not become ready"; docker logs tidb; exit 1
-      - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml --test tidb --test database_configuration
+      - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml --test tidb --test database_configuration --test deployment_gate --test durability --test migration
         env:
           PATHBASE_TEST_DATABASE_URL: mysql://root@127.0.0.1:4000/test
       - name: TiDB logs on failure
