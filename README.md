@@ -43,7 +43,13 @@ Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理�
 
 Tachyon Cloud Appは`pathbase-v2`（Cloudflare Worker、SPA配信と同一オリジンの`/api/*`転送）と`pathbase-api`（Lambda、Rust API）の2アプリで構成します。公開URLは`https://pathbase-v2.txcloud.app`です。旧Cloud Run版の`pathbase.txcloud.app`は廃止済みで、現在は経路層が`No route for: pathbase`を返します。`Dockerfile`は単一オリジンのコンテナ実行用に残してあり、`PATHBASE_WEB_ROOT`指定時だけRustサーバーがSPAと`/api/*`を同時に配信します。
 
-業務データはSQLxでTachyon管理のTiDB（MySQLプロトコル）へ保存します。`PATHBASE_MODE`が`local-preview`以外のとき`DATABASE_URL`（または`PATHBASE_DATABASE_URL`）が必須で、未設定・接続不可はどちらも起動エラーです。ローカルSQLiteへのフォールバックはありません。`/api/health`は実際の保存先を返し、TiDB接続時は`storage: tidb` / `storage_durability: shared-durable`、明示local-preview時は`storage: sqlite` / `ephemeral-runtime`になります。スキーマは`api/migrations/{sqlite,mysql}/`のversioned migrationsで、起動時に適用されます。方言差・並行制御・移行手順は`docs/production-durability.md`に記載しています。
+業務データはSQLxでTachyon管理のTiDB（MySQLプロトコル）へ保存します。`tachyon.yml`の`pathbase-api`だけが`provisionedDatabase`（provider: tidb / engine: mysql / envVar: DATABASE_URL）を宣言し、専用DB・SQLユーザー・権限・DSN secretはTachyonが発行します。manifestにDSNもsecretパスも書きません。静的WorkerにはDBの秘密値を渡しません。`environments.preview.provisionedDatabase`によりPRごとに専用DBを払い出し、`previewSharesProductionDatabase`は宣言しないため、previewが本番DSNへfallbackすることはありません。
+
+`PATHBASE_MODE`が`local-preview`以外のとき`DATABASE_URL`（または`PATHBASE_DATABASE_URL`）が必須で、未設定・接続不可はどちらも起動エラーです。ローカルSQLiteへのフォールバックはありません。migrationはAPIプロセスがDBを開くときに、DB全体のadvisory lockの下で適用します（PrivateLink専用のためビルドrunnerからは到達できません）。`pathbase-api --migrate`で適用だけ実行することもできます。
+
+出荷の判定は`readinessProof: /health/ready`です。実際にDBへ到達し、適用済みスキーマ版と、このDBがどのdeploymentのものか（`PATHBASE_DB_ENVIRONMENT`のclaim）を検査します。migrationが失敗した候補や、別environmentのDSNを渡された候補は200を返せないため、稼働中のバージョンがそのまま残ります。`/api/health`は実際の保存先を返し、TiDB接続時は`storage: tidb` / `storage_durability: shared-durable`、明示local-preview時は`storage: sqlite` / `ephemeral-runtime`になります。
+
+スキーマは`api/migrations/{sqlite,mysql}/`のversioned migrationsです。方言差・並行制御・接続プール・TLS・移行手順は`docs/production-durability.md`に記載しています。
 
 Fieldは現在のユーザーのTachyonトークンと正規のテナント文脈で呼び、操作ごとに権限を確認します。FieldのタスクをPathBaseで完了しても元タスクは更新しません。タスク参照の重複取り込みを防止し、観測できない値は0に変換しません。実装根拠と設定項目は[連携契約](docs/integration-contracts.md)を参照してください。
 

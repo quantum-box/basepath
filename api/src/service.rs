@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 /// The business service. It owns a connection pool, not a connection: several
 /// Lambda execution environments run this code against the same TiDB database,
 /// so mutual exclusion has to come from database transactions.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Service {
     pub db: Db,
 }

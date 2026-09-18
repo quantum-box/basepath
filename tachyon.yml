@@ -88,10 +88,35 @@ spec:
         binary: lambda-pathbase-api
         release: true
         arch: arm64
+      # Tachyon provisions the app's own TiDB database, SQL user, grant, and
+      # DSN secret, and injects the DSN as DATABASE_URL. The manifest never
+      # names a secret path or a literal DSN.
+      #
+      # NOTE: the canonical key is being renamed to `spec.database`
+      # (PLT-4812). Until that ships in the platform this manifest uses the
+      # key the deployed IaC accepts; the rename is a key rename only and
+      # must not re-provision the database or rotate its credentials.
+      provisionedDatabase:
+        provider: tidb
+        engine: mysql
+        envVar: DATABASE_URL
+        # `previewSharesProductionDatabase` is deliberately absent. ADR-0049
+        # makes PR-scoped isolation the default, and a preview that resolved
+        # the production DSN must be refused rather than silently allowed.
+      #
+      # Migration is not declared as a platform hook. The managed Cloud App
+      # TiDB is PrivateLink-only, so a command hook on the shared runner
+      # cannot reach it, and a `migration.lambdaInvoke` hook runs before the
+      # candidate is deployed — it would therefore execute the *previously*
+      # deployed code against the new database. The API applies its own
+      # migrations at startup, inside the app's network, under a database-wide
+      # advisory lock, and `/health/ready` below is the gate: a candidate
+      # whose migration did not run, or that was pointed at another
+      # deployment's database, never becomes the active deployment.
       readinessProof:
-        path: /health
+        path: /health/ready
         expectedStatus: 200
-        expectedBody: '"status":"ok"'
+        expectedBody: '"schema":"current"'
       watchPaths:
         - api/**
         - tachyon.yml
@@ -100,8 +125,6 @@ spec:
           value: tachyon
         - name: PATHBASE_PUBLIC_URL
           value: https://pathbase-v2.txcloud.app
-        - name: PATHBASE_DB
-          value: /tmp/pathbase.sqlite3
         # Provision PATHBASE_SESSION_KEYS as an encrypted app environment
         # variable; key material must never be committed to this manifest.
         #
@@ -132,3 +155,26 @@ spec:
           value: tn_01hjjn348rn3t49zz6hvmfq67p
         - name: FIELD_OPERATOR_ID
           value: tn_01j91h09tpj5ehwbwfwfxpak2b
+      # PATHBASE_DB_ENVIRONMENT is declared per environment, never in the base
+      # list: the first process to migrate claims the database for its value,
+      # and a process configured for a different one refuses to migrate or
+      # serve. A production build pointed at a preview DSN therefore fails
+      # closed instead of writing to the wrong database.
+      environments:
+        production:
+          # Production keeps the base `provisionedDatabase` above; only the
+          # environment label differs.
+          envVars:
+            - name: PATHBASE_DB_ENVIRONMENT
+              value: production
+        preview:
+          # Each pull request gets its own database and credentials. Data and
+          # permissions are therefore separate between PR A, PR B, and
+          # production, and a preview never resolves the production DSN.
+          provisionedDatabase:
+            provider: tidb
+            engine: mysql
+            envVar: DATABASE_URL
+          envVars:
+            - name: PATHBASE_DB_ENVIRONMENT
+              value: preview

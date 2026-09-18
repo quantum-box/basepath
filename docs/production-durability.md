@@ -13,6 +13,64 @@ PathBase has two independent state classes:
 
 Production refuses to start without a database: `DATABASE_URL` (or `PATHBASE_DATABASE_URL`) is required whenever `PATHBASE_MODE` is not `local-preview`, and an unreachable database is a startup error. There is no SQLite fallback, because `/tmp` is local to one execution environment and would silently fork the data.
 
+## Provisioning and the deployment gate
+
+`tachyon.yml` declares the database on the `pathbase-api` app only; the static Worker never receives a database secret:
+
+```yaml
+provisionedDatabase:
+  provider: tidb
+  engine: mysql
+  envVar: DATABASE_URL
+```
+
+Tachyon issues the database, the SQL user, its grant, and the DSN secret, and injects the DSN as `DATABASE_URL`. The manifest names no secret path and carries no DSN. Re-applying the same manifest does not re-provision or rotate anything.
+
+`environments.preview.provisionedDatabase` gives every pull request its own database and credentials, so PR A, PR B, and production are separated in data and permissions. `previewSharesProductionDatabase` is deliberately never declared: ADR-0049 makes PR-scoped isolation the default and refuses a preview that would resolve the production DSN.
+
+> The canonical manifest key is being renamed to `spec.database` (PLT-4812). Until that ships in the deployed IaC, this manifest uses `provisionedDatabase`, the key the platform accepts today. The rename is a key rename only and must not re-provision the database or rotate its credentials.
+
+### Environment claim
+
+`PATHBASE_DB_ENVIRONMENT` is declared per environment (`production` / `preview`) and never in the base list. The first process to migrate writes it into `database_identity`; a process configured for a different value refuses to migrate and reports `environment_mismatch` from readiness. A production build pointed at a preview DSN — or the reverse — therefore fails closed instead of writing to the wrong database.
+
+The rule applies only when **both** sides carry a label. A missing label (`local-preview`, the value when the variable is unset) is a configuration gap, not a mix-up: a preview build only *plans* the manifest, so a preview deployment can start before its overlay env var has ever been applied. Such a database is adopted by the next start that does carry a label, rather than taking the deployment down. Two labelled deployments disagreeing is always refused.
+
+### Migration
+
+Migrations run when the API process opens the database, inside the app's own network. That is the only place the managed Cloud App TiDB is reachable from: it is PrivateLink-only, so a command hook on the shared build runner cannot reach it, and a `migration.lambdaInvoke` hook runs *before* the candidate is deployed, which would execute the previously deployed code against the new database. Simultaneous cold starts are serialized with an advisory lock (`GET_LOCK`). MySQL advisory locks are server-wide rather than per database, so the lock name carries the database name: a per-PR preview and production sharing one TiDB cluster do not serialize against each other. A process whose schema is already current skips the lock entirely.
+
+`pathbase-api --migrate` applies the schema and exits, printing the resulting status, for an operator or a future platform-side gate.
+
+### Readiness
+
+`readinessProof` points at `/health/ready`, which reaches the database and reports the applied schema:
+
+```json
+{"status":"ready","schema":"current","schema_version":2,"expected_schema_version":2,
+ "storage":"tidb","storage_durability":"shared-durable",
+ "environment":"production","database_environment":"production","reason":"ok"}
+```
+
+It returns 503 with a `reason` of `database_unreachable`, `schema_out_of_date`, or `environment_mismatch` otherwise. A candidate whose migration failed therefore never becomes the active deployment, and the previously deployed version keeps serving. A static 200 or a hard-coded `storage_durability` string is explicitly not accepted as evidence.
+
+### Connection pool
+
+One Lambda execution environment serves one request at a time, so the pool is small; the ceiling that matters is `PATHBASE_DB_MAX_CONNECTIONS × reserved concurrency` against the TiDB connection limit. Defaults, all overridable by environment variable:
+
+| Setting | Default | Why |
+| --- | --- | --- |
+| `PATHBASE_DB_MAX_CONNECTIONS` | 2 | Raise deliberately; it multiplies by Lambda concurrency |
+| `PATHBASE_DB_CONNECT_TIMEOUT_SECS` | 10 | Fail the request rather than hang the invocation |
+| `PATHBASE_DB_IDLE_TIMEOUT_SECS` | 300 | A frozen execution environment holds nothing open |
+| `PATHBASE_DB_MAX_LIFETIME_SECS` | 600 | Recycle so a failed-over TiDB node is not pinned |
+| `PATHBASE_DB_MIGRATION_LOCK_SECS` | 60 | How long a cold start waits for another one's migration |
+| `PATHBASE_DB_SSL_MODE` | `preferred` | See below |
+
+`test_before_acquire` is on: Lambda freeze/thaw can leave a connection the server has already dropped.
+
+TLS is `preferred` by default — the managed database is reached over PrivateLink, so the transport is already private, and `preferred` keeps TLS on wherever the server offers it without breaking a local cluster that serves none. Set `PATHBASE_DB_SSL_MODE=required` once the target cluster is confirmed to present a certificate; `verify_ca` and `verify_identity` are also accepted.
+
 Tachyon Storage/R2 is an object store for files. Copying a live SQLite database or its WAL to R2 is not a safe database: Lambda shutdown is not a commit protocol, and multiple execution environments cannot coordinate writes through object snapshots. No bucket or external database is created by this repository change.
 
 ## Session configuration and rotation

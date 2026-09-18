@@ -79,10 +79,17 @@ async fn a_local_preview_database_reports_the_sqlite_dialect() {
     db.migrate().await.unwrap();
     let mut tx = db.begin_read().await.unwrap();
     let rows = tx
-        .fetch_all("SELECT version FROM schema_migrations", &[])
+        .fetch_all(
+            "SELECT version FROM schema_migrations ORDER BY version",
+            &[],
+        )
         .await
         .unwrap();
-    assert_eq!(rows.len(), 1);
+    let applied: Vec<i64> = rows.iter().map(|row| row.int(0).unwrap()).collect();
+    assert_eq!(
+        applied,
+        (1..=pathbase_api::db::expected_schema_version()).collect::<Vec<_>>()
+    );
     tx.commit().await.unwrap();
     db.close().await;
 }

@@ -364,6 +364,12 @@ enum PoolKind {
     MySql(MySqlPool),
 }
 
+/// Advisory lock prefix held for the whole migration run; the database name
+/// is appended so deployments sharing a cluster do not serialize.
+const MIGRATION_LOCK: &str = "pathbase:migrate";
+/// Primary key of the single `database_identity` row.
+const IDENTITY_ROW: &str = "singleton";
+
 /// A connection pool plus the dialect its statements must be written in.
 #[derive(Clone)]
 pub struct Db {
@@ -380,12 +386,127 @@ impl std::fmt::Debug for Db {
     }
 }
 
-const MIGRATIONS: &[(i64, &str, &str, &str)] = &[(
-    1,
-    "initial schema",
-    include_str!("../migrations/sqlite/0001_initial.sql"),
-    include_str!("../migrations/mysql/0001_initial.sql"),
-)];
+const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
+    (
+        1,
+        "initial schema",
+        include_str!("../migrations/sqlite/0001_initial.sql"),
+        include_str!("../migrations/mysql/0001_initial.sql"),
+    ),
+    (
+        2,
+        "database identity",
+        include_str!("../migrations/sqlite/0002_identity.sql"),
+        include_str!("../migrations/mysql/0002_identity.sql"),
+    ),
+];
+
+/// The schema version this build expects. Readiness compares against it, so a
+/// candidate whose migration did not run cannot be promoted.
+pub fn expected_schema_version() -> i64 {
+    MIGRATIONS
+        .iter()
+        .map(|(version, ..)| *version)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Value used when no deployment label is configured: local development, and
+/// a deployment whose manifest overlay has not been applied yet.
+pub const UNLABELLED_ENVIRONMENT: &str = "local-preview";
+
+/// Which deployment this process believes it is serving. Production and each
+/// per-PR preview declare their own value in the Cloud App manifest.
+pub fn configured_environment() -> String {
+    std::env::var("PATHBASE_DB_ENVIRONMENT")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| UNLABELLED_ENVIRONMENT.into())
+}
+
+fn setting(key: &str, fallback: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(fallback)
+}
+
+fn mysql_options(url: &str) -> Result<sqlx::mysql::MySqlConnectOptions> {
+    use sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
+    use std::str::FromStr;
+    let options = MySqlConnectOptions::from_str(url).map_err(|error| {
+        ApiError::new(
+            500,
+            "STORAGE_ERROR",
+            &format!("DSNを解釈できません: {error}"),
+        )
+    })?;
+    // The managed Cloud App TiDB is reached over PrivateLink, so the transport
+    // is already private; `preferred` keeps TLS on wherever the server offers
+    // it without breaking a local cluster that serves none. Set
+    // PATHBASE_DB_SSL_MODE=required once the target cluster is confirmed to
+    // present a certificate.
+    let mode = std::env::var("PATHBASE_DB_SSL_MODE").unwrap_or_else(|_| "preferred".into());
+    let mode = match mode.trim().to_ascii_lowercase().as_str() {
+        "disabled" => MySqlSslMode::Disabled,
+        "preferred" => MySqlSslMode::Preferred,
+        "required" => MySqlSslMode::Required,
+        "verify_ca" | "verify-ca" => MySqlSslMode::VerifyCa,
+        "verify_identity" | "verify-identity" => MySqlSslMode::VerifyIdentity,
+        other => {
+            return Err(ApiError::new(
+                500,
+                "STORAGE_ERROR",
+                &format!("PATHBASE_DB_SSL_MODE '{other}' は使用できません"),
+            ))
+        }
+    };
+    Ok(options.ssl_mode(mode))
+}
+
+/// What a readiness probe needs to decide whether this process may serve.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SchemaStatus {
+    pub storage: &'static str,
+    pub durability: &'static str,
+    pub schema_version: i64,
+    pub expected_schema_version: i64,
+    pub environment: String,
+    pub database_environment: Option<String>,
+}
+
+impl SchemaStatus {
+    pub fn is_ready(&self) -> bool {
+        self.schema_version == self.expected_schema_version
+            && self.database_environment.is_some()
+            && !self.environment_conflicts()
+    }
+
+    /// Whether this process still has to write its deployment label.
+    pub fn needs_claim(&self) -> bool {
+        match self.database_environment.as_deref() {
+            None => true,
+            Some(recorded) => {
+                recorded != self.environment && self.environment != UNLABELLED_ENVIRONMENT
+            }
+        }
+    }
+
+    /// True only when two *labelled* deployments disagree.
+    ///
+    /// An unlabelled side is a missing configuration, not a mix-up: a process
+    /// started before its manifest overlay was applied must not take the
+    /// deployment down, and it must not repurpose a database either.
+    pub fn environment_conflicts(&self) -> bool {
+        let Some(recorded) = self.database_environment.as_deref() else {
+            return false;
+        };
+        recorded != self.environment
+            && recorded != UNLABELLED_ENVIRONMENT
+            && self.environment != UNLABELLED_ENVIRONMENT
+    }
+}
 
 impl Db {
     /// Opens the database named by a URL.
@@ -394,23 +515,32 @@ impl Db {
     /// selects the local preview database.
     pub async fn connect(url: &str) -> Result<Self> {
         if url.starts_with("mysql://") || url.starts_with("mariadb://") {
+            let options = mysql_options(url)?;
             let pool = sqlx::mysql::MySqlPoolOptions::new()
-                // A Lambda execution environment handles one request at a time,
-                // and TiDB is shared by many of them.
-                .max_connections(
-                    std::env::var("PATHBASE_DB_MAX_CONNECTIONS")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(4),
-                )
-                .acquire_timeout(Duration::from_secs(
-                    std::env::var("PATHBASE_DB_CONNECT_TIMEOUT_SECS")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(10),
-                ))
-                .max_lifetime(Duration::from_secs(600))
-                .connect(url)
+                // One Lambda execution environment serves one request at a
+                // time, so a small pool is enough; the ceiling that matters is
+                // `max_connections × reserved concurrency` against the TiDB
+                // connection limit. Raise it deliberately, not by default.
+                .max_connections(setting("PATHBASE_DB_MAX_CONNECTIONS", 2) as u32)
+                // A frozen execution environment holds no connection open.
+                .min_connections(0)
+                .acquire_timeout(Duration::from_secs(setting(
+                    "PATHBASE_DB_CONNECT_TIMEOUT_SECS",
+                    10,
+                )))
+                .idle_timeout(Duration::from_secs(setting(
+                    "PATHBASE_DB_IDLE_TIMEOUT_SECS",
+                    300,
+                )))
+                // Recycle so a failed-over TiDB node cannot be pinned forever.
+                .max_lifetime(Duration::from_secs(setting(
+                    "PATHBASE_DB_MAX_LIFETIME_SECS",
+                    600,
+                )))
+                // Lambda freeze/thaw can leave a connection the server has
+                // already dropped; check before handing it to a request.
+                .test_before_acquire(true)
+                .connect_with(options)
                 .await
                 .map_err(|error| {
                     ApiError::new(
@@ -484,12 +614,94 @@ impl Db {
         }
     }
 
-    /// Applies every migration this build knows about.
+    /// Applies every migration this build knows about, then claims the
+    /// database for the configured deployment environment.
     ///
     /// DDL is **not** rolled back with the surrounding DML on TiDB, so each
     /// statement is applied on its own and the version is recorded only after
     /// the whole file succeeded. Re-running an applied migration is a no-op.
+    ///
+    /// Several Lambda execution environments can start at once, so the whole
+    /// run is held under a database-wide advisory lock; concurrent starters
+    /// wait and then find the work already done.
     pub async fn migrate(&self) -> Result<()> {
+        // The common case is a warm schema: skip the lock round trips when
+        // there is nothing to apply. A missing table makes the probe fail,
+        // which is itself the signal to run.
+        if let Ok(status) = self.schema_status().await {
+            if status.is_ready() && !status.needs_claim() {
+                return Ok(());
+            }
+        }
+        let lock = self.lock_migrations().await?;
+        let result = self.migrate_locked().await;
+        self.unlock_migrations(&lock).await;
+        result
+    }
+
+    /// Advisory lock name.
+    ///
+    /// MySQL advisory locks are server-wide, not per database, so the name
+    /// carries the database: two deployments sharing one TiDB cluster (a
+    /// per-PR preview and production) must not serialize against each other.
+    async fn migration_lock_name(&self, pool: &MySqlPool) -> Result<String> {
+        let database: Option<String> = sqlx::query_scalar("SELECT DATABASE()")
+            .fetch_one(pool)
+            .await
+            .map_err(storage_error)?;
+        let database = database.unwrap_or_default();
+        // MySQL caps lock names at 64 characters.
+        Ok(format!("{MIGRATION_LOCK}:{database}")
+            .chars()
+            .take(64)
+            .collect())
+    }
+
+    async fn lock_migrations(&self) -> Result<String> {
+        let PoolKind::MySql(pool) = &self.pool else {
+            return Ok(String::new());
+        };
+        let name = self.migration_lock_name(pool).await?;
+        let wait = setting("PATHBASE_DB_MIGRATION_LOCK_SECS", 60) as i64;
+        let mut last = None;
+        // Heavy contention makes TiDB answer GET_LOCK with a retryable
+        // pessimistic-lock error rather than a plain "not acquired".
+        for attempt in 0..5 {
+            match sqlx::query_scalar::<_, i64>("SELECT GET_LOCK(?, ?)")
+                .bind(&name)
+                .bind(wait)
+                .fetch_one(pool)
+                .await
+            {
+                Ok(1) => return Ok(name),
+                Ok(_) => {
+                    return Err(ApiError::new(
+                        503,
+                        "MIGRATION_LOCK_TIMEOUT",
+                        "他のインスタンスがmigrationを実行中です",
+                    ))
+                }
+                Err(error) => {
+                    last = Some(error);
+                    tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                }
+            }
+        }
+        Err(storage_error(
+            last.expect("a failed attempt records its error"),
+        ))
+    }
+
+    async fn unlock_migrations(&self, name: &str) {
+        if let PoolKind::MySql(pool) = &self.pool {
+            let _ = sqlx::query("DO RELEASE_LOCK(?)")
+                .bind(name)
+                .execute(pool)
+                .await;
+        }
+    }
+
+    async fn migrate_locked(&self) -> Result<()> {
         let mut tx = self.begin_write().await?;
         let create = match self.dialect {
             Dialect::Sqlite => {
@@ -534,7 +746,98 @@ impl Db {
             .await?;
             tx.commit().await?;
         }
-        Ok(())
+        self.claim_environment().await
+    }
+
+    /// Records the deployment this database serves, or refuses if another one
+    /// already claimed it.
+    async fn claim_environment(&self) -> Result<()> {
+        let environment = configured_environment();
+        let mut tx = self.begin_write().await?;
+        let recorded = tx
+            .fetch_optional(
+                &format!(
+                    "SELECT environment FROM database_identity WHERE id=?{}",
+                    tx.lock_reads()
+                ),
+                &crate::params![IDENTITY_ROW],
+            )
+            .await?
+            .map(|row| row.text(0))
+            .transpose()?;
+        match recorded {
+            // Two labelled deployments disagreeing is a real mix-up.
+            Some(existing)
+                if existing != environment
+                    && existing != UNLABELLED_ENVIRONMENT
+                    && environment != UNLABELLED_ENVIRONMENT =>
+            {
+                return Err(ApiError::new(
+                    500,
+                    "DATABASE_ENVIRONMENT_MISMATCH",
+                    &format!(
+                        "このデータベースは environment '{existing}' のものです。\
+                         '{environment}' として使用できません"
+                    ),
+                ));
+            }
+            // The database was claimed before its manifest overlay existed;
+            // adopt the label now rather than failing the rollout.
+            Some(existing) if existing == UNLABELLED_ENVIRONMENT && existing != environment => {
+                tx.execute(
+                    "UPDATE database_identity SET environment=?,claimed_at=? WHERE id=?",
+                    &crate::params![environment, crate::service::now(), IDENTITY_ROW],
+                )
+                .await?;
+            }
+            Some(_) => {}
+            None => {
+                tx.execute(
+                    &self
+                        .dialect
+                        .insert_ignore("database_identity", &["id", "environment", "claimed_at"]),
+                    &crate::params![IDENTITY_ROW, environment, crate::service::now()],
+                )
+                .await?;
+            }
+        }
+        tx.commit().await
+    }
+
+    /// Reads what a readiness probe needs: reachability, applied schema, and
+    /// whether this database belongs to the deployment asking.
+    pub async fn schema_status(&self) -> Result<SchemaStatus> {
+        let mut tx = self.begin_read().await?;
+        let schema_version = tx
+            .fetch_optional("SELECT MAX(version) FROM schema_migrations", &[])
+            .await?
+            .map(|row| row.int(0))
+            .transpose()
+            .unwrap_or(None)
+            .unwrap_or(0);
+        let database_environment = tx
+            .fetch_optional(
+                "SELECT environment FROM database_identity WHERE id=?",
+                &crate::params![IDENTITY_ROW],
+            )
+            .await?
+            .map(|row| row.text(0))
+            .transpose()?;
+        tx.commit().await?;
+        Ok(SchemaStatus {
+            storage: match self.dialect {
+                Dialect::MySql => "tidb",
+                Dialect::Sqlite => "sqlite",
+            },
+            durability: match self.dialect {
+                Dialect::MySql => "shared-durable",
+                Dialect::Sqlite => "ephemeral-runtime",
+            },
+            schema_version,
+            expected_schema_version: expected_schema_version(),
+            environment: configured_environment(),
+            database_environment,
+        })
     }
 
     pub async fn close(&self) {
