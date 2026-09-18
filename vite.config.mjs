@@ -21,7 +21,10 @@ export default defineConfig({
     },
     watch: { ignored: ["**/src-tauri/**", "**/api/**", "**/data/**"] },
     proxy: {
-      "/api": {
+      // `/api/ui/**` is a committed build artifact in this repository (the MCP
+      // App bundle the Rust binary embeds), not an API route. The dev server
+      // serves it as a file so tests can import the exact bytes that ship.
+      "^/api/(?!ui/)": {
         target: `http://127.0.0.1:${process.env.PATHBASE_API_PORT || 1431}`,
         rewrite: (path) => path.replace(/^\/api/, ""),
         configure(proxy) {

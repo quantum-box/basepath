@@ -77,6 +77,10 @@ transportはstateless Streamable HTTP（JSON応答）です。Lambdaでは連続
 
 toolのannotationsは実際の副作用に合わせています。変更案はDELETEを含みうるので、preview / propose / applyは`destructiveHint: true`です。`pathbase_get_graph`は最大`limit`件（既定・上限とも200）を返し、`truncated`を明示します。
 
+MCP Apps対応として、`pathbase_get_graph` / `pathbase_get_today` / `pathbase_get_week` に `_meta.ui.resourceUri`（`ui://basepath/plan.html`）を付け、`resources/list` で `text/html;profile=mcp-app` のUI resourceを公開します。バンドルは外部から何も読み込まない単一ファイルなので、CSPは空（許可する配信元なし）です。UIは空のシェルで、業務データも資格情報も埋め込みません。ホスト経由で取得し、認可はRust側で毎回行います。表示はホストの承認や認可の代替ではありません。UI非対応ホストでも通常の `structuredContent` / text でそのまま使えます。
+
+UIは `mcp-app/` と `src/shared/`（Web / Tauriと共有する表示部品とビューモデル）から `npm run build:mcp-app` で1ファイルに束ね、`api/ui/mcp-app.html` としてコミットします（Lambdaに Node もCDNも無いため）。CIが再ビルドして差分があれば失敗し、サイズ上限も検査します。
+
 discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT / Claude実機での接続確認は未実施です。
 
 17個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。

@@ -1,0 +1,142 @@
+/* Styles for the shared plan view.
+ *
+ * The MCP App runs inside the host's conversation, so colours come from the
+ * host's CSS variables when it provides them and fall back to values that work
+ * on either a light or a dark surface. No font or image is loaded from an
+ * external origin: the bundle is self-contained so the resource needs no CSP
+ * allowance at all. */
+:root {
+  color-scheme: light dark;
+  --plan-text: var(--text-primary, currentColor);
+  --plan-muted: var(
+    --text-secondary,
+    color-mix(in srgb, currentColor 60%, transparent)
+  );
+  --plan-line: var(
+    --border-primary,
+    color-mix(in srgb, currentColor 18%, transparent)
+  );
+  --plan-accent: var(--accent-primary, #c2703a);
+}
+body {
+  margin: 0;
+  color: var(--plan-text);
+  background: var(--background-primary, transparent);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.plan-panel {
+  padding: 12px 14px 16px;
+  display: grid;
+  gap: 12px;
+}
+.plan-panel[data-stale="true"] {
+  opacity: 0.72;
+}
+.plan-header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--plan-line);
+  padding-bottom: 8px;
+}
+.plan-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.plan-header span {
+  color: var(--plan-muted);
+  font-size: 12px;
+}
+.plan-tree,
+.plan-tree ul,
+.plan-actions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.plan-node-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.plan-node-kind {
+  font-size: 11px;
+  color: var(--plan-muted);
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+.plan-node-title {
+  flex: 1 1 12ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plan-node[data-state="done"] .plan-node-title {
+  text-decoration: line-through;
+  color: var(--plan-muted);
+}
+.plan-node-state,
+.plan-node-due,
+.plan-node-assessment {
+  font-size: 11px;
+  color: var(--plan-muted);
+  white-space: nowrap;
+}
+.plan-actions h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.plan-actions li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.plan-actions li[data-done="true"] span:last-of-type {
+  text-decoration: line-through;
+  color: var(--plan-muted);
+}
+.plan-actions small {
+  color: var(--plan-muted);
+}
+.plan-empty,
+.plan-truncated,
+.plan-stale {
+  color: var(--plan-muted);
+  margin: 0;
+  font-size: 12px;
+}
+.plan-truncated,
+.plan-stale {
+  border-inline-start: 2px solid var(--plan-accent);
+  padding-inline-start: 8px;
+}
+.plan-problem h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+.plan-problem button {
+  margin-top: 8px;
+  font: inherit;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--plan-line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+/* The conversation pane is narrow. Everything has to read at 320px. */
+@media (max-width: 420px) {
+  .plan-panel {
+    padding: 10px;
+  }
+  .plan-node-row {
+    gap: 6px;
+  }
+}
