@@ -247,3 +247,55 @@ test("restores the WWW-Authenticate header API Gateway renames", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("a deep link survives an asset redirect instead of losing its query", async () => {
+  // Observed in production: the asset binding answers a path it cannot serve
+  // with `307 Location: /`. Returned unchanged, that drops the path and the
+  // query — and the query is the request: which change set, which
+  // authorization. Every deep link in the app would land on the home screen.
+  const asked = [];
+  const response = await worker.fetch(
+    new Request(
+      "https://example.test/oauth/authorize?client_id=abc&state=xyz",
+      { headers: { accept: "text/html" } },
+    ),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          const url = new URL(request.url);
+          asked.push(url.pathname + url.search);
+          if (url.pathname === "/index.html") {
+            return new Response("app", { status: 200 });
+          }
+          return new Response(null, {
+            status: 307,
+            headers: { location: "/" },
+          });
+        },
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "app");
+  assert.deepEqual(asked, [
+    "/oauth/authorize?client_id=abc&state=xyz",
+    "/index.html",
+  ]);
+});
+
+test("a redirect the app itself asked for is still followed", async () => {
+  // The fallback must not swallow a real redirect: only a request that would
+  // otherwise have rendered a page gets the app shell.
+  const response = await worker.fetch(
+    new Request("https://example.test/logo.svg"),
+    {
+      ASSETS: {
+        fetch: async () =>
+          new Response(null, { status: 302, headers: { location: "/x.svg" } }),
+      },
+    },
+  );
+  assert.equal(response.status, 302, "not an HTML navigation, so untouched");
+  assert.equal(response.headers.get("location"), "/x.svg");
+});

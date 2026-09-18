@@ -87,7 +87,9 @@ UIは `mcp-app/` と `src/shared/`（Web / Tauriと共有する表示部品と�
 
 discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）と`/.well-known/oauth-authorization-server`（RFC 8414）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。API GatewayがこのヘッダーをリネームするのでWorkerが元に戻します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT実機での接続確認は未実施です。
 
-ChatGPT向けの配布パッケージは`plugin/chatgpt/`（manifest・接続先・アイコン）と`skills/`（ホスト非依存のワークフロー）から`npm run build:plugin`で組み立てます。ワークフローは1か所にしか書きません。手順・接続導線・検証済み/未検証の切り分けは[docs/chatgpt-plugin.md](docs/chatgpt-plugin.md)を参照してください。
+ワークフロー（目標分解・週の計画・記録・週次振り返り）は`skills/`に1か所だけ書き、3つの経路で届きます。(1) MCPの`io.modelcontextprotocol/skills`拡張でサーバー自身が配信（`skills/list` / `skills/get` / `skill://`のresources/read。各ファイルのSHA-256とサイズをhostが検証できます）。(2) 拡張非対応のhost向けに通常のresourceとしても列挙。(3) diskから読むhost向けにパッケージへ同梱。同じバイト列であることはCIで検証しています。
+
+配布パッケージは`plugin/<host>/`（manifest・接続先・アイコン）と`skills/`から`npm run build:plugin`で組み立てます。hostごとの差分は`scripts/build-plugin.mjs`の`LAYOUTS`の1行だけで、ワークフローにhost名が出てきたらbuildが失敗します。手順・接続導線・検証済み/未検証の切り分けは[docs/chatgpt-plugin.md](docs/chatgpt-plugin.md)と[docs/claude-connector.md](docs/claude-connector.md)を参照してください。claude.ai / Claude Desktopはカスタムコネクタ（URLのみ、インストール不要）で、会話内UIに対応します。Claude CodeはCLIなので会話内UIは約束しません。
 
 18個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 

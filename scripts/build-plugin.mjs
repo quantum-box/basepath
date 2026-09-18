@@ -93,58 +93,102 @@ function readSkills() {
   return skills;
 }
 
+/**
+ * Where each host keeps its manifest, and where the skills go inside its
+ * package.
+ *
+ * This is the whole host-specific surface. Everything else — the workflows,
+ * the rules, the tool names — is shared, so adding a host means adding a row
+ * here rather than a second copy of any of it.
+ */
+const LAYOUTS = {
+  chatgpt: {
+    manifest: "plugin.json",
+    mcp: "mcp.json",
+    transport: "streamable-http",
+    /** Returns the assets the manifest points at, so they can be checked. */
+    check: (manifest, host) => {
+      if (!manifest.$schema) fail(`plugin/${host}: $schema is required`);
+      if (manifest.skills !== "./skills/") {
+        fail(`plugin/${host}: skills must point at the bundled "./skills/"`);
+      }
+      const openai = manifest.extensions?.["com.openai"]?.interface ?? {};
+      for (const key of ["composerIcon", "logo"]) {
+        if (!openai[key]) {
+          fail(
+            `plugin/${host}: extensions.com.openai.interface.${key} is required`,
+          );
+        }
+      }
+      return [openai.composerIcon, openai.logo].filter(Boolean);
+    },
+  },
+  claude: {
+    manifest: ".claude-plugin/plugin.json",
+    mcp: ".mcp.json",
+    transport: "http",
+    check: (manifest, host) => {
+      if (manifest.mcpServers !== "./.mcp.json") {
+        fail(
+          `plugin/${host}: mcpServers must point at the bundled "./.mcp.json"`,
+        );
+      }
+      return [];
+    },
+  },
+};
+
 function readHost(host) {
   const dir = path.join(hostsDir, host);
-  const manifestPath = path.join(dir, "plugin.json");
+  const layout = LAYOUTS[host];
+  if (!layout) {
+    fail(
+      `plugin/${host}: no layout is defined for this host in scripts/build-plugin.mjs`,
+    );
+    return null;
+  }
+  const manifestPath = path.join(dir, layout.manifest);
   if (!existsSync(manifestPath)) {
-    fail(`plugin/${host}: plugin.json is missing`);
+    fail(`plugin/${host}: ${layout.manifest} is missing`);
     return null;
   }
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  for (const field of ["$schema", "name", "version", "description"]) {
-    if (!manifest[field])
-      fail(`plugin/${host}/plugin.json: ${field} is required`);
+  for (const field of ["name", "version", "description"]) {
+    if (!manifest[field]) {
+      fail(`plugin/${host}/${layout.manifest}: ${field} is required`);
+    }
   }
   if (manifest.name && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(manifest.name)) {
-    fail(`plugin/${host}/plugin.json: name must be kebab-case`);
+    fail(`plugin/${host}/${layout.manifest}: name must be kebab-case`);
   }
-  if (manifest.skills !== "./skills/") {
-    fail(
-      `plugin/${host}/plugin.json: skills must point at the bundled "./skills/"`,
-    );
+  // An asset a manifest points at has to exist, or the listing renders with a
+  // hole in it.
+  for (const asset of layout.check(manifest, host) ?? []) {
+    if (!existsSync(path.join(dir, asset))) {
+      fail(`plugin/${host}: ${asset} is declared but not present`);
+    }
   }
-  const mcpPath = path.join(dir, "mcp.json");
+
+  const mcpPath = path.join(dir, layout.mcp);
   if (!existsSync(mcpPath)) {
-    fail(`plugin/${host}: mcp.json is missing`);
+    fail(`plugin/${host}: ${layout.mcp} is missing`);
   } else {
     const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
     const servers = Object.entries(mcp.mcpServers ?? {});
-    if (servers.length === 0)
-      fail(`plugin/${host}/mcp.json: no MCP server is declared`);
+    if (servers.length === 0) {
+      fail(`plugin/${host}/${layout.mcp}: no MCP server is declared`);
+    }
     for (const [name, server] of servers) {
-      if (server.type !== "streamable-http") {
+      if (server.type !== layout.transport) {
         fail(
-          `plugin/${host}/mcp.json: ${name} must use the streamable-http transport`,
+          `plugin/${host}/${layout.mcp}: ${name} must use the ${layout.transport} transport`,
         );
       }
       if (!server.url?.startsWith("https://")) {
-        fail(`plugin/${host}/mcp.json: ${name} must be reached over https`);
+        fail(
+          `plugin/${host}/${layout.mcp}: ${name} must be reached over https`,
+        );
       }
-    }
-  }
-  // Every asset the manifest points at has to exist, or the listing renders
-  // with a hole in it.
-  const openai = manifest.extensions?.["com.openai"]?.interface ?? {};
-  for (const key of ["composerIcon", "logo"]) {
-    const asset = openai[key];
-    if (!asset) {
-      fail(
-        `plugin/${host}/plugin.json: extensions.com.openai.interface.${key} is required`,
-      );
-      continue;
-    }
-    if (!existsSync(path.join(dir, asset))) {
-      fail(`plugin/${host}: ${asset} is declared but not present`);
     }
   }
   // A package is published; a secret in one is a secret everyone has.

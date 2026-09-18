@@ -69,8 +69,20 @@ export default {
     const response = await env.ASSETS.fetch(request);
     const acceptsHtml = request.headers.get("accept")?.includes("text/html");
 
+    // "There is no such asset" does not always arrive as a 404. Asked for a
+    // path it cannot serve, the asset binding answers `/oauth/authorize` with
+    // `307 Location: /` — which, returned as-is, sends the browser to the home
+    // screen and throws away the path *and the query string*. Every deep link
+    // in this app carries its meaning there: which change set to approve,
+    // which authorization request to consent to. So a redirect out of the
+    // asset binding is treated as the miss it is, and the app shell is served
+    // for the original URL instead.
+    const missing =
+      response.status === 404 ||
+      (response.status >= 300 && response.status < 400);
+
     if (
-      response.status !== 404 ||
+      !missing ||
       !acceptsHtml ||
       !["GET", "HEAD"].includes(request.method)
     ) {

@@ -1,0 +1,14 @@
+{
+  "name": "basepath",
+  "version": "0.1.0",
+  "description": "Work with your Basepath goals, weekly plan and reviews in the conversation. Every change is a proposal you approve in Basepath.",
+  "author": {
+    "name": "Quantum Box",
+    "url": "https://pathbase-v2.txcloud.app"
+  },
+  "homepage": "https://pathbase-v2.txcloud.app",
+  "repository": "https://github.com/quantum-box/basepath",
+  "license": "MIT",
+  "keywords": ["goals", "planning", "weekly review", "okr"],
+  "mcpServers": "./.mcp.json"
+}
