@@ -77,7 +77,7 @@ impl FieldClient {
         let response = self
             .client
             .post(format!(
-                "{}/get_tenants?required_action=field%3AViewSalesAnalytics",
+                "{}/get_tenants?required_action=field%3AListTenants",
                 self.base_url.trim_end_matches('/')
             ))
             .header("x-operator-id", &self.root_operator_id)
@@ -172,11 +172,13 @@ impl FieldClient {
         })
     }
     pub async fn tenants(&self, token: &str) -> Result<Vec<FieldTenant>> {
-        // Field currently permits only this action for /get_tenants. Do not invent a PathBase action here.
+        // Field accepts only its own tenant-listing action here, deliberately kept
+        // separate from the sales grants so listing tenants does not require an
+        // unrelated sales permission. Do not invent a PathBase action.
         let v = self
             .request(
                 Method::POST,
-                "/get_tenants?required_action=field%3AViewSalesAnalytics",
+                "/get_tenants?required_action=field%3AListTenants",
                 token,
                 &self.root_operator_id,
                 &self.platform_id,

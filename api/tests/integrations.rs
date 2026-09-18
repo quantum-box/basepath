@@ -110,7 +110,7 @@ async fn mock(
         },
         "/get_tenants"=> {
             assert_eq!(method, Method::POST);
-            assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AViewSalesAnalytics"));
+            assert_eq!(headers.get("x-platform-id").unwrap(),"tn_platform");assert_eq!(headers.get("x-operator-id").unwrap(),"tn_root");assert!(uri.query().unwrap().contains("field%3AListTenants"));
             if headers.get("authorization").is_none() {
                 return StatusCode::UNAUTHORIZED.into_response();
             }
