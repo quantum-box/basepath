@@ -34,6 +34,8 @@ Tachyon issues the database, the SQL user, its grant, and the DSN secret, and in
 
 `PATHBASE_DB_ENVIRONMENT` is declared per environment (`production` / `preview`) and never in the base list. The first process to migrate writes it into `database_identity`; a process configured for a different value refuses to migrate and reports `environment_mismatch` from readiness. A production build pointed at a preview DSN — or the reverse — therefore fails closed instead of writing to the wrong database.
 
+The rule applies only when **both** sides carry a label. A missing label (`local-preview`, the value when the variable is unset) is a configuration gap, not a mix-up: a preview build only *plans* the manifest, so a preview deployment can start before its overlay env var has ever been applied. Such a database is adopted by the next start that does carry a label, rather than taking the deployment down. Two labelled deployments disagreeing is always refused.
+
 ### Migration
 
 Migrations run when the API process opens the database, inside the app's own network. That is the only place the managed Cloud App TiDB is reachable from: it is PrivateLink-only, so a command hook on the shared build runner cannot reach it, and a `migration.lambdaInvoke` hook runs *before* the candidate is deployed, which would execute the previously deployed code against the new database. Simultaneous cold starts are serialized with an advisory lock (`GET_LOCK`). MySQL advisory locks are server-wide rather than per database, so the lock name carries the database name: a per-PR preview and production sharing one TiDB cluster do not serialize against each other. A process whose schema is already current skips the lock entirely.

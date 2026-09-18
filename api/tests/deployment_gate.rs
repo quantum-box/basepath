@@ -81,6 +81,23 @@ async fn readiness_and_environment_claims_gate_the_deployment() {
     assert_eq!(body["status"], "unavailable");
     assert_eq!(body["reason"], "database_unreachable");
 
+    // --- an unlabelled claim is adopted, not refused ----------------------
+    // A deployment can start before its manifest overlay is applied. That is
+    // a missing label, not a mix-up, so the next start adopts it instead of
+    // taking the deployment down.
+    let adopted = dir
+        .path()
+        .join("adopted.sqlite3")
+        .to_string_lossy()
+        .into_owned();
+    std::env::remove_var("PATHBASE_DB_ENVIRONMENT");
+    Service::open(&adopted).await.unwrap();
+    std::env::set_var("PATHBASE_DB_ENVIRONMENT", "production");
+    let service = Service::open(&adopted).await.unwrap();
+    let (status, body) = readiness(service).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["database_environment"], "production");
+
     // --- a database claimed by another deployment is refused ---------------
     let path = dir
         .path()

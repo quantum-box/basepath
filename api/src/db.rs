@@ -411,6 +411,10 @@ pub fn expected_schema_version() -> i64 {
         .unwrap_or(0)
 }
 
+/// Value used when no deployment label is configured: local development, and
+/// a deployment whose manifest overlay has not been applied yet.
+pub const UNLABELLED_ENVIRONMENT: &str = "local-preview";
+
 /// Which deployment this process believes it is serving. Production and each
 /// per-PR preview declare their own value in the Cloud App manifest.
 pub fn configured_environment() -> String {
@@ -418,7 +422,7 @@ pub fn configured_environment() -> String {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "local-preview".into())
+        .unwrap_or_else(|| UNLABELLED_ENVIRONMENT.into())
 }
 
 fn setting(key: &str, fallback: u64) -> u64 {
@@ -475,10 +479,32 @@ pub struct SchemaStatus {
 impl SchemaStatus {
     pub fn is_ready(&self) -> bool {
         self.schema_version == self.expected_schema_version
-            && self
-                .database_environment
-                .as_deref()
-                .is_some_and(|recorded| recorded == self.environment)
+            && self.database_environment.is_some()
+            && !self.environment_conflicts()
+    }
+
+    /// Whether this process still has to write its deployment label.
+    pub fn needs_claim(&self) -> bool {
+        match self.database_environment.as_deref() {
+            None => true,
+            Some(recorded) => {
+                recorded != self.environment && self.environment != UNLABELLED_ENVIRONMENT
+            }
+        }
+    }
+
+    /// True only when two *labelled* deployments disagree.
+    ///
+    /// An unlabelled side is a missing configuration, not a mix-up: a process
+    /// started before its manifest overlay was applied must not take the
+    /// deployment down, and it must not repurpose a database either.
+    pub fn environment_conflicts(&self) -> bool {
+        let Some(recorded) = self.database_environment.as_deref() else {
+            return false;
+        };
+        recorded != self.environment
+            && recorded != UNLABELLED_ENVIRONMENT
+            && self.environment != UNLABELLED_ENVIRONMENT
     }
 }
 
@@ -603,7 +629,7 @@ impl Db {
         // there is nothing to apply. A missing table makes the probe fail,
         // which is itself the signal to run.
         if let Ok(status) = self.schema_status().await {
-            if status.is_ready() {
+            if status.is_ready() && !status.needs_claim() {
                 return Ok(());
             }
         }
@@ -740,7 +766,12 @@ impl Db {
             .map(|row| row.text(0))
             .transpose()?;
         match recorded {
-            Some(existing) if existing != environment => {
+            // Two labelled deployments disagreeing is a real mix-up.
+            Some(existing)
+                if existing != environment
+                    && existing != UNLABELLED_ENVIRONMENT
+                    && environment != UNLABELLED_ENVIRONMENT =>
+            {
                 return Err(ApiError::new(
                     500,
                     "DATABASE_ENVIRONMENT_MISMATCH",
@@ -749,6 +780,15 @@ impl Db {
                          '{environment}' として使用できません"
                     ),
                 ));
+            }
+            // The database was claimed before its manifest overlay existed;
+            // adopt the label now rather than failing the rollout.
+            Some(existing) if existing == UNLABELLED_ENVIRONMENT && existing != environment => {
+                tx.execute(
+                    "UPDATE database_identity SET environment=?,claimed_at=? WHERE id=?",
+                    &crate::params![environment, crate::service::now(), IDENTITY_ROW],
+                )
+                .await?;
             }
             Some(_) => {}
             None => {

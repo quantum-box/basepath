@@ -98,8 +98,10 @@ async fn readiness(State(state): State<HttpState>) -> Response {
     let ready = status.is_ready();
     let reason = if status.schema_version != status.expected_schema_version {
         "schema_out_of_date"
-    } else if status.database_environment.as_deref() != Some(status.environment.as_str()) {
+    } else if status.environment_conflicts() {
         "environment_mismatch"
+    } else if status.database_environment.is_none() {
+        "unclaimed"
     } else {
         "ok"
     };
