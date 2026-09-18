@@ -141,3 +141,52 @@ test("forwards OAuth protected resource metadata to the API unchanged", async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+test("proxies MCP requests without losing auth headers or caching them", async () => {
+  const originalFetch = globalThis.fetch;
+  let forwarded;
+  globalThis.fetch = async (request) => {
+    forwarded = request;
+    return new Response('{"jsonrpc":"2.0","id":1,"result":{}}', {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        "mcp-protocol-version": "2025-11-25",
+      },
+    });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://pathbase-v2.example/api/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer token-value",
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}',
+      }),
+      { PATHBASE_API_ORIGIN: "https://pathbase-api.example" },
+    );
+
+    // The access token is what identifies the person; dropping it would turn
+    // every MCP call into an anonymous one.
+    assert.equal(forwarded.headers.get("authorization"), "Bearer token-value");
+    assert.equal(forwarded.headers.get("mcp-protocol-version"), "2025-11-25");
+    assert.equal(
+      forwarded.headers.get("accept"),
+      "application/json, text/event-stream",
+    );
+    assert.equal(forwarded.url, "https://pathbase-api.example/mcp");
+    assert.equal(forwarded.method, "POST");
+
+    // Nothing in an MCP exchange may be served from a cache.
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("mcp-protocol-version"), "2025-11-25");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

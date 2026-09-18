@@ -73,9 +73,13 @@ hosted MCP は Streamable HTTP の `/mcp`（`PATHBASE_WEB_ROOT` 使用時は `/a
 - 権限: `pathbase.read` / `pathbase.propose` / `pathbase.apply`。scopeがあっても変更は案のままで、本人が差分を確認して承認するまで反映されません。`apply`は本人が承認済みの案だけを適用できます。
 - 認可: 操作ごとにワークスペース権限を再検証します。引数で別のworkspaceを指定しても権限は得られません。
 
+transportはstateless Streamable HTTP（JSON応答）です。Lambdaでは連続したリクエストが別の実行環境に届くため、sessionを持ちません。`initialize`は`Mcp-Session-Id`を返さず、応答は`application/json`、SSE用の`GET`は拒否します。`Host`（と設定時は`Origin`）を検証し、応答は常に`Cache-Control: no-store`です。
+
+toolのannotationsは実際の副作用に合わせています。変更案はDELETEを含みうるので、preview / propose / applyは`destructiveHint: true`です。`pathbase_get_graph`は最大`limit`件（既定・上限とも200）を返し、`truncated`を明示します。
+
 discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT / Claude実機での接続確認は未実施です。
 
-13個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
+17個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 
 ## 検証
 

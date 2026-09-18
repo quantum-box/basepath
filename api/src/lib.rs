@@ -94,6 +94,20 @@ pub fn remote_mcp_router(
             "PATHBASE_MCP_ALLOWED_HOSTSを設定してください",
         ));
     }
+    // Browser origins that may reach the endpoint. Empty disables the check,
+    // which is correct for non-browser MCP clients that send no Origin.
+    let allowed_origins = std::env::var("PATHBASE_MCP_ALLOWED_ORIGINS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Ok(Some(mcp::remote_router(
         mcp::RemoteMcp {
             service,
@@ -101,6 +115,7 @@ pub fn remote_mcp_router(
             resource: Arc::new(resource),
         },
         allowed_hosts,
+        allowed_origins,
     )))
 }
 

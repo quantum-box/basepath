@@ -187,11 +187,11 @@ async fn post(
     request.send().await.unwrap()
 }
 
-fn json_rpc_from_sse(body: &str) -> Value {
-    body.lines()
-        .filter_map(|line| line.strip_prefix("data:").map(str::trim))
-        .find_map(|data| serde_json::from_str(data).ok())
-        .unwrap_or_else(|| panic!("SSE response must contain a JSON-RPC data event: {body:?}"))
+/// The endpoint answers with plain JSON, not SSE framing: there is no session
+/// to stream into.
+fn json_rpc(body: &str) -> Value {
+    serde_json::from_str(body)
+        .unwrap_or_else(|_| panic!("expected a JSON-RPC response body: {body:?}"))
 }
 
 async fn request(
@@ -213,14 +213,18 @@ async fn request(
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let headers = response.headers().clone();
-    let value = json_rpc_from_sse(&response.text().await.unwrap());
+    let value = json_rpc(&response.text().await.unwrap());
     assert!(value.get("error").is_none(), "{value}");
     (value["result"].clone(), headers)
 }
 
-/// Opens an MCP session for a token and returns its session id.
-async fn open_session(client: &HttpClient, url: &str, token: &str) -> String {
-    let (_, headers) = request(
+/// Runs `initialize` and asserts the endpoint advertises no session.
+///
+/// Consecutive requests reach different Lambda execution environments, so
+/// there is nothing to pin a session to. The client simply sends every request
+/// on its own.
+async fn initialize(client: &HttpClient, url: &str, token: &str) {
+    let (result, headers) = request(
         client,
         url,
         token,
@@ -230,22 +234,11 @@ async fn open_session(client: &HttpClient, url: &str, token: &str) -> String {
         json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"pathbase-remote-test","version":"1"}}),
     )
     .await;
-    let session = headers
-        .get("mcp-session-id")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let accepted = post(
-        client,
-        url,
-        token,
-        Some(&session),
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-    )
-    .await;
-    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-    session
+    assert!(result["capabilities"]["tools"].is_object());
+    assert!(
+        headers.get("mcp-session-id").is_none(),
+        "a stateless endpoint must not hand out a session id"
+    );
 }
 
 /// Approves a connection the way the PathBase screen does, as the person.
@@ -375,18 +368,25 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
 
     // --- approved for reading only ---------------------------------------
     approve(&service, "us_alice", json!(["pathbase.read"])).await;
-    let session = open_session(&client, &url, &alice).await;
-    let (tools, _) = request(
-        &client,
-        &url,
-        &alice,
-        Some(&session),
-        2,
-        "tools/list",
-        json!({}),
-    )
-    .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 13);
+    initialize(&client, &url, &alice).await;
+    let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
+    let listed = tools["tools"].as_array().unwrap();
+    assert_eq!(listed.len(), 17);
+    // Annotations describe the real effect: a change set can contain DELETE
+    // operations, so proposing and applying one are not "non-destructive".
+    let shape = |name: &str| {
+        listed
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing tool {name}"))["annotations"]
+            .clone()
+    };
+    assert_eq!(shape("pathbase_get_graph")["readOnlyHint"], true);
+    assert_eq!(shape("pathbase_get_graph")["destructiveHint"], false);
+    assert_eq!(shape("pathbase_propose_plan")["readOnlyHint"], false);
+    assert_eq!(shape("pathbase_propose_plan")["destructiveHint"], true);
+    assert_eq!(shape("pathbase_apply_changes")["destructiveHint"], true);
+    assert_eq!(shape("pathbase_record_checkin")["destructiveHint"], false);
 
     // Alice has a personal workspace of her own, provisioned on sign-in. She
     // cannot read one she is not a member of.
@@ -394,7 +394,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         &client,
         &url,
         &alice,
-        Some(&session),
+        None,
         3,
         "tools/call",
         json!({"name":"pathbase_search_items","arguments":{"workspace_id":"someone-elses-workspace"}}),
@@ -407,7 +407,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         &client,
         &url,
         &alice,
-        Some(&session),
+        None,
         4,
         "tools/call",
         json!({"name":"pathbase_propose_plan","arguments":{"workspace_id":"personal","idempotency_key":"k1","operations":[]}}),
@@ -444,13 +444,13 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         )
         .await
         .unwrap();
-    // The same, still-valid token no longer works, and the existing session
-    // does not survive it either.
+    // The same, still-valid token stops working on the very next request:
+    // the delegation is read from the shared database, not cached.
     let after_revoke = post(
         &client,
         &url,
         &alice,
-        Some(&session),
+        None,
         json!({"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}),
     )
     .await;
@@ -481,12 +481,12 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         json!(["pathbase.read", "pathbase.propose"]),
     )
     .await;
-    let bob_session = open_session(&client, &url, &bob).await;
+    initialize(&client, &url, &bob).await;
     let (bob_context, _) = request(
         &client,
         &url,
         &bob,
-        Some(&bob_session),
+        None,
         6,
         "tools/call",
         json!({"name":"pathbase_get_context","arguments":{}}),
@@ -527,4 +527,153 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     let serialized = serde_json::to_string(&bob_context).unwrap();
     assert!(!serialized.contains(&bob), "a token must never be echoed");
     assert!(!serialized.contains(MCP_CLIENT.trim_start_matches("pathbase-")));
+}
+
+/// Two independent server processes over one database, alternating requests.
+///
+/// This is the shape Lambda produces: the client keeps one logical connection,
+/// but consecutive requests land on different execution environments, and one
+/// of them may have started after the other.
+#[tokio::test]
+async fn consecutive_requests_may_reach_different_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("stateless.sqlite3");
+    let upstream = start_upstream().await;
+    let issuer = format!("{upstream}/pool");
+    let (_first, first_url, _) = start_server(&db, &upstream).await;
+    let client = HttpClient::new();
+    let service = Service::open(&db.to_string_lossy()).await.unwrap();
+
+    let token = mint(&issuer, "us_carol", MCP_CLIENT, 3600);
+    // First contact creates the pending delegation.
+    let pending = post(
+        &client,
+        &first_url,
+        &token,
+        None,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+    )
+    .await;
+    assert_eq!(pending.status(), StatusCode::FORBIDDEN);
+    approve(
+        &service,
+        "us_carol",
+        json!(["pathbase.read", "pathbase.propose"]),
+    )
+    .await;
+
+    // A second process, started independently, serves the same connection.
+    let (_second, second_url, _) = start_server(&db, &upstream).await;
+    assert_ne!(first_url, second_url);
+
+    // No initialize against the second instance, and no session id anywhere:
+    // the request simply works.
+    let (tools, headers) = request(
+        &client,
+        &second_url,
+        &token,
+        None,
+        2,
+        "tools/list",
+        json!({}),
+    )
+    .await;
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 17);
+    assert!(headers.get("mcp-session-id").is_none());
+    // Nothing the endpoint returns may be cached by a proxy in between.
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert!(headers
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
+
+    // A proposal made through one instance is visible through the other.
+    let (context, _) = request(
+        &client,
+        &first_url,
+        &token,
+        None,
+        3,
+        "tools/call",
+        json!({"name":"pathbase_get_context","arguments":{}}),
+    )
+    .await;
+    let workspace = context["structuredContent"]["workspaces"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (proposed, _) = request(
+        &client,
+        &second_url,
+        &token,
+        None,
+        4,
+        "tools/call",
+        json!({"name":"pathbase_propose_plan","arguments":{"workspace_id":workspace,"idempotency_key":"cross-instance","operations":[{"method":"POST","path":format!("/v1/workspaces/{workspace}/items"),"body":{"kind":"action","title":"別インスタンス経由の案"}}]}}),
+    )
+    .await;
+    assert_eq!(proposed["isError"], false);
+    let change_id = proposed["structuredContent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Reading it back through the first instance shows the same change set.
+    let (seen, _) = request(
+        &client,
+        &first_url,
+        &token,
+        None,
+        5,
+        "tools/call",
+        json!({"name":"pathbase_get_change","arguments":{"workspace_id":workspace,"preview_id":change_id}}),
+    )
+    .await;
+    assert_eq!(seen["isError"], false);
+    assert_eq!(seen["structuredContent"]["status"], "pending");
+
+    // Replaying the same idempotency key returns the same change set rather
+    // than creating a second one.
+    let (replayed, _) = request(
+        &client,
+        &first_url,
+        &token,
+        None,
+        6,
+        "tools/call",
+        json!({"name":"pathbase_propose_plan","arguments":{"workspace_id":workspace,"idempotency_key":"cross-instance","operations":[{"method":"POST","path":format!("/v1/workspaces/{workspace}/items"),"body":{"kind":"action","title":"別インスタンス経由の案"}}]}}),
+    )
+    .await;
+    assert_eq!(replayed["structuredContent"]["id"], change_id);
+
+    // The transport advertises only what it implements: there is no SSE stream
+    // to open, so GET is refused rather than left hanging.
+    let stream = client
+        .get(&second_url)
+        .bearer_auth(&token)
+        .header("accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        stream.status().is_client_error(),
+        "GET must be refused, got {}",
+        stream.status()
+    );
+
+    // A request for a host this deployment does not serve is refused, so a
+    // DNS-rebinding attempt cannot reach the tools.
+    let rebind = client
+        .post(&second_url)
+        .bearer_auth(&token)
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .header("host", "evil.example")
+        .json(&json!({"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(rebind.status().is_client_error(), "{}", rebind.status());
 }
