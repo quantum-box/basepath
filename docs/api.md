@@ -25,6 +25,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles |
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
+| `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
 | `GET /v1/workspaces/{w}/cycles` | 計画期間一覧 |
 | `GET /v1/workspaces/{w}/items` | query / kind / state / archived / cursor / limitによる検索 |
 | `GET /v1/workspaces/{w}/items/{id}` | 版番号を含む項目 |
@@ -109,6 +110,19 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 通常の記録はnote / review / learning / checkin。実行履歴を偽装できないようcompletionなどは専用操作だけが生成します。記録・観測の訂正はsupersedes_idで追記し、元データは保持します。
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
+
+## Goal Alignment
+
+「誰の何が、どの目標に効いているか」を1つのグラフで扱います。OKR専用のデータモデルは作りません。OKRテンプレートもこのモデルの上に乗ります。
+
+- `GET /v1/workspaces/{w}/alignment?owner_kind=&owner_id=&cycle_id=`：目標ごとに担当（organization / team / person）、期間、状態、自己評価、`part_of`、`contributes_to`、上位から見た`supported_by`、配下の取り組み・行動の件数、上位未接続かどうか。ワークスペース内に存在するチーム名・担当者、担当なしの件数も返します。
+- 担当は`items`の`fields.owner`（`{kind, id}`）です。`organization`にidは指定しません（ワークスペース自身が組織です）。`person`のidはそのワークスペースのメンバーに限ります。
+
+**alignmentは1つのワークスペース内のグラフです。** 個人ワークスペースの目標は含まれず、別ワークスペースのIDへリンクすることもできません。共有ワークスペースに目標を置くこと自体が「共有する」という行為であり、会社目標が個人の非公開目標を指せてしまうと、その選択を本人の代わりに製品が行うことになります。
+
+`part_of`と`contributes_to`は別物として扱います。前者は構造（親は1つまで）、後者は貢献（複数可）。どちらも循環は拒否します（`contributes_to`を含む）。「これは何の一部か」と「これは何に効くか」は別の問いなので、画面でも混ぜません。
+
+個人担当の目標は、本人かワークスペースのオーナーだけが変更できます（`403 GOAL_OWNER_REQUIRED`）。閲覧は通常のメンバー権限どおりです。誰にも見えない目標は何にも紐づけられないためです。
 
 ## 計画期間
 

@@ -194,6 +194,143 @@ fn workspace_today(workspace: &Workspace) -> NaiveDate {
         .unwrap_or_else(|_| Utc::now().date_naive())
 }
 
+/// The alignment graph: whose goals these are, and what they roll up to.
+///
+/// One workspace, one graph. A goal in someone's personal workspace is not in
+/// here and cannot be — the two workspaces are separate security boundaries,
+/// and a person's private plan being visible because a company goal happens to
+/// point at it would defeat having them. Putting a goal in a shared workspace
+/// *is* the act of sharing it.
+///
+/// `part_of` and `contributes_to` mean different things and are kept apart:
+/// the first is structure (one parent, this is part of that), the second is
+/// contribution (many, this helps that along). Collapsing them would make
+/// "what is this part of" and "what does this help" the same question, and
+/// they are not.
+async fn alignment_graph(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let cycles: Vec<Cycle> = list(tx, w, "cycles").await?;
+
+    let wanted_kind = query.get("owner_kind").map(String::as_str);
+    let wanted_id = query.get("owner_id").map(String::as_str);
+    let wanted_cycle = query.get("cycle_id").map(String::as_str);
+
+    // Goals, not every item: alignment is about outcomes and the milestones
+    // that mark them. Actions hang off initiatives and are reached by
+    // drilling in, not by being scattered across the map.
+    let goals: Vec<&Item> = items
+        .iter()
+        .filter(|item| {
+            item.archived_at.is_none() && ["outcome", "milestone"].contains(&item.kind.as_str())
+        })
+        .collect();
+
+    let matches = |item: &Item| -> bool {
+        let owner = item.fields.owner.as_ref();
+        wanted_kind.is_none_or(|kind| owner.is_some_and(|owner| owner.kind == kind))
+            && wanted_id.is_none_or(|id| owner.is_some_and(|owner| owner.id == id))
+            && wanted_cycle.is_none_or(|cycle| item.fields.cycle_id.as_deref() == Some(cycle))
+    };
+
+    let edge_of = |item: &Item, kind: &str| -> Vec<String> {
+        relations
+            .iter()
+            .filter(|relation| relation.relation_type == kind && relation.source_id == item.id)
+            .map(|relation| relation.target_id.clone())
+            .collect()
+    };
+
+    let nodes: Vec<Value> = goals
+        .iter()
+        .filter(|item| matches(item))
+        .map(|item| {
+            let part_of = edge_of(item, "part_of");
+            let contributes_to = edge_of(item, "contributes_to");
+            // What rolls up into this, so a company goal can be opened.
+            let supported_by: Vec<&str> = relations
+                .iter()
+                .filter(|relation| {
+                    ["part_of", "contributes_to"].contains(&relation.relation_type.as_str())
+                        && relation.target_id == item.id
+                })
+                .map(|relation| relation.source_id.as_str())
+                .collect();
+            // Initiatives and actions under this goal, for drilling in.
+            let beneath = items
+                .iter()
+                .filter(|other| {
+                    other.archived_at.is_none()
+                        && ["initiative", "action"].contains(&other.kind.as_str())
+                        && relations.iter().any(|relation| {
+                            relation.source_id == other.id
+                                && relation.target_id == item.id
+                                && ["part_of", "contributes_to"]
+                                    .contains(&relation.relation_type.as_str())
+                        })
+                })
+                .count();
+            let cycle = item
+                .fields
+                .cycle_id
+                .as_ref()
+                .and_then(|id| cycles.iter().find(|cycle| &cycle.id == id));
+            json!({
+                "id": item.id,
+                "title": item.title,
+                "kind": item.kind,
+                "state": item.state,
+                "owner": item.fields.owner,
+                "cycle": cycle,
+                "self_assessment": item.fields.self_assessment,
+                "assessed_at": item.fields.assessed_at,
+                "due_date": item.due_date,
+                // Kept separate on purpose; see this function's comment.
+                "part_of": part_of,
+                "contributes_to": contributes_to,
+                "supported_by": supported_by,
+                "descendant_work": beneath,
+                // A goal connected to nothing above it. Not wrong — a company
+                // goal is supposed to be one — but worth being able to find.
+                "orphan": part_of.is_empty() && contributes_to.is_empty(),
+            })
+        })
+        .collect();
+
+    // Who appears in this workspace at all, so a surface can offer the
+    // switches without inventing owners that do not exist.
+    let mut teams: Vec<&str> = goals
+        .iter()
+        .filter_map(|item| item.fields.owner.as_ref())
+        .filter(|owner| owner.kind == "team")
+        .map(|owner| owner.id.as_str())
+        .collect();
+    teams.sort_unstable();
+    teams.dedup();
+    let mut people: Vec<&str> = goals
+        .iter()
+        .filter_map(|item| item.fields.owner.as_ref())
+        .filter(|owner| owner.kind == "person")
+        .map(|owner| owner.id.as_str())
+        .collect();
+    people.sort_unstable();
+    people.dedup();
+
+    let unowned = goals
+        .iter()
+        .filter(|item| item.fields.owner.is_none())
+        .count();
+
+    Ok(json!({
+        "workspace_id": w,
+        "goals": nodes,
+        "teams": teams,
+        "people": people,
+        "unowned_goals": unowned,
+        "orphan_goals": nodes.iter().filter(|node| node["orphan"] == true).count(),
+    }))
+}
+
 /// Everything a surface needs to show "which period is this, and what is in
 /// it" — the same answer for the web app and for a conversation.
 async fn planning_context(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
@@ -461,6 +598,37 @@ async fn validate_item(tx: &mut Tx, item: &Item) -> Result<()> {
     {
         return Err(ApiError::invalid("優先度を確認してください"));
     }
+    if let Some(owner) = &item.fields.owner {
+        match owner.kind.as_str() {
+            // The workspace is the organization; naming it again would only
+            // create a second place for it to be wrong.
+            "organization" => {
+                if !owner.id.is_empty() {
+                    return Err(ApiError::invalid("組織の目標にownerのidは指定しません"));
+                }
+            }
+            "team" => {
+                if owner.id.trim().is_empty() || owner.id.chars().count() > 120 {
+                    return Err(ApiError::invalid("チーム名を確認してください"));
+                }
+            }
+            // A person's goal belongs to a member of this workspace. Anyone
+            // else is either a typo or an attempt to attribute work to someone
+            // who never agreed to it.
+            "person" => {
+                if role(tx, &item.workspace_id, &owner.id).await?.is_none() {
+                    return Err(ApiError::invalid(
+                        "目標の担当者は現在のワークスペースメンバーから選択してください",
+                    ));
+                }
+            }
+            _ => {
+                return Err(ApiError::invalid(
+                    "ownerのkindはorganization / team / personのいずれかです",
+                ))
+            }
+        }
+    }
     if let Some(assignee) = &item.fields.assignee_id {
         let member = role(tx, &item.workspace_id, assignee).await?;
         if member.is_none() {
@@ -613,6 +781,32 @@ async fn sync_due_notifications(tx: &mut Tx, workspace_id: &str, actor: &str) ->
     }
     Ok(())
 }
+/// Someone else's goal is theirs.
+///
+/// A shared workspace is not a place where anyone may rewrite anyone's
+/// commitments. A goal a person owns is changed by that person, or by a
+/// workspace owner — who can already remove them, so refusing here would only
+/// be theatre. Organization and team goals are ordinary editor work.
+///
+/// This is about *changing* it. Everyone who can see the workspace can see the
+/// goal, because a goal nobody can see cannot be aligned to anything.
+async fn guard_personal_goal(tx: &mut Tx, actor: &Actor, w: &str, item: &Item) -> Result<()> {
+    let Some(owner) = &item.fields.owner else {
+        return Ok(());
+    };
+    if owner.kind != "person" || owner.id == actor.id {
+        return Ok(());
+    }
+    if role(tx, w, &actor.id).await?.as_deref() == Some("owner") {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        403,
+        "GOAL_OWNER_REQUIRED",
+        "この目標は担当者本人か、ワークスペースのオーナーだけが変更できます",
+    ))
+}
+
 async fn validate_relation(tx: &mut Tx, r: &Relation) -> Result<()> {
     let _: Item = get(tx, &r.workspace_id, "items", &r.source_id).await?;
     let _: Item = get(tx, &r.workspace_id, "items", &r.target_id).await?;
@@ -648,7 +842,10 @@ async fn validate_relation(tx: &mut Tx, r: &Relation) -> Result<()> {
     if r.relation_type == "part_of" && same.iter().any(|x| x.source_id == r.source_id) {
         return Err(ApiError::invalid("整理上の親は1つまでです"));
     }
-    if ["part_of", "depends_on"].contains(&r.relation_type.as_str()) {
+    // `contributes_to` is included: a goal that contributes to a goal that
+    // contributes back to it makes "what does this roll up to" unanswerable,
+    // which is the one question the alignment graph exists for.
+    if ["part_of", "depends_on", "contributes_to"].contains(&r.relation_type.as_str()) {
         let mut todo = vec![r.target_id.clone()];
         let mut visited = HashSet::new();
         while let Some(node) = todo.pop() {
@@ -1428,6 +1625,7 @@ async fn dispatch_inner(
                 ],
             )?;
             let old: Item = get(tx, w, "items", id).await?;
+            guard_personal_goal(tx, actor, w, &old).await?;
             version(body, old.version)?;
             let mut v = value(&old)?;
             for (key, val) in body.as_object().unwrap() {
@@ -1792,6 +1990,7 @@ async fn dispatch_inner(
             .await
         }
         ("GET", "planning", "", "") => planning_context(tx, w, query).await,
+        ("GET", "alignment", "", "") => alignment_graph(tx, w, query).await,
         ("POST", "cycles", "", "") => {
             only(
                 body,
