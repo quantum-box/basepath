@@ -37,6 +37,7 @@ import { OnboardingWizard } from "./OnboardingWizard";
 import { AiSuggestions } from "./AiSuggestions";
 import { CalendarView } from "./CalendarView";
 import { WeeklyReviewScreen } from "./WeeklyReview";
+import { PlanningScreen } from "./PlanningScreen";
 import {
   MemoEditor,
   ItemEditor,
@@ -67,6 +68,7 @@ const navigation = [
   { label: "タイムライン", icon: "calendar" },
   { label: "今日の行動", icon: "tasks" },
   { label: "振り返り", icon: "book" },
+  { label: "計画期間", icon: "calendar" },
   { label: "テンプレート", icon: "stack" },
   { label: "メンバー", icon: "users" },
 ] as const;
@@ -78,6 +80,7 @@ const navigationRoutes: Record<NavigationLabel, string> = {
   タイムライン: "timeline",
   今日の行動: "today",
   振り返り: "reflection",
+  計画期間: "cycles",
   テンプレート: "templates",
   メンバー: "members",
 };
@@ -88,6 +91,7 @@ const navigationDescriptions: Record<NavigationLabel, string> = {
   タイムライン: "これからの予定と目標の進み方を、時間軸で確認します。",
   今日の行動: "今日やることに集中して、小さな前進を積み重ねます。",
   振り返り: "できたことや気づきを残し、次の行動につなげます。",
+  計画期間: "四半期・月・週の区切りで計画を運用し、次の期間へ引き継ぎます。",
   テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
   メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
 };
@@ -1794,6 +1798,28 @@ export function App() {
               )}
             </div>
           </div>
+        ) : activeNav === "計画期間" ? (
+          <PlanningScreen
+            store={store}
+            workspace={currentWorkspace}
+            items={allItems.filter(
+              (item) => item.workspace_id === currentWorkspace?.id,
+            )}
+            onOpenItem={(id) => {
+              const item = allItems.find(
+                (entry) =>
+                  entry.workspace_id === currentWorkspace?.id &&
+                  entry.id === id,
+              );
+              if (!item) return;
+              if (item.kind === "action" || item.kind === "initiative") {
+                setModal({ kind: "initiativeDetail", id: uiId(item) });
+              } else {
+                selectGoal(uiId(item));
+                navigate("目標マップ");
+              }
+            }}
+          />
         ) : activeNav === "振り返り" ? (
           <WeeklyReviewScreen
             store={store}

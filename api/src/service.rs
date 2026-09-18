@@ -98,6 +98,191 @@ fn review_week(body_or_query: &HashMap<String, String>) -> Result<(NaiveDate, Na
     Ok((start, start + chrono::Duration::days(6)))
 }
 
+/// The span and name of a planning period.
+///
+/// A cadence implies its own length — that is what choosing one means — so the
+/// end date is derived rather than asked for. Nothing else is: item dates are
+/// never touched by creating a period, and `custom` takes both ends from the
+/// person because there is nothing to derive them from.
+///
+/// `quarter`, `month` and `week` require an aligned start. A workspace whose
+/// quarters do not follow the calendar year uses `custom` and says what its
+/// periods are, rather than having this guess.
+fn cycle_span(
+    cadence: &str,
+    start: &str,
+    end: Option<&str>,
+    label: &str,
+) -> Result<(String, String)> {
+    let from = NaiveDate::parse_from_str(start, "%Y-%m-%d")
+        .map_err(|_| ApiError::invalid("開始日はYYYY-MM-DDで指定してください"))?;
+    let (last, derived) = match cadence {
+        "quarter" => {
+            if from.day() != 1 || !matches!(from.month(), 1 | 4 | 7 | 10) {
+                return Err(ApiError::invalid(
+                    "四半期は1月・4月・7月・10月の1日から始めてください。会計年度が違う場合はcustomを使用します",
+                ));
+            }
+            let end = from + chrono::Months::new(3) - chrono::Duration::days(1);
+            (
+                end,
+                format!("{} Q{}", from.year(), (from.month() - 1) / 3 + 1),
+            )
+        }
+        "month" => {
+            if from.day() != 1 {
+                return Err(ApiError::invalid("月次は月の1日から始めてください"));
+            }
+            let end = from + chrono::Months::new(1) - chrono::Duration::days(1);
+            (end, format!("{}-{:02}", from.year(), from.month()))
+        }
+        "week" => {
+            if from.weekday().num_days_from_monday() != 0 {
+                return Err(ApiError::invalid("週次は月曜日から始めてください"));
+            }
+            let iso = from.iso_week();
+            (
+                from + chrono::Duration::days(6),
+                format!("{}-W{:02}", iso.year(), iso.week()),
+            )
+        }
+        "custom" => {
+            let raw = end.ok_or_else(|| ApiError::invalid("customの期間には終了日が必要です"))?;
+            let parsed = NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+                .map_err(|_| ApiError::invalid("終了日はYYYY-MM-DDで指定してください"))?;
+            if parsed < from {
+                return Err(ApiError::invalid("終了日は開始日以降にしてください"));
+            }
+            if label.trim().is_empty() {
+                return Err(ApiError::invalid("customの期間には名前が必要です"));
+            }
+            (parsed, label.trim().to_owned())
+        }
+        _ => {
+            return Err(ApiError::invalid(
+                "cadenceはquarter / month / week / customのいずれかです",
+            ))
+        }
+    };
+    // A derived end for a named cadence is not negotiable: accepting a
+    // different one would make the label a lie.
+    if cadence != "custom" {
+        if let Some(raw) = end.filter(|value| !value.is_empty()) {
+            if raw != last.to_string() {
+                return Err(ApiError::invalid(
+                    "この期間の終了日はcadenceから決まります。別の期間にはcustomを使用します",
+                ));
+            }
+        }
+    }
+    Ok((
+        last.to_string(),
+        if label.trim().is_empty() {
+            derived
+        } else {
+            label.trim().chars().take(120).collect()
+        },
+    ))
+}
+
+/// Today, in the workspace's own timezone.
+fn workspace_today(workspace: &Workspace) -> NaiveDate {
+    workspace
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .map(|zone| Utc::now().with_timezone(&zone).date_naive())
+        .unwrap_or_else(|_| Utc::now().date_naive())
+}
+
+/// Everything a surface needs to show "which period is this, and what is in
+/// it" — the same answer for the web app and for a conversation.
+async fn planning_context(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
+    let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+    let workspace: Workspace = serde_json::from_str(
+        &tx.fetch_optional(&sql, &params![w])
+            .await?
+            .ok_or_else(ApiError::missing)?
+            .text(0)?,
+    )?;
+    let today = workspace_today(&workspace).to_string();
+
+    let mut cycles: Vec<Cycle> = list(tx, w, "cycles").await?;
+    cycles.sort_by(|a, b| a.start_date.cmp(&b.start_date).then(a.id.cmp(&b.id)));
+
+    // "Current" is the period today falls in. A workspace with no periods has
+    // no current one, and that is not an error — it is most workspaces.
+    let current = query
+        .get("cycle_id")
+        .and_then(|id| cycles.iter().position(|cycle| &cycle.id == id))
+        .or_else(|| {
+            cycles
+                .iter()
+                .position(|cycle| cycle.start_date <= today && today <= cycle.end_date)
+        });
+    let previous = current.and_then(|index| index.checked_sub(1)).or_else(|| {
+        // No current period: the newest one that has already ended.
+        cycles
+            .iter()
+            .rposition(|cycle| cycle.end_date < today)
+            .filter(|_| current.is_none())
+    });
+    let next = match current {
+        Some(index) => cycles.get(index + 1).map(|_| index + 1),
+        None => cycles.iter().position(|cycle| cycle.start_date > today),
+    };
+
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let count_in = |cycle: &Cycle| {
+        items
+            .iter()
+            .filter(|item| {
+                item.archived_at.is_none() && item.fields.cycle_id.as_deref() == Some(&cycle.id)
+            })
+            .count()
+    };
+    let describe = |index: Option<usize>| -> Value {
+        match index.and_then(|index| cycles.get(index)) {
+            Some(cycle) => json!({"cycle":cycle,"item_count":count_in(cycle)}),
+            None => Value::Null,
+        }
+    };
+
+    // Work that belongs to no period. It is not a problem to be fixed — an
+    // idea with no date is allowed to exist — but a period view would hide it.
+    let unassigned = items
+        .iter()
+        .filter(|item| item.archived_at.is_none() && item.fields.cycle_id.is_none())
+        .count();
+
+    // What the person last said they wanted to focus on. Their words, not a
+    // plan derived from them: turning this into actions is a proposal someone
+    // has to approve.
+    let mut reviews: Vec<WeeklyReview> = list(tx, w, "weekly_reviews").await?;
+    reviews.retain(|review| review.status == "finalized");
+    reviews.sort_by(|a, b| {
+        a.week_start
+            .cmp(&b.week_start)
+            .then(a.revision.cmp(&b.revision))
+    });
+    let last_review = reviews.last().map(|review| {
+        json!({"week_start":review.week_start,"next_focus":review.next_focus,
+               "learnings":review.learnings,"challenges":review.challenges,
+               "finalized_at":review.finalized_at})
+    });
+
+    Ok(json!({
+        "workspace_id": w,
+        "timezone": workspace.timezone,
+        "today": today,
+        "cycles": cycles,
+        "current": describe(current),
+        "previous": describe(previous),
+        "next": describe(next),
+        "unassigned_items": unassigned,
+        "last_finalized_review": last_review,
+    }))
+}
+
 fn latest_by_occurrence(records: &[Record]) -> HashMap<String, &Record> {
     let mut result = HashMap::new();
     for record in records {
@@ -912,6 +1097,7 @@ async fn dispatch_inner(
                 "views",
                 "changesets",
                 "weekly_reviews",
+                "cycles",
             ];
             let mut result = json!({"workspace_id":w});
             for col in cols {
@@ -1093,6 +1279,7 @@ async fn dispatch_inner(
                 "views",
                 "changesets",
                 "weekly_reviews",
+                "cycles",
             ]
             .contains(&col) =>
         {
@@ -1141,6 +1328,7 @@ async fn dispatch_inner(
                     "views",
                     "changesets",
                     "weekly_reviews",
+                    "cycles",
                 ]
                 .contains(&col) =>
         {
@@ -1603,6 +1791,158 @@ async fn dispatch_inner(
             )
             .await
         }
+        ("GET", "planning", "", "") => planning_context(tx, w, query).await,
+        ("POST", "cycles", "", "") => {
+            only(
+                body,
+                &["cadence", "start_date", "end_date", "label", "previous_id"],
+            )?;
+            let cadence = text(body, "cadence");
+            let start = text(body, "start_date");
+            let (end, label) = cycle_span(
+                cadence,
+                start,
+                body["end_date"].as_str(),
+                text(body, "label"),
+            )?;
+            // Periods do not overlap: "which period is this" has to have one
+            // answer, and a person choosing between two overlapping quarters
+            // is being asked a question the product invented.
+            for existing in list::<Cycle>(tx, w, "cycles").await? {
+                if start <= existing.end_date.as_str() && existing.start_date <= end {
+                    return Err(ApiError::new(
+                        409,
+                        "CYCLE_OVERLAP",
+                        &format!("{}と期間が重なっています", existing.label),
+                    ));
+                }
+            }
+            let previous = body["previous_id"].as_str().filter(|id| !id.is_empty());
+            if let Some(previous) = previous {
+                let _: Cycle = get(tx, w, "cycles", previous).await?;
+            }
+            let stamp = now();
+            let cycle = Cycle {
+                id: new_id("cycle"),
+                workspace_id: w.into(),
+                cadence: cadence.into(),
+                label,
+                start_date: start.into(),
+                end_date: end,
+                status: "planned".into(),
+                previous_id: previous.map(str::to_owned),
+                created_at: stamp.clone(),
+                updated_at: stamp,
+                version: 1,
+            };
+            put(tx, w, "cycles", &cycle.id, &cycle).await?;
+            value(cycle)
+        }
+        ("PATCH", "cycles", id, "") if !id.is_empty() => {
+            only(body, &["label", "status", "expected_version"])?;
+            let mut cycle: Cycle = get(tx, w, "cycles", id).await?;
+            version(body, cycle.version)?;
+            if let Some(label) = body["label"].as_str() {
+                if label.trim().is_empty() {
+                    return Err(ApiError::invalid("期間の名前を入力してください"));
+                }
+                cycle.label = label.trim().chars().take(120).collect();
+            }
+            if let Some(status) = body["status"].as_str() {
+                if !["planned", "active", "closed"].contains(&status) {
+                    return Err(ApiError::invalid(
+                        "状態はplanned / active / closedのいずれかです",
+                    ));
+                }
+                cycle.status = status.into();
+            }
+            cycle.version += 1;
+            cycle.updated_at = now();
+            put(tx, w, "cycles", id, &cycle).await?;
+            value(cycle)
+        }
+        ("DELETE", "cycles", id, "") if !id.is_empty() => {
+            let cycle: Cycle = get(tx, w, "cycles", id).await?;
+            // Deleting a period must not orphan what is in it. Emptying it
+            // first is a decision someone makes deliberately.
+            let held = list::<Item>(tx, w, "items")
+                .await?
+                .into_iter()
+                .filter(|item| item.fields.cycle_id.as_deref() == Some(id))
+                .count();
+            if held > 0 {
+                return Err(ApiError::new(
+                    409,
+                    "CYCLE_NOT_EMPTY",
+                    &format!("{held}件の項目がこの期間に属しています"),
+                ));
+            }
+            remove(tx, w, "cycles", &cycle.id).await?;
+            Ok(json!({"deleted":id}))
+        }
+        // Carrying work into the next period.
+        //
+        // The source item is not touched. The period that has already been
+        // reviewed still says what was in it, and the new item points back at
+        // where it came from — otherwise "we carried this over three times"
+        // becomes unanswerable.
+        ("POST", "cycles", id, "carry-over") if !id.is_empty() => {
+            only(body, &["item_ids", "expected_version"])?;
+            let target: Cycle = get(tx, w, "cycles", id).await?;
+            version(body, target.version)?;
+            if target.status == "closed" {
+                return Err(ApiError::invalid("終了した期間へは引き継げません"));
+            }
+            let requested: Vec<String> = body["item_ids"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if requested.is_empty() || requested.len() > 100 {
+                return Err(ApiError::invalid("引き継ぐ項目を1〜100件指定してください"));
+            }
+            let mut carried = Vec::new();
+            for item_id in requested {
+                let source: Item = get(tx, w, "items", &item_id).await?;
+                if source.fields.cycle_id.as_deref() == Some(id) {
+                    return Err(ApiError::invalid(&format!(
+                        "{}はすでにこの期間にあります",
+                        source.title
+                    )));
+                }
+                let stamp = now();
+                let mut fields = source.fields.clone();
+                fields.cycle_id = Some(id.to_owned());
+                fields.carried_from = Some(source.id.clone());
+                // Dates belong to the period they were set for. Carrying work
+                // forward does not decide when it now happens; the person does.
+                let item = Item {
+                    id: new_id("item"),
+                    workspace_id: w.into(),
+                    kind: source.kind.clone(),
+                    title: source.title.clone(),
+                    description: source.description.clone(),
+                    state: "active".into(),
+                    version: 1,
+                    created_at: stamp.clone(),
+                    updated_at: stamp,
+                    archived_at: None,
+                    start_date: None,
+                    due_date: None,
+                    scheduled_date: None,
+                    scheduled_time: None,
+                    fields,
+                };
+                put(tx, w, "items", &item.id, &item).await?;
+                carried.push(item);
+            }
+            Ok(json!({"cycle":target,"items":carried}))
+        }
         ("POST", "templates", id, "apply") => apply_template(tx, actor, w, id, body).await,
         ("POST", "onboarding", "complete", "") => complete_onboarding(tx, actor, w, body).await,
         ("POST", "changesets", "preview", "") => preview(tx, actor, w, body).await,
@@ -1711,6 +2051,7 @@ async fn dispatch_inner(
                 "observations",
                 "views",
                 "weekly_reviews",
+                "cycles",
             ] {
                 backup[col] = value(list::<Value>(tx, w, col).await?)?;
             }
@@ -1893,6 +2234,7 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
                     "actions",
                     "templates",
                     "views",
+                    "cycles",
                 ]
                 .contains(&p[3]))
             || !["POST", "PATCH", "DELETE"].contains(&op.method.as_str())
@@ -2132,6 +2474,7 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             "observations",
             "views",
             "weekly_reviews",
+            "cycles",
         ],
     )?;
     if b["schema_version"] != 1 {
@@ -2145,11 +2488,14 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         "observations",
         "views",
         "weekly_reviews",
+        "cycles",
     ];
     let mut count = 0;
     for col in cols {
         let Some(docs) = b[col].as_array() else {
-            if col == "weekly_reviews" {
+            // Collections added after the backup format existed are optional:
+            // an older export simply has none of them.
+            if ["weekly_reviews", "cycles"].contains(&col) {
                 continue;
             }
             return Err(ApiError::invalid("バックアップに必要な一覧がありません"));
@@ -2202,6 +2548,27 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         timestamp(&o.observed_at)?;
         if let Some(id) = o.supersedes_id {
             let _: Observation = get(tx, w, "observations", &id).await?;
+        }
+    }
+    for cycle in list::<Cycle>(tx, w, "cycles").await? {
+        date(&Some(cycle.start_date.clone()))?;
+        date(&Some(cycle.end_date.clone()))?;
+        if cycle.end_date < cycle.start_date {
+            return Err(ApiError::invalid("期間の終了日が開始日より前です"));
+        }
+        if !["planned", "active", "closed"].contains(&cycle.status.as_str()) {
+            return Err(ApiError::invalid("期間の状態が不正です"));
+        }
+        if let Some(id) = cycle.previous_id {
+            let _: Cycle = get(tx, w, "cycles", &id).await?;
+        }
+    }
+    for item in list::<Item>(tx, w, "items").await? {
+        if let Some(id) = item.fields.cycle_id {
+            let _: Cycle = get(tx, w, "cycles", &id).await?;
+        }
+        if let Some(id) = item.fields.carried_from {
+            let _: Item = get(tx, w, "items", &id).await?;
         }
     }
     for review in list::<WeeklyReview>(tx, w, "weekly_reviews").await? {

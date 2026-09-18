@@ -575,3 +575,158 @@ test("unsent text is recognised so a newer result cannot silently drop it", () =
   // The key is safe in an HTTP header, which rejects non-ASCII.
   assert.match(draftKey(c), /^[0-9a-f]+$/);
 });
+
+// --- Planning periods ---------------------------------------------------
+//
+// A period frames work; it does not own it. The tests below are mostly about
+// what must not be claimed: that a workspace without periods is misconfigured,
+// or that elapsed time is progress.
+
+const {
+  planningViewFrom,
+  elapsedPercent,
+  dayAfter,
+  nextCycleBody,
+  spanLabel,
+  cadenceLabel,
+  statusLabel,
+} = await import("../src/shared/planningView.ts");
+
+const quarter = {
+  id: "cycle_q4",
+  cadence: "quarter",
+  label: "2026 Q4",
+  start_date: "2026-10-01",
+  end_date: "2026-12-31",
+  status: "active",
+  previous_id: "cycle_q3",
+  version: 3,
+};
+
+const planning = {
+  workspace_id: "personal",
+  timezone: "Asia/Tokyo",
+  today: "2026-11-15",
+  cycles: [
+    {
+      id: "cycle_q3",
+      cadence: "quarter",
+      label: "2026 Q3",
+      start_date: "2026-07-01",
+      end_date: "2026-09-30",
+      status: "closed",
+      previous_id: null,
+      version: 5,
+    },
+    quarter,
+  ],
+  current: { cycle: quarter, item_count: 7 },
+  previous: {
+    cycle: {
+      id: "cycle_q3",
+      cadence: "quarter",
+      label: "2026 Q3",
+      start_date: "2026-07-01",
+      end_date: "2026-09-30",
+      status: "closed",
+      previous_id: null,
+      version: 5,
+    },
+    item_count: 4,
+  },
+  next: null,
+  unassigned_items: 2,
+  last_finalized_review: {
+    week_start: "2026-11-09",
+    next_focus: "朝に寄せる",
+    learnings: "観測: 3件完了",
+    challenges: "",
+  },
+};
+
+test("the planning view reads the period the server chose", () => {
+  const view = planningViewFrom(planning);
+  assert.equal(view.current.id, "cycle_q4");
+  assert.equal(view.current.itemCount, 7);
+  assert.equal(view.current.version, 3, "a write needs the version");
+  assert.equal(view.previous.label, "2026 Q3");
+  assert.equal(view.previous.status, "closed");
+  assert.equal(view.next, null);
+  assert.equal(view.unassignedItems, 2);
+  assert.equal(view.unused, false);
+  // The review is the person's words, carried through unchanged.
+  assert.equal(view.lastReview.nextFocus, "朝に寄せる");
+});
+
+test("a workspace with no periods is a normal workspace", () => {
+  const view = planningViewFrom({
+    workspace_id: "personal",
+    timezone: "Asia/Tokyo",
+    today: "2026-11-15",
+    cycles: [],
+    current: null,
+    previous: null,
+    next: null,
+    unassigned_items: 12,
+    last_finalized_review: null,
+  });
+  // Not an error, not a setup step: just no periods.
+  assert.equal(view.unused, true);
+  assert.equal(view.current, null);
+  assert.equal(view.unassignedItems, 12);
+  assert.equal(view.lastReview, null);
+  // And a payload that is not a planning context is not rendered as one.
+  assert.equal(planningViewFrom(null), null);
+  assert.equal(planningViewFrom({ cycles: [] }), null);
+});
+
+test("elapsed time is elapsed time, and only inside the period", () => {
+  const view = planningViewFrom(planning);
+  // 2026-10-01..2026-12-31 is 92 days; 2026-11-15 is day 46.
+  assert.equal(elapsedPercent(view.current, "2026-11-15"), 50);
+  assert.equal(elapsedPercent(view.current, "2026-10-01"), 1);
+  assert.equal(elapsedPercent(view.current, "2026-12-31"), 100);
+  // Outside the period there is no such number, so none is offered.
+  assert.equal(elapsedPercent(view.current, "2026-09-30"), null);
+  assert.equal(elapsedPercent(view.current, "2027-01-01"), null);
+  assert.equal(elapsedPercent(view.current, "not-a-date"), null);
+});
+
+test("the next period follows from this one, and nothing else does", () => {
+  const view = planningViewFrom(planning);
+  assert.equal(dayAfter("2026-12-31"), "2027-01-01");
+  assert.equal(dayAfter("2026-02-28"), "2026-03-01");
+  const body = nextCycleBody(view.current);
+  assert.deepEqual(body, {
+    cadence: "quarter",
+    start_date: "2027-01-01",
+    previous_id: "cycle_q4",
+  });
+  // No label and no end date: the cadence decides those, and inventing them
+  // here would let the client and the server disagree about what a quarter is.
+  assert.equal("label" in body, false);
+  assert.equal("end_date" in body, false);
+});
+
+test("a period says what it is in words a person uses", () => {
+  const view = planningViewFrom(planning);
+  assert.equal(spanLabel(view.current), "2026-10-01〜2026-12-31");
+  assert.equal(cadenceLabel("quarter"), "四半期");
+  assert.equal(cadenceLabel("custom"), "任意期間");
+  assert.equal(statusLabel("closed"), "終了");
+  assert.equal(statusLabel("planned"), "予定");
+});
+
+test("an unknown cadence or status degrades instead of breaking the screen", () => {
+  const view = planningViewFrom({
+    ...planning,
+    cycles: [{ ...quarter, cadence: "fortnight", status: "paused" }],
+    current: {
+      cycle: { ...quarter, cadence: "fortnight", status: "paused" },
+      item_count: 1,
+    },
+  });
+  assert.equal(view.current.cadence, "custom");
+  assert.equal(view.current.status, "planned");
+  assert.equal(view.current.label, "2026 Q4");
+});

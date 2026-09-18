@@ -41,6 +41,10 @@ export type Item = {
     template_version?: number;
     recurrence?: Recurrence | null;
     external_url?: string | null;
+    /** The planning period this belongs to, when the workspace uses them. */
+    cycle_id?: string | null;
+    /** The item this was carried over from, when it was. */
+    carried_from?: string | null;
   };
 };
 export type Notification = {

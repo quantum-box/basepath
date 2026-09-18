@@ -489,7 +489,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
-    assert_eq!(listed.len(), 18);
+    assert_eq!(listed.len(), 19);
     // Annotations describe the real effect: a change set can contain DELETE
     // operations, so proposing and applying one are not "non-destructive".
     let shape = |name: &str| {
@@ -666,7 +666,7 @@ async fn consecutive_requests_may_reach_different_instances() {
         json!({}),
     )
     .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 18);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 19);
     assert!(headers.get("mcp-session-id").is_none());
     // Nothing the endpoint returns may be cached by a proxy in between.
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");

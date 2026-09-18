@@ -19,6 +19,7 @@ import {
   type PlanView,
 } from "./viewModel";
 import { weeklyReviewFrom, type WeeklyReviewView } from "./weeklyView";
+import { planningViewFrom, type PlanningView } from "./planningView";
 
 export type HostKind = "mcp" | "web" | "fixture";
 
@@ -156,6 +157,13 @@ export class WebHost implements PlanHost {
           "GET",
           `/v1/workspaces/${workspace}/changesets/${String(args.preview_id ?? "")}`,
         );
+      case "pathbase_get_planning":
+        return this.request(
+          "GET",
+          `/v1/workspaces/${workspace}/planning${query({
+            cycle_id: args.cycle_id,
+          })}`,
+        );
       case "pathbase_get_weekly_review":
         return this.request(
           "GET",
@@ -264,6 +272,35 @@ export async function loadWeeklyReview(
   } catch (error) {
     return {
       review: null,
+      error:
+        error instanceof HostError
+          ? error
+          : new HostError(String(error), "UNKNOWN"),
+    };
+  }
+}
+
+/**
+ * Loads which planning period a workspace is in.
+ *
+ * Separate from the plan itself because it is a separate question, and because
+ * most workspaces have no periods at all — a surface that shows the plan
+ * should not wait on this, or fail because of it.
+ */
+export async function loadPlanning(
+  host: PlanHost,
+  workspaceId: string,
+  cycleId?: string,
+): Promise<{ planning: PlanningView | null; error: HostError | null }> {
+  try {
+    const value = await host.call("pathbase_get_planning", {
+      workspace_id: workspaceId,
+      ...(cycleId ? { cycle_id: cycleId } : {}),
+    });
+    return { planning: planningViewFrom(value), error: null };
+  } catch (error) {
+    return {
+      planning: null,
       error:
         error instanceof HostError
           ? error

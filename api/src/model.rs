@@ -59,6 +59,19 @@ pub struct ItemFields {
     pub external_url: Option<String>,
     #[serde(default)]
     pub field_reference: Option<FieldReference>,
+    /// The planning cycle this belongs to, when the workspace uses them.
+    ///
+    /// Optional on purpose: a workspace that has never created a cycle keeps
+    /// working exactly as before, and every item in it simply has no cycle.
+    #[serde(default)]
+    pub cycle_id: Option<String>,
+    /// The item this was carried over from, when it was.
+    ///
+    /// Carrying work into the next period copies it rather than moving it, so
+    /// the period that has already been reviewed still says what was in it.
+    /// This is the thread back.
+    #[serde(default)]
+    pub carried_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -83,6 +96,33 @@ pub struct Recurrence {
     #[serde(default)]
     pub weekdays: Vec<u8>,
 }
+/// A planning period: a quarter, a month, a week, or something the workspace
+/// named itself.
+///
+/// Dates are the workspace's own local dates, inclusive at both ends, because
+/// that is how a person says "this quarter". Nothing here is derived from the
+/// viewer's device.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Cycle {
+    pub id: String,
+    pub workspace_id: String,
+    /// `quarter` | `month` | `week` | `custom`.
+    pub cadence: String,
+    pub label: String,
+    pub start_date: String,
+    pub end_date: String,
+    /// `planned` | `active` | `closed`. A closed period keeps its contents;
+    /// closing says the work is no longer being planned, not that it is gone.
+    pub status: String,
+    /// The period this one continues, when it was created as the next one.
+    #[serde(default)]
+    pub previous_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Relation {
