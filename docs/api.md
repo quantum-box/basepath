@@ -22,8 +22,10 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
 | `GET /v1/settings` | compact、notifications、timezone |
 | `GET /v1/templates` | free / okr / project / learning / habit、バージョン、作成予定 |
-| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews |
+| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles |
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
+| `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
+| `GET /v1/workspaces/{w}/cycles` | 計画期間一覧 |
 | `GET /v1/workspaces/{w}/items` | query / kind / state / archived / cursor / limitによる検索 |
 | `GET /v1/workspaces/{w}/items/{id}` | 版番号を含む項目 |
 | `GET /v1/workspaces/{w}/relations` | 関連一覧 |
@@ -107,6 +109,20 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 通常の記録はnote / review / learning / checkin。実行履歴を偽装できないようcompletionなどは専用操作だけが生成します。記録・観測の訂正はsupersedes_idで追記し、元データは保持します。
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
+
+## 計画期間
+
+四半期・月・週・任意期間で計画を運用します。期間を使わないワークスペースはこれまでどおり動きます。期間は「枠」であって「入れ物」ではありません。
+
+- `GET /v1/workspaces/{w}/planning?cycle_id=...`：全期間、今日が入る期間（`cycle_id`指定時はその期間）、その前後、各期間の項目数、どの期間にも属さない項目数、直近の確定済み週次レビュー本文。日付はワークスペースのタイムゾーンの現地日付です。
+- `POST /v1/workspaces/{w}/cycles`：`cadence`（quarter / month / week / custom）と`start_date`。長さと名前はcadenceから決まります。quarterは1・4・7・10月の1日、monthは月初、weekは月曜開始が必要です。会計年度が暦年と違う場合はcustomで`start_date`・`end_date`・`label`を指定します。`previous_id`で前期間からの継続を記録できます。
+- `PATCH /v1/workspaces/{w}/cycles/{id}`：`label`・`status`（planned / active / closed）と`expected_version`。
+- `DELETE /v1/workspaces/{w}/cycles/{id}`：所属項目が0件のときだけ。中身を孤立させません。
+- `POST /v1/workspaces/{w}/cycles/{id}/carry-over`：`item_ids`と`expected_version`。**元項目は変更しません。** 新しい項目を作り、`fields.carried_from`で由来を残します。日付は引き継ぎません（前期間のために決めた日付が、次期間の日付になるのは決定の捏造です）。
+
+期間は重なりません。「今はどの期間か」に答えが2つある状態を作らないためです。終了した期間は中身を保持し、そこへの引き継ぎだけを拒否します。
+
+AI接続は期間を直接作れません。`changesets/preview`に`POST /v1/workspaces/{w}/cycles`を含めて提案し、本人が承認してから適用されます。
 
 ## 週次レビュー
 

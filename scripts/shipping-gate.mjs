@@ -106,6 +106,7 @@ const SUITES = [
     least: 12,
   },
   { file: "api/tests/injection.rs", pattern: /#\[tokio::test\]/g, least: 5 },
+  { file: "api/tests/planning.rs", pattern: /#\[tokio::test\]/g, least: 10 },
   { file: "api/tests/tidb.rs", pattern: /#\[tokio::test\]/g, least: 9 },
   {
     file: "api/tests/collaboration.rs",
@@ -126,6 +127,7 @@ const SUITES = [
   },
   { file: "tests/e2e/mcp-app.spec.mjs", pattern: /^test\(/gm, least: 23 },
   { file: "tests/e2e/workspace.spec.mjs", pattern: /^test\(/gm, least: 11 },
+  { file: "tests/e2e/planning.spec.mjs", pattern: /^test\(/gm, least: 5 },
   { file: "tests/plugin.test.mjs", pattern: /^test\(/gm, least: 9 },
   { file: "tests/sites-worker.test.mjs", pattern: /^test\(/gm, least: 12 },
 ];

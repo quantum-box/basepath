@@ -16,6 +16,7 @@ import {
   HostError,
   McpAppHost,
   loadPlanView,
+  loadPlanning,
   loadWeeklyReview,
   structuredResult,
 } from "../src/shared/host";
@@ -37,6 +38,8 @@ import {
   type WeeklyDraftInput,
   type WeeklyReviewView,
 } from "../src/shared/weeklyView";
+import { PlanningBar } from "../src/shared/PlanningBar";
+import type { PlanningView } from "../src/shared/planningView";
 import { PlanViewPanel, type ActionRequest } from "../src/shared/PlanView";
 import { WeeklyReviewPanel } from "../src/shared/WeeklyReview";
 import { ChangeReview } from "../src/shared/ChangeReview";
@@ -121,6 +124,9 @@ function BasepathApp() {
   > | null>(null);
   const weeklyGeneration = useRef(0);
   const lastWorkspace = useRef("");
+  // Which planning period the plan is being looked at in. Most workspaces have
+  // none, and then this stays null and nothing is shown.
+  const [planning, setPlanning] = useState<PlanningView | null>(null);
   // Read by callbacks that must not re-run every keystroke.
   const weeklyRef = useRef<WeeklyReviewView | null>(null);
   const draftRef = useRef<WeeklyDraftInput>(emptyDraftInput);
@@ -312,6 +318,21 @@ function BasepathApp() {
     if (isConnected && surface === "weekly") void refreshWeekly();
   }, [isConnected, surface, refreshWeekly]);
 
+  // The period is context for the plan, so a workspace without one, or a
+  // failure to read it, must not stop the plan from rendering.
+  useEffect(() => {
+    const host = hostFor();
+    const workspace = view.workspace;
+    if (!isConnected || !host || !workspace) return;
+    let live = true;
+    void loadPlanning(host, workspace.id).then(({ planning }) => {
+      if (live) setPlanning(planning);
+    });
+    return () => {
+      live = false;
+    };
+  }, [isConnected, hostFor, view.workspace?.id]);
+
   /**
    * Turns the person's review text into a change set.
    *
@@ -492,6 +513,9 @@ function BasepathApp() {
           週次レビュー
         </button>
       </nav>
+      {surface === "plan" && planning && !planning.unused && (
+        <PlanningBar compact planning={planning} />
+      )}
       {surface === "plan" ? (
         <PlanViewPanel
           view={view}

@@ -652,3 +652,126 @@
   border-color: var(--accent-primary, #c2703a);
   color: var(--accent-primary, #c2703a);
 }
+
+/* The planning period bar.
+ *
+ * Shared by the web app and the conversation surface; `.planning-compact`
+ * is the conversation one, which has no Basepath stylesheet behind it.
+ */
+.planning-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--plan-line, #e6eaf1);
+  border-radius: 11px;
+  padding: 12px 14px;
+}
+.planning-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.planning-step {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  border: 1px solid var(--plan-line, #e6eaf1);
+  border-radius: 9px;
+  padding: 8px 11px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+  text-align: start;
+}
+.planning-step:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.planning-step small,
+.planning-current small,
+.planning-cadence,
+.planning-status {
+  color: var(--plan-muted, var(--muted, #6b7280));
+  font-size: 11px;
+}
+.planning-current {
+  flex: 1;
+  min-inline-size: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.planning-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.planning-head strong {
+  font-size: 15px;
+}
+.planning-status[data-status="closed"] {
+  text-decoration: line-through;
+}
+.planning-elapsed {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+.planning-elapsed-fill {
+  block-size: 4px;
+  border-radius: 999px;
+  background: var(--plan-accent, var(--accent, #c2703a));
+  max-inline-size: 100%;
+}
+.planning-elapsed::before {
+  content: "";
+  display: block;
+  block-size: 4px;
+  border-radius: 999px;
+  background: var(--plan-line, #e6eaf1);
+  margin-block-end: -7px;
+}
+.planning-none,
+.planning-unassigned,
+.planning-focus {
+  margin: 0;
+  color: var(--plan-muted, var(--muted, #6b7280));
+  font-size: 12px;
+  line-height: 1.7;
+}
+.planning-focus {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-inline-start: 3px solid var(--plan-accent, var(--accent, #c2703a));
+  padding-inline-start: 10px;
+}
+.planning-focus span {
+  font-size: 11px;
+}
+.planning-compact {
+  --plan-line: var(
+    --border-primary,
+    color-mix(in srgb, currentColor 18%, transparent)
+  );
+  --plan-muted: var(
+    --text-secondary,
+    color-mix(in srgb, currentColor 60%, transparent)
+  );
+  --plan-accent: var(--accent-primary, #c2703a);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.planning-compact .planning-head strong {
+  font-size: 13px;
+}
+@media (max-width: 600px) {
+  .planning-row {
+    flex-direction: column;
+  }
+}
