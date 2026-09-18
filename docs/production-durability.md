@@ -36,7 +36,7 @@ Tachyon issues the database, the SQL user, its grant, and the DSN secret, and in
 
 ### Migration
 
-Migrations run when the API process opens the database, inside the app's own network. That is the only place the managed Cloud App TiDB is reachable from: it is PrivateLink-only, so a command hook on the shared build runner cannot reach it, and a `migration.lambdaInvoke` hook runs *before* the candidate is deployed, which would execute the previously deployed code against the new database. Simultaneous cold starts are serialized with a database-wide advisory lock (`GET_LOCK`), and a process whose schema is already current skips the lock entirely.
+Migrations run when the API process opens the database, inside the app's own network. That is the only place the managed Cloud App TiDB is reachable from: it is PrivateLink-only, so a command hook on the shared build runner cannot reach it, and a `migration.lambdaInvoke` hook runs *before* the candidate is deployed, which would execute the previously deployed code against the new database. Simultaneous cold starts are serialized with an advisory lock (`GET_LOCK`). MySQL advisory locks are server-wide rather than per database, so the lock name carries the database name: a per-PR preview and production sharing one TiDB cluster do not serialize against each other. A process whose schema is already current skips the lock entirely.
 
 `pathbase-api --migrate` applies the schema and exits, printing the resulting status, for an operator or a future platform-side gate.
 

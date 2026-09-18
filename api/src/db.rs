@@ -364,7 +364,8 @@ enum PoolKind {
     MySql(MySqlPool),
 }
 
-/// Advisory lock name held for the whole migration run.
+/// Advisory lock prefix held for the whole migration run; the database name
+/// is appended so deployments sharing a cluster do not serialize.
 const MIGRATION_LOCK: &str = "pathbase:migrate";
 /// Primary key of the single `database_identity` row.
 const IDENTITY_ROW: &str = "singleton";
@@ -606,35 +607,69 @@ impl Db {
                 return Ok(());
             }
         }
-        self.lock_migrations().await?;
+        let lock = self.lock_migrations().await?;
         let result = self.migrate_locked().await;
-        self.unlock_migrations().await;
+        self.unlock_migrations(&lock).await;
         result
     }
 
-    async fn lock_migrations(&self) -> Result<()> {
-        if let PoolKind::MySql(pool) = &self.pool {
-            let acquired: i64 = sqlx::query_scalar("SELECT GET_LOCK(?, ?)")
-                .bind(MIGRATION_LOCK)
-                .bind(setting("PATHBASE_DB_MIGRATION_LOCK_SECS", 60) as i64)
-                .fetch_one(pool)
-                .await
-                .map_err(storage_error)?;
-            if acquired != 1 {
-                return Err(ApiError::new(
-                    503,
-                    "MIGRATION_LOCK_TIMEOUT",
-                    "他のインスタンスがmigrationを実行中です",
-                ));
-            }
-        }
-        Ok(())
+    /// Advisory lock name.
+    ///
+    /// MySQL advisory locks are server-wide, not per database, so the name
+    /// carries the database: two deployments sharing one TiDB cluster (a
+    /// per-PR preview and production) must not serialize against each other.
+    async fn migration_lock_name(&self, pool: &MySqlPool) -> Result<String> {
+        let database: Option<String> = sqlx::query_scalar("SELECT DATABASE()")
+            .fetch_one(pool)
+            .await
+            .map_err(storage_error)?;
+        let database = database.unwrap_or_default();
+        // MySQL caps lock names at 64 characters.
+        Ok(format!("{MIGRATION_LOCK}:{database}")
+            .chars()
+            .take(64)
+            .collect())
     }
 
-    async fn unlock_migrations(&self) {
+    async fn lock_migrations(&self) -> Result<String> {
+        let PoolKind::MySql(pool) = &self.pool else {
+            return Ok(String::new());
+        };
+        let name = self.migration_lock_name(pool).await?;
+        let wait = setting("PATHBASE_DB_MIGRATION_LOCK_SECS", 60) as i64;
+        let mut last = None;
+        // Heavy contention makes TiDB answer GET_LOCK with a retryable
+        // pessimistic-lock error rather than a plain "not acquired".
+        for attempt in 0..5 {
+            match sqlx::query_scalar::<_, i64>("SELECT GET_LOCK(?, ?)")
+                .bind(&name)
+                .bind(wait)
+                .fetch_one(pool)
+                .await
+            {
+                Ok(1) => return Ok(name),
+                Ok(_) => {
+                    return Err(ApiError::new(
+                        503,
+                        "MIGRATION_LOCK_TIMEOUT",
+                        "他のインスタンスがmigrationを実行中です",
+                    ))
+                }
+                Err(error) => {
+                    last = Some(error);
+                    tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                }
+            }
+        }
+        Err(storage_error(
+            last.expect("a failed attempt records its error"),
+        ))
+    }
+
+    async fn unlock_migrations(&self, name: &str) {
         if let PoolKind::MySql(pool) = &self.pool {
             let _ = sqlx::query("DO RELEASE_LOCK(?)")
-                .bind(MIGRATION_LOCK)
+                .bind(name)
                 .execute(pool)
                 .await;
         }
