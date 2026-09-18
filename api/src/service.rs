@@ -190,7 +190,7 @@ fn weekly_summary(db: &Connection, w: &str, query: &HashMap<String, String>) -> 
         let mut own: Vec<&Observation> = observations.iter().filter(|o| o.metric_id == metric.id && !observations.iter().any(|n| n.supersedes_id.as_deref() == Some(&o.id))).collect();
         own.sort_by(|a,b| a.observed_at.cmp(&b.observed_at));
         let latest = own.last().copied();
-        let prior = latest.and_then(|l| own.iter().rev().copied().find(|o| o.observed_at < l.observed_at && o.observed_at < format!("{}T23:59:59Z", start_s)));
+        let prior = latest.and_then(|l| own.iter().rev().copied().find(|o| o.observed_at < l.observed_at && o.observed_at < format!("{start_s}T23:59:59Z")));
         let stale = latest.and_then(|o| DateTime::parse_from_rfc3339(&o.observed_at).ok()).is_some_and(|d| now.signed_duration_since(d.with_timezone(&Utc)).num_days() > 14);
         json!({"metric_id":metric.id,"item_id":metric.item_id,"name":metric.name,"unit":metric.unit,"latest":latest.map(|o| o.value),"latest_observation_id":latest.map(|o| o.id.clone()),"previous":prior.map(|o| o.value),"delta":latest.zip(prior).map(|(a,b)|a.value-b.value),"status":if latest.is_none(){"unmeasured"}else if stale{"stale"}else{"current"}})
     }).collect();
