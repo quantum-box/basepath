@@ -172,11 +172,50 @@ impl Row {
     }
 }
 
+/// Reports the TLS mode a DSN would connect with, for tests.
+pub fn ssl_mode_for_test(url: &str) -> Result<String> {
+    Ok(format!("{:?}", mysql_options(url)?.get_ssl_mode()))
+}
+
+/// Exposes [`redact`] so a test can assert on it directly.
+pub fn redact_for_test(message: &str) -> String {
+    redact(message)
+}
+
+/// Removes anything that looks like connection credentials from a message.
+///
+/// Driver errors are useful in an operator's hands and dangerous in a log, so
+/// the password in a DSN is replaced before the text goes anywhere.
+pub(crate) fn redact(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(scheme) = rest.find("://") {
+        let (head, tail) = rest.split_at(scheme + 3);
+        out.push_str(head);
+        // `user:password@host` — keep the user, drop the secret.
+        let end = tail
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(tail.len());
+        let (authority, remainder) = tail.split_at(end);
+        match (authority.find('@'), authority.find(':')) {
+            (Some(at), Some(colon)) if colon < at => {
+                out.push_str(&authority[..colon]);
+                out.push_str(":***");
+                out.push_str(&authority[at..]);
+            }
+            _ => out.push_str(authority),
+        }
+        rest = remainder;
+    }
+    out.push_str(rest);
+    out
+}
+
 fn decode_error(error: sqlx::Error) -> ApiError {
     ApiError::new(
         500,
         "STORAGE_ERROR",
-        &format!("保存内容を読み取れませんでした: {error}"),
+        &redact(&format!("保存内容を読み取れませんでした: {error}")),
     )
 }
 
@@ -205,7 +244,9 @@ pub(crate) fn storage_error(error: sqlx::Error) -> ApiError {
     ApiError::new(
         500,
         "STORAGE_ERROR",
-        &format!("保存処理に失敗しました。再試行してください: {error}"),
+        &redact(&format!(
+            "保存処理に失敗しました。再試行してください: {error}"
+        )),
     )
 }
 
@@ -439,15 +480,22 @@ fn mysql_options(url: &str) -> Result<sqlx::mysql::MySqlConnectOptions> {
         ApiError::new(
             500,
             "STORAGE_ERROR",
-            &format!("DSNを解釈できません: {error}"),
+            &redact(&format!("DSNを解釈できません: {error}")),
         )
     })?;
-    // The managed Cloud App TiDB is reached over PrivateLink, so the transport
-    // is already private; `preferred` keeps TLS on wherever the server offers
-    // it without breaking a local cluster that serves none. Set
-    // PATHBASE_DB_SSL_MODE=required once the target cluster is confirmed to
-    // present a certificate.
-    let mode = std::env::var("PATHBASE_DB_SSL_MODE").unwrap_or_else(|_| "preferred".into());
+    // A DSN that names its own TLS mode wins. Tachyon issues the managed
+    // Cloud App DSN with `?ssl-mode=REQUIRED` because TiDB Serverless requires
+    // TLS, and this process must not quietly weaken it.
+    let declared = url.contains("ssl-mode=") || url.contains("sslmode=");
+    let configured = std::env::var("PATHBASE_DB_SSL_MODE")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if declared && configured.is_none() {
+        return Ok(options);
+    }
+    // Otherwise `preferred` keeps TLS on wherever the server offers it,
+    // without breaking a local cluster that serves none.
+    let mode = configured.unwrap_or_else(|| "preferred".into());
     let mode = match mode.trim().to_ascii_lowercase().as_str() {
         "disabled" => MySqlSslMode::Disabled,
         "preferred" => MySqlSslMode::Preferred,
@@ -546,7 +594,7 @@ impl Db {
                     ApiError::new(
                         503,
                         "DATABASE_UNAVAILABLE",
-                        &format!("業務データベースへ接続できません: {error}"),
+                        &redact(&format!("業務データベースへ接続できません: {error}")),
                     )
                 })?;
             return Ok(Self {

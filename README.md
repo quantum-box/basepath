@@ -49,7 +49,9 @@ Tachyon Cloud Appは`pathbase-v2`（Cloudflare Worker、SPA配信と同一オリ
 
 出荷の判定は`readinessProof: /health/ready`です。実際にDBへ到達し、適用済みスキーマ版と、このDBがどのdeploymentのものか（`PATHBASE_DB_ENVIRONMENT`のclaim）を検査します。migrationが失敗した候補や、別environmentのDSNを渡された候補は200を返せないため、稼働中のバージョンがそのまま残ります。`/api/health`は実際の保存先を返し、TiDB接続時は`storage: tidb` / `storage_durability: shared-durable`、明示local-preview時は`storage: sqlite` / `ephemeral-runtime`になります。
 
-スキーマは`api/migrations/{sqlite,mysql}/`のversioned migrationsです。方言差・並行制御・接続プール・TLS・移行手順は`docs/production-durability.md`に記載しています。
+スキーマは`api/migrations/{sqlite,mysql}/`のversioned migrationsです。方言差・並行制御・接続プール・TLS・監視対象・バックアップの検証済み/未検証は`docs/production-durability.md`、移行と切替の手順は`docs/runbook-tidb-cutover.md`に記載しています。
+
+データ移行は`pathbase-api --migrate-from <source>`（`--dry-run`あり）で行います。空のDBにだけ流し込み、件数・内容hash・オーナー/参照/版/冪等性の不変条件を両側で照合します。`pathbase-api --inventory`は対象DBの件数とhash、整合性チェック結果を出力します。
 
 Fieldは現在のユーザーのTachyonトークンと正規のテナント文脈で呼び、操作ごとに権限を確認します。FieldのタスクをPathBaseで完了しても元タスクは更新しません。タスク参照の重複取り込みを防止し、観測できない値は0に変換しません。実装根拠と設定項目は[連携契約](docs/integration-contracts.md)を参照してください。
 

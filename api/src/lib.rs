@@ -3,6 +3,7 @@ pub mod collaboration;
 pub mod db;
 pub mod field;
 pub mod mcp;
+pub mod migrate;
 pub mod model;
 pub mod openapi;
 pub mod preflight;
