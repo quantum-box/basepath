@@ -17,3 +17,4 @@ playwright-report/
 .cache/
 *.tfstate
 *.tfstate.backup
+dist/mcp-app/

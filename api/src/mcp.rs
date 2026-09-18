@@ -19,6 +19,25 @@ use rmcp::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+/// The MCP Apps UI resource this server offers.
+///
+/// The document is a single self-contained file: it loads no script, style,
+/// font or image from anywhere, so it needs no CSP allowance and the host can
+/// render it under its deny-by-default policy unchanged. `api/ui/mcp-app.html`
+/// is built by `npm run build:mcp-app`; CI fails if it has drifted from the
+/// source it was built from.
+pub const UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
+pub const UI_RESOURCE_MIME: &str = "text/html;profile=mcp-app";
+const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
+
+/// Tools that open the plan view. The host may preload the resource as soon as
+/// it sees one of these in `tools/list`, before the tool is even called.
+const UI_TOOLS: [&str; 3] = [
+    "pathbase_get_graph",
+    "pathbase_get_today",
+    "pathbase_get_week",
+];
+
 #[derive(Clone)]
 pub struct Mcp {
     service: Service,
@@ -511,7 +530,14 @@ fn tools() -> Vec<Tool> {
         let (required, allowed) = argument_contract(shape.name).unwrap();
         let mut props=json!({});
         for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"}},"required":["method","path","body"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),_=>json!({"type":"string"})};}
-        serde_json::from_value(json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}})).unwrap()
+        let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
+        if UI_TOOLS.contains(&shape.name) {
+            // MCP Apps: link the tool to its UI resource. Visibility stays the
+            // default (model and app) — hiding a tool from the model is a
+            // presentation choice, never an authorization one.
+            tool["_meta"] = json!({"ui":{"resourceUri":UI_RESOURCE_URI}});
+        }
+        serde_json::from_value(tool).unwrap()
     }).collect()
 }
 impl ServerHandler for Mcp {
@@ -553,6 +579,22 @@ impl ServerHandler for Mcp {
         }
         Ok(serde_json::from_value(json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":value,"isError":error})).unwrap())
     }
+    async fn list_resources(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(serde_json::from_value(json!({"resources":[{
+            "uri": UI_RESOURCE_URI,
+            "name": "Basepath plan view",
+            "description": "Goal tree and the day's actions, rendered in the conversation.",
+            "mimeType": UI_RESOURCE_MIME,
+            // The bundle is self-contained, so no origin is requested. An empty
+            // policy is the strongest one the host can apply.
+            "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}
+        }]}))
+        .unwrap())
+    }
     async fn list_resource_templates(
         &self,
         _: Option<PaginatedRequestParams>,
@@ -565,6 +607,17 @@ impl ServerHandler for Mcp {
         r: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
+        // The UI resource carries no workspace data and no credential: it is
+        // the empty application shell, which then asks the host for data on
+        // the person's behalf.
+        if r.uri == UI_RESOURCE_URI {
+            return Ok(serde_json::from_value(json!({"contents":[{
+                "uri": UI_RESOURCE_URI,
+                "mimeType": UI_RESOURCE_MIME,
+                "text": UI_RESOURCE_HTML
+            }]}))
+            .unwrap());
+        }
         let p: Vec<_> = r
             .uri
             .strip_prefix("pathbase://workspaces/")

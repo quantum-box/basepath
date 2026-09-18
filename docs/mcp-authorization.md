@@ -88,6 +88,32 @@ State that has to survive lives in the shared database: the delegation, the
 plan, the change sets, the audit trail. A redeploy or a cold start loses
 nothing, because there is nothing in a process worth keeping.
 
+## MCP Apps UI
+
+`pathbase_get_graph`, `pathbase_get_today` and `pathbase_get_week` carry
+`_meta.ui.resourceUri = "ui://basepath/plan.html"`, so a host that supports MCP
+Apps can preload the view before the tool is called. `resources/list` publishes
+that resource with `mimeType: text/html;profile=mcp-app` and an **empty** CSP
+(`connectDomains: []`, `resourceDomains: []`): the document is a single
+self-contained file that loads no script, style, font or image from anywhere,
+so the host's deny-by-default policy needs no exception.
+
+The document is the empty application shell. It contains no workspace data and
+no credential; it asks the host for both, and the host proxies each request to
+this server, which authorizes it as usual. **Rendering is never permission.**
+`_meta.ui.visibility` is deliberately never set: hiding a tool from the model is
+a presentation choice, and it is not used here as a server-side authorization
+device.
+
+A host that does not support MCP Apps loses nothing. Every tool returns the
+same `structuredContent` and text it always did, and the connection works
+without the view.
+
+The bundle is built by `npm run build:mcp-app` from `mcp-app/` and the shared
+components in `src/shared/`, and is committed at `api/ui/mcp-app.html` because
+the Lambda that serves it has no Node and no CDN. CI rebuilds it and fails if
+the committed file has drifted, and the build enforces a size budget.
+
 ## Tool annotations
 
 `annotations` describe the real effect, not a comfortable default. A change set
