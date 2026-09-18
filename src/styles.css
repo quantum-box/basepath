@@ -184,6 +184,13 @@ input[type="checkbox"]:checked::after {
   flex-direction: column;
   gap: 5px;
   margin-top: 31px;
+  /* The list grew past one screen. An entry that exists but cannot be
+     reached is worse than one that is not there, so the navigation scrolls
+     rather than silently cutting off whatever came last. */
+  overflow-y: auto;
+  min-height: 0;
+  /* Keep the last entry clear of the utility navigation below it. */
+  padding-bottom: 6px;
 }
 .main-nav button {
   display: flex;
@@ -5704,5 +5711,165 @@ button:disabled {
 @media (max-width: 600px) {
   .review-checkin-form {
     grid-template-columns: 1fr;
+  }
+}
+
+.memory-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.memory-intro,
+.memory-form,
+.memory-duplicates,
+.memory-list {
+  padding: 22px;
+}
+.memory-intro p,
+.memory-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.memory-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.memory-body-field {
+  grid-column: 1 / -1;
+}
+.memory-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.memory-form-grid input,
+.memory-form-grid select,
+.memory-form-grid textarea {
+  border: 1px solid #dfe5ef;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: inherit;
+  line-height: 1.6;
+}
+.memory-form-grid textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+.memory-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.memory-lenses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.memory-lenses button {
+  border: 1px solid #e6eaf1;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  background: none;
+  cursor: pointer;
+}
+.memory-lenses button[aria-pressed="true"] {
+  border-color: var(--accent, #c2703a);
+  color: var(--accent, #c2703a);
+}
+.memory-past {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-inline-start: auto;
+}
+.memory-list ul,
+.memory-duplicates ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.memory-list li,
+.memory-duplicates li {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 0;
+}
+.memory-list li + li,
+.memory-duplicates li + li {
+  border-top: 1px solid #edf0f5;
+}
+.memory-list li[data-inactive="true"] {
+  opacity: 0.72;
+}
+.memory-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.memory-kind,
+.memory-status,
+.memory-inactive,
+.memory-excluded {
+  border: 1px solid #e6eaf1;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.memory-status[data-status="proposed"] {
+  border-color: #d9a441;
+  color: #9a6b12;
+}
+.memory-excluded {
+  border-color: #b3403a;
+  color: #b3403a;
+}
+.memory-list p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.memory-list small,
+.memory-duplicates small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.memory-actions button {
+  border: 1px solid #e6eaf1;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11px;
+  background: none;
+  cursor: pointer;
+}
+.memory-actions .memory-delete {
+  border-color: #e6b8b5;
+  color: #b3403a;
+}
+@media (max-width: 700px) {
+  .memory-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .memory-past {
+    margin-inline-start: 0;
   }
 }

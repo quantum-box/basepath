@@ -1281,3 +1281,157 @@ test("a health value this model does not have is not rendered as one", () => {
   // so a screen never has to guard for it.
   assert.deepEqual(history[0].observationIds, []);
 });
+
+// --- Personal memory ----------------------------------------------------
+//
+// Confirmed and suggested are different. No longer current is not wrong.
+
+const {
+  memoryListFrom,
+  duplicateGroupsFrom,
+  inactiveReason,
+  current: currentMemories,
+  countsByKind,
+  kindLabel,
+  statusLabel: memoryStatusLabel,
+} = await import("../src/shared/memoryView.ts");
+
+const memories = {
+  superseded_ids: ["m_old"],
+  items: [
+    {
+      id: "m_new",
+      kind: "preference",
+      title: "午前に集中したい",
+      status: "verified",
+      source: "本人",
+      created_at: "2026-11-01T00:00:00Z",
+      version: 1,
+      evidence_ids: [],
+      item_ids: [],
+      topics: [],
+      people: [],
+      author: "us_alice",
+    },
+    {
+      id: "m_old",
+      kind: "preference",
+      title: "夜に集中したい",
+      status: "verified",
+      source: "本人",
+      created_at: "2026-01-01T00:00:00Z",
+      version: 1,
+      author: "us_alice",
+    },
+    {
+      id: "m_guess",
+      kind: "context",
+      title: "移動の多い週は進みが遅いようだ",
+      status: "proposed",
+      confidence: 0.6,
+      source: "観測: 完了率",
+      created_at: "2026-11-05T00:00:00Z",
+      version: 1,
+      author: "us_alice",
+    },
+    {
+      id: "m_expired",
+      kind: "preference",
+      title: "前職では夜型だった",
+      status: "verified",
+      source: "本人",
+      valid_to: "2024-12-31T00:00:00Z",
+      created_at: "2024-01-01T00:00:00Z",
+      version: 1,
+      author: "us_alice",
+    },
+  ],
+};
+
+test("a suggestion never renders as something the person said", () => {
+  const list = memoryListFrom(memories);
+  const guess = list.memories.find((memory) => memory.id === "m_guess");
+  assert.equal(guess.status, "proposed");
+  assert.equal(guess.confidence, 0.6);
+  assert.equal(memoryStatusLabel("proposed"), "AIの候補");
+  assert.equal(memoryStatusLabel("verified"), "本人が確認");
+  // Something the person confirmed carries no machine estimate of itself.
+  const said = list.memories.find((memory) => memory.id === "m_new");
+  assert.equal(said.confidence, null);
+});
+
+test("no longer current is never called wrong", () => {
+  const list = memoryListFrom(memories);
+  const now = new Date("2026-11-15T00:00:00Z");
+  assert.equal(inactiveReason(list.memories[0], now), null);
+  // Superseded and expired are different reasons, and neither is "wrong".
+  assert.equal(
+    inactiveReason(
+      list.memories.find((memory) => memory.id === "m_old"),
+      now,
+    ),
+    "更新済み",
+  );
+  assert.equal(
+    inactiveReason(
+      list.memories.find((memory) => memory.id === "m_expired"),
+      now,
+    ),
+    "この期間は過ぎました",
+  );
+  for (const memory of list.memories) {
+    const reason = inactiveReason(memory, now);
+    if (reason) assert.ok(!reason.includes("誤"), reason);
+  }
+});
+
+test("what stands now is a subset, and the rest is still there", () => {
+  const list = memoryListFrom(memories);
+  const now = new Date("2026-11-15T00:00:00Z");
+  const standing = currentMemories(list, now).map((memory) => memory.id);
+  assert.deepEqual(standing.sort(), ["m_guess", "m_new"]);
+  // Nothing was dropped from the list itself.
+  assert.equal(list.memories.length, 4);
+});
+
+test("kinds are counted and named the way a person would", () => {
+  const list = memoryListFrom(memories);
+  const counts = countsByKind(list);
+  assert.equal(counts.preference, 3);
+  assert.equal(counts.context, 1);
+  assert.equal(counts.fact, 0);
+  assert.equal(kindLabel("decision"), "決定");
+  assert.equal(kindLabel("episode"), "出来事");
+});
+
+test("an unknown kind does not become a fact", () => {
+  const list = memoryListFrom({
+    items: [{ id: "m1", kind: "hunch", title: "x", status: "verified" }],
+  });
+  // The one direction this must never guess in is toward "the person said so".
+  assert.equal(list.memories[0].kind, "context");
+  const guessed = memoryListFrom({
+    items: [{ id: "m2", kind: "fact", title: "x", status: "何か" }],
+  });
+  assert.equal(guessed.memories[0].status, "proposed");
+  assert.equal(memoryListFrom(null), null);
+});
+
+test("duplicates are reported as a question, not an answer", () => {
+  const groups = duplicateGroupsFrom({
+    merged: false,
+    groups: [
+      {
+        id: "m1",
+        title: "毎週金曜に振り返り",
+        kind: "preference",
+        similar: [{ id: "m2", title: "毎週金曜に振り返りをする", overlap: 79 }],
+      },
+    ],
+  });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].similar[0].overlap, 79);
+  // Nothing in the shape suggests one of them has been chosen.
+  assert.equal("winner" in groups[0], false);
+  assert.deepEqual(duplicateGroupsFrom({}), []);
+});

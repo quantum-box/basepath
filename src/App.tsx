@@ -41,6 +41,7 @@ import { PlanningScreen } from "./PlanningScreen";
 import { AlignmentScreen } from "./AlignmentScreen";
 import { DashboardScreen } from "./DashboardScreen";
 import { ReviewScreen } from "./ReviewScreen";
+import { MemoryScreen } from "./MemoryScreen";
 import {
   MemoEditor,
   ItemEditor,
@@ -75,6 +76,7 @@ const navigation = [
   { label: "アラインメント", icon: "tree" },
   { label: "ダッシュボード", icon: "chart" },
   { label: "目標レビュー", icon: "check" },
+  { label: "記憶", icon: "bulb" },
   { label: "テンプレート", icon: "stack" },
   { label: "メンバー", icon: "users" },
 ] as const;
@@ -90,6 +92,7 @@ const navigationRoutes: Record<NavigationLabel, string> = {
   アラインメント: "alignment",
   ダッシュボード: "dashboard",
   目標レビュー: "goal-review",
+  記憶: "memory",
   テンプレート: "templates",
   メンバー: "members",
 };
@@ -104,6 +107,7 @@ const navigationDescriptions: Record<NavigationLabel, string> = {
   アラインメント: "誰の目標が、どの目標に効いているかをたどります。",
   ダッシュボード: "実施・指標・自己評価・状況を混ぜずに並べて確認します。",
   目標レビュー: "チェックインの有無と内容から、話すべき目標を見つけます。",
+  記憶: "あなた自身の記憶。共有ワークスペースへは移動も同期もされません。",
   テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
   メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
 };
@@ -1810,6 +1814,8 @@ export function App() {
               )}
             </div>
           </div>
+        ) : activeNav === "記憶" ? (
+          <MemoryScreen store={store} workspace={currentWorkspace} />
         ) : activeNav === "目標レビュー" ? (
           <ReviewScreen store={store} workspace={currentWorkspace} />
         ) : activeNav === "ダッシュボード" ? (

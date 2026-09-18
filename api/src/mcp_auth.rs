@@ -43,7 +43,8 @@ pub fn required_scope(tool: &str) -> &'static str {
         | "pathbase_reject_change"
         | "pathbase_complete_action"
         | "pathbase_record_checkin"
-        | "pathbase_record_observation" => SCOPE_PROPOSE,
+        | "pathbase_record_observation"
+        | "pathbase_propose_memory" => SCOPE_PROPOSE,
         _ => SCOPE_READ,
     }
 }

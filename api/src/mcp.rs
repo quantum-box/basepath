@@ -294,6 +294,18 @@ impl Mcp {
             "pathbase_get_alignment" => ("GET", format!("{base}/alignment"), json!({})),
             "pathbase_get_dashboard" => ("GET", format!("{base}/dashboard"), json!({})),
             "pathbase_get_review_queue" => ("GET", format!("{base}/review"), json!({})),
+            "pathbase_list_memory" => ("GET", format!("{base}/memories"), json!({})),
+            "pathbase_propose_memory" => (
+                "POST",
+                format!("{base}/memories/proposals"),
+                json!({
+                    "kind": args["kind"],
+                    "title": args["title"],
+                    "body": args["body"],
+                    "source": args["source"],
+                    "confidence": args["confidence"],
+                }),
+            ),
             "pathbase_get_goal_timeline" => (
                 "GET",
                 format!(
@@ -438,6 +450,22 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
             &["workspace_id"],
             &["workspace_id", "cycle_id", "stale_days"],
         ),
+        "pathbase_list_memory" => (
+            &["workspace_id"],
+            &["workspace_id", "kind", "status", "current"],
+        ),
+        "pathbase_propose_memory" => (
+            &["workspace_id", "kind", "title", "source", "idempotency_key"],
+            &[
+                "workspace_id",
+                "kind",
+                "title",
+                "body",
+                "source",
+                "confidence",
+                "idempotency_key",
+            ],
+        ),
         "pathbase_get_goal_timeline" => (
             &["workspace_id", "item_id"],
             &["workspace_id", "item_id", "as_of"],
@@ -533,6 +561,8 @@ fn tools() -> Vec<Tool> {
         read("pathbase_get_dashboard", "Get the goal dashboard. Four different things are reported and none of them substitutes for another: `action_completion` (what was planned and what happened; `rate` is null when nothing was planned), `metric_progress` (derived from observations by the method the goal names; null when it names none, and `metrics[].status` says which are unmeasured or stale), `self_assessment` (the person's own judgement), and `health` (somebody's stated view, with their name and the date). `suggested_health` is derived from listed signals and is a suggestion only — it is never the health. Report these separately. Do not average them, do not present completion as progress toward a goal, and do not treat a goal with no metric as 0%."),
         read("pathbase_get_review_queue", "Get what a goal review needs in front of it, as three separate lists: goals nobody has ever checked in on, goals whose last check-in is older than `stale_days` (default 14), and goals somebody has said are at risk or off track — plus the ones that moved recently. Silence and a warning are different things, so do not merge the first list into the others."),
         read("pathbase_get_goal_timeline", "Get everything recorded about one goal in order: when it was created, check-ins and their corrections, observations on its metrics, records written about it, alignment changes, and whether it was carried over from an earlier period. With `as_of` (RFC 3339) it replays to that moment and reports what the goal said *then* — use it to answer what was believed at the time, not what is believed now."),
+        read("pathbase_list_memory", "Read what this person's own Basepath remembers: facts they stated, preferences, decisions and why, learnings, current context, and episodes. `status` separates what they confirmed (`verified`) from what was only suggested (`proposed`) — do not treat a proposal as something they said. `current=true` returns what still stands: not superseded and inside its validity window; a preference from two jobs ago is not wrong, it is no longer current. Memory a person excluded from retrieval is never returned. This exists only in a personal workspace and has no presence in a shared one."),
+        write("pathbase_propose_memory", "Suggest something worth remembering, with where it came from. It is stored as a candidate the person has not confirmed, never as something they said. A guess with no source cannot be a `fact` — use `context` or `learning` and say what it is based on. Say what you observed and what you inferred, separately.", false),
         read("pathbase_list_changes", "List saved change sets and their current status, so a UI can show what is awaiting approval."),
         read("pathbase_get_change", "Get one change set: its operations, status, approval and expiry."),
         read("pathbase_list_templates", "List versioned templates and their creation previews."),
