@@ -27,7 +27,8 @@
     "test:view": "node --test tests/plan-view.test.mjs",
     "build:plugin": "node scripts/build-plugin.mjs",
     "check:plugin": "node scripts/build-plugin.mjs --check",
-    "test:plugin": "node --test tests/plugin.test.mjs"
+    "test:plugin": "node --test tests/plugin.test.mjs",
+    "gate": "node scripts/shipping-gate.mjs"
   },
   "dependencies": {
     "@fontsource/noto-sans-jp": "^5.2.6",

@@ -299,3 +299,32 @@ test("a redirect the app itself asked for is still followed", async () => {
   assert.equal(response.status, 302, "not an HTML navigation, so untouched");
   assert.equal(response.headers.get("location"), "/x.svg");
 });
+
+test("the app shell is served even when index.html itself redirects", async () => {
+  // Production's asset layer canonicalises `/index.html` to `/`, so the
+  // fallback has to follow that too. Returning its redirect is exactly how
+  // every deep link ended up back on the home screen.
+  const asked = [];
+  const response = await worker.fetch(
+    new Request("https://example.test/changes/personal/c1", {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          const url = new URL(request.url);
+          asked.push(url.pathname);
+          if (url.pathname === "/") return new Response("app", { status: 200 });
+          return new Response(null, {
+            status: 307,
+            headers: { location: "/" },
+          });
+        },
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "app");
+  assert.deepEqual(asked, ["/changes/personal/c1", "/index.html", "/"]);
+});

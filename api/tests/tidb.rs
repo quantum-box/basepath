@@ -634,3 +634,57 @@ async fn simultaneous_cold_starts_migrate_exactly_once() {
     assert_eq!(status.storage, "tidb");
     assert_eq!(status.durability, "shared-durable");
 }
+
+#[tokio::test]
+async fn migrating_releases_the_advisory_lock_it_took() {
+    let fixture = tidb!();
+    // Opening the service migrates the database, which takes a cluster-wide
+    // advisory lock for the duration.
+    let service = fixture.service().await;
+    service.initialize(false).await.unwrap();
+
+    // The lock belongs to the session that took it, so acquiring it from the
+    // pool and releasing it from the pool can land on two different
+    // connections — and then the release is a silent no-op while the original
+    // connection keeps the lock for as long as the pool keeps it warm. The
+    // next process to open the same database would wait the full timeout and
+    // fail its readiness check, which on a redeploy means the new version
+    // never becomes the active one.
+    //
+    // Asked from an independent connection, the lock has to be free.
+    let mut tx = service.db.begin_read().await.unwrap();
+    let database = tx
+        .fetch_one("SELECT DATABASE()", &[])
+        .await
+        .unwrap()
+        .text(0)
+        .unwrap();
+    drop(tx);
+    let name: String = format!("pathbase:migrate:{database}")
+        .chars()
+        .take(64)
+        .collect();
+
+    let probe = sqlx::MySqlPool::connect(&fixture.url).await.unwrap();
+    let free: i64 = sqlx::query_scalar("SELECT IS_FREE_LOCK(?)")
+        .bind(&name)
+        .fetch_one(&probe)
+        .await
+        .unwrap();
+    assert_eq!(free, 1, "the migration lock {name} is still held");
+    probe.close().await;
+
+    // And a second service opens without waiting on it.
+    let started = std::time::Instant::now();
+    let second = fixture.service().await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "opening a migrated database must not wait on the migration lock"
+    );
+    let mut tx = second.db.begin_read().await.unwrap();
+    assert!(tx
+        .fetch_optional("SELECT id FROM workspaces LIMIT 1", &[])
+        .await
+        .unwrap()
+        .is_some());
+}
