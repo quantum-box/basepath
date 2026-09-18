@@ -33,6 +33,9 @@ jobs:
       - run: npm run build
       - run: npm run test:sites
       - run: npm run test:config
+      # Without a built binary this checks only the dev-script binary selection;
+      # the browser job runs the same file against the real API.
+      - run: npm run test:smoke
       - name: Verify build outputs
         run: |
           test -f dist/client/index.html
@@ -86,6 +89,10 @@ jobs:
           name: e2e-api
           path: .cache/e2e-api
       - run: chmod +x .cache/e2e-api/pathbase-api
+      - name: API startup smoke test
+        run: npm run test:smoke
+        env:
+          PATHBASE_SMOKE_API_BIN: .cache/e2e-api/pathbase-api
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
         env:

@@ -16,11 +16,12 @@
     "format": "prettier --write src vite.config.mjs index.html src-tauri/tauri.conf.json",
     "dev:web": "vite",
     "dev:native": "node scripts/dev.mjs --native",
-    "api": "cargo run --manifest-path api/Cargo.toml",
+    "api": "cargo run --manifest-path api/Cargo.toml --bin pathbase-api",
     "preflight": "node scripts/preflight.mjs",
-    "api:mcp": "cargo run --manifest-path api/Cargo.toml -- --mcp-stdio",
+    "api:mcp": "cargo run --manifest-path api/Cargo.toml --bin pathbase-api -- --mcp-stdio",
     "test:api": "cargo test --manifest-path api/Cargo.toml",
-    "test": "npm run check && npm run test:api && npm run test:sites && npm run test:config"
+    "test": "npm run check && npm run test:api && npm run test:sites && npm run test:config && npm run test:smoke",
+    "test:smoke": "node --test tests/api-smoke.test.mjs"
   },
   "dependencies": {
     "@fontsource/noto-sans-jp": "^5.2.6",

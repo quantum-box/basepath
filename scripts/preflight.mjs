@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { loadEnv } from "vite";
+import { API_BINARY, cargoRunArgs } from "./api-binary.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 for (const [key, value] of Object.entries(loadEnv("development", root, ""))) {
@@ -12,15 +13,7 @@ for (const [key, value] of Object.entries(loadEnv("development", root, ""))) {
 
 const child = spawn(
   "cargo",
-  [
-    "run",
-    "--quiet",
-    "--locked",
-    "--manifest-path",
-    "api/Cargo.toml",
-    "--",
-    "--preflight",
-  ],
+  cargoRunArgs(["--preflight"], { quiet: true, locked: true }),
   {
     cwd: root,
     env: process.env,
@@ -29,7 +22,9 @@ const child = spawn(
 );
 
 child.on("error", (error) => {
-  console.error(`プリフライトを開始できません: ${error.message}`);
+  console.error(
+    `プリフライト（${API_BINARY}）を開始できません: ${error.message}`,
+  );
   process.exitCode = 1;
 });
 child.on("exit", (code, signal) => {

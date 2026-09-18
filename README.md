@@ -18,14 +18,14 @@
 
 ## ローカル開発
 
-Node.js 22.12以降とRustが必要です。ネイティブアプリにはOSのTauri開発環境も必要です。
+Node.js 22.12以降とRustが必要です。`mise.toml`でNode 24とRust 1.95.0（CIと同じ）を固定しているため、[mise](https://mise.jdx.dev/)を使う場合は`mise install`だけで揃います。ネイティブアプリにはOSのTauri開発環境も必要です。
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Rust APIを127.0.0.1:1431、画面をlocalhost:1420で一緒に起動します。API用のランダムな認証情報は開発プロセス内だけで扱います。標準では明示的な`local-preview`モードで、日付を現在に合わせたサンプル領域が作られます。サンプルはゴルフ場運営のシナリオで、組織ワークスペースに「償却前利益3億円」を最上位とする目標・取り組みの多階層ツリーが入ります（`api/src/seed.json`）。`data/pathbase.sqlite3`に保存され、再起動後も残ります。サンプルの名前・写真・自己評価は実ユーザーの情報ではありません。
+Rust APIを127.0.0.1:1431、画面をlocalhost:1420で一緒に起動します。APIクレートは`pathbase-api`（通常のHTTPサーバー）と`lambda-pathbase-api`（Lambda専用）の2バイナリを持つため、開発用スクリプトは常に`--bin pathbase-api`を明示します（[scripts/api-binary.mjs](scripts/api-binary.mjs)）。ポートが既に使われている場合や、APIが起動に失敗した場合は画面だけが動く中途半端な状態にせず終了します。API用のランダムな認証情報は開発プロセス内だけで扱います。標準では明示的な`local-preview`モードで、日付を現在に合わせたサンプル領域が作られます。サンプルはゴルフ場運営のシナリオで、組織ワークスペースに「償却前利益3億円」を最上位とする目標・取り組みの多階層ツリーが入ります（`api/src/seed.json`）。`data/pathbase.sqlite3`に保存され、再起動後も残ります。サンプルの名前・写真・自己評価は実ユーザーの情報ではありません。
 
 Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理をIPC経由で使用し、アプリデータディレクトリの`preview.sqlite3`に保存します。ブラウザ開発用DBとは別です。認証済みのデスクトップ利用は`PATHBASE_WEB_URL`で同じTachyon保護アプリを開きます。releaseはURL未設定時にローカル所有者へ切り替わりません。
 
@@ -66,17 +66,22 @@ npm run check
 npm run test:api
 npm run build
 npm run test:sites
+npm run test:smoke
 cargo clippy --manifest-path api/Cargo.toml --all-targets -- -D warnings
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+`npm run test:smoke`はバイナリ選択（通常API / Lambda / MCPの取り違え）を静的に確認し、ビルド済みの`pathbase-api`があれば
+起動・`/health`・認証済み読取・SIGTERMでの終了・設定不備での異常終了までを確認します。バイナリが無い環境では起動確認だけ
+skipします。`PATHBASE_SMOKE_API_BIN`で既存バイナリを指定できます。Rustの自動ビルドは行いません。
 
 APIテストは一時DBとローカルの模擬OIDC / Tachyon / Fieldサーバーを使用します。`api/tests/fixtures/oidc-test-key.pem`はテスト専用に生成した公開fixtureです。実アカウントの認証情報ではありません。
 
 GitHub ActionsではPRと`main`へのpushで、次の4ジョブを実行します。外部サービスの認証情報は不要です。
 
-- Web：TypeScript、製品ビルド、Sites配信テスト、配信ファイルとフォントライセンスの存在確認
+- Web：TypeScript、製品ビルド、Sites配信テスト、起動スクリプトのバイナリ選択、配信ファイルとフォントライセンスの存在確認
 - Rust API：fmt、ドメイン・権限・OIDC / Field連携・MCPのテスト、clippy（警告をエラーとして扱う）
-- Browser：Chromiumで目標とメモの永続化、行動完了、同じ領域の複数ワークスペース、モバイルナビゲーションを検証
+- Browser：ビルド済みAPIの起動smoke test、Chromiumで目標とメモの永続化、行動完了、同じ領域の複数ワークスペース、モバイルナビゲーションを検証
 - Desktop：macOSでRust fmtとTauriのコンパイル確認
 
 ブラウザテストはAPIジョブでビルド済みの実際のRustバイナリを再利用し、毎回空の一時DBと専用ポート（画面1425 / API1435）で実行します。クラウド認証情報や開発用DB、`.env`は引き継ぎません。失敗時は画面・トレース・HTMLレポートを7日間保存します。GitHub ActionsはコミットSHAで固定しています。
