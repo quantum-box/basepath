@@ -11,6 +11,7 @@ pub mod openapi;
 pub mod preflight;
 mod seed;
 pub mod service;
+pub mod skills;
 pub mod storage;
 mod suggestions;
 use axum::{

@@ -531,11 +531,21 @@ impl ServerHandler for Mcp {
     fn get_info(&self) -> ServerInfo {
         {
             let mut info = ServerInfo::default();
-            info.capabilities = ServerCapabilities::builder()
+            let mut capabilities = ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .enable_prompts()
                 .build();
+            // Skills over MCP. The workflows live once, in `skills/`, and are
+            // served from here — so a host that supports the extension gets
+            // them by connecting, with nothing to install and nothing to keep
+            // in step with a package. A host that does not simply never asks.
+            let (name, settings) = crate::skills::extension_capability();
+            capabilities
+                .extensions
+                .get_or_insert_with(Default::default)
+                .insert(name, settings);
+            info.capabilities = capabilities;
             info.instructions=Some("PathBase MCP. The transport authenticates one configured actor and every tool enforces workspace membership. All writes are proposals until approved in the app. Keep private and shared workspaces separate.".into());
             info
         }
@@ -571,7 +581,7 @@ impl ServerHandler for Mcp {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(serde_json::from_value(json!({"resources":[{
+        let mut resources = vec![json!({
             "uri": UI_RESOURCE_URI,
             "name": "Basepath plan view",
             "description": "Goal tree, the day's actions, and the weekly review, rendered in the conversation.",
@@ -579,8 +589,12 @@ impl ServerHandler for Mcp {
             // The bundle is self-contained, so no origin is requested. An empty
             // policy is the strongest one the host can apply.
             "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}
-        }]}))
-        .unwrap())
+        })];
+        // The skills are listed here too, so a host that does not implement
+        // the extension can still read the instructions rather than losing
+        // them entirely.
+        resources.extend(crate::skills::resources());
+        Ok(serde_json::from_value(json!({ "resources": resources })).unwrap())
     }
     async fn list_resource_templates(
         &self,
@@ -605,6 +619,17 @@ impl ServerHandler for Mcp {
             }]}))
             .unwrap());
         }
+        // A skill is public instruction text, identical for everyone. It holds
+        // no workspace data, so there is nothing here to authorize beyond the
+        // connection that already got this far.
+        if crate::skills::owns(&r.uri) {
+            let contents = crate::skills::read(&r.uri)
+                .ok_or_else(|| ErrorData::invalid_params("Unknown skill file", None))?;
+            return Ok(serde_json::from_value(
+                json!({"contents":[contents],"resultType":"complete","ttlMs":300000,"cacheScope":"public"}),
+            )
+            .unwrap());
+        }
         let p: Vec<_> = r
             .uri
             .strip_prefix("pathbase://workspaces/")
@@ -626,6 +651,39 @@ impl ServerHandler for Mcp {
             json!({"contents":[{"uri":r.uri,"mimeType":"application/json","text":v.to_string()}]}),
         )
         .unwrap())
+    }
+    /// `skills/list` and `skills/get`, from the Skills extension.
+    ///
+    /// They are handled here rather than as tools because they are not tools:
+    /// a host loads a skill into the model's context through its own
+    /// skill-loading path, with whatever approval it requires. Reading one is
+    /// not calling it.
+    async fn on_custom_request(
+        &self,
+        request: rmcp::model::CustomRequest,
+        _: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CustomResult, ErrorData> {
+        match request.method.as_str() {
+            "skills/list" => Ok(rmcp::model::CustomResult::new(crate::skills::list())),
+            "skills/get" => {
+                let uri = request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params["uri"].as_str())
+                    .unwrap_or_default();
+                // The specification is explicit that an unknown skill URI is
+                // `-32602` and stops the load, rather than an empty result the
+                // host might treat as "nothing to add".
+                crate::skills::get(uri)
+                    .map(rmcp::model::CustomResult::new)
+                    .ok_or_else(|| ErrorData::invalid_params("Unknown skill", None))
+            }
+            other => Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                other.to_owned(),
+                None,
+            )),
+        }
     }
     async fn list_prompts(
         &self,

@@ -107,8 +107,13 @@ npm run test:plugin
 The skills are the workflows, and they are written once. A rule about how to
 work with someone's plan does not change because the conversation is happening
 in a different product, so `scripts/build-plugin.mjs` refuses a skill that names
-a host: that wording belongs in `plugin/<host>/`. Claude's package (PLT-4824)
-will be a second directory beside `chatgpt/`, not a second copy of the rules.
+a host: that wording belongs in `plugin/<host>/`. Claude's package is a second
+directory beside `chatgpt/`, not a second copy of the rules — see
+[claude-connector.md](claude-connector.md).
+
+The MCP server also serves these same files under the
+`io.modelcontextprotocol/skills` extension, so a host that supports it gets the
+instructions by connecting, with no package to install or keep in step.
 
 No credential is in the package, and there is nothing to put there: the client
 id is registered per connection by the host, and the token is issued to the

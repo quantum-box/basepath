@@ -61,6 +61,75 @@ test("the package points at the hosted MCP endpoint over https and nothing else"
   assert.equal(servers[0].url, "https://pathbase-v2.txcloud.app/api/mcp");
 });
 
+test("the Claude package declares the same endpoint in its own format", async () => {
+  const manifest = await json("plugin/claude/.claude-plugin/plugin.json");
+  assert.equal(manifest.name, "basepath");
+  assert.ok(manifest.description.length > 40);
+  assert.equal(manifest.mcpServers, "./.mcp.json");
+
+  const mcp = await json("plugin/claude/.mcp.json");
+  const servers = Object.values(mcp.mcpServers);
+  assert.equal(servers.length, 1);
+  assert.equal(servers[0].url, "https://pathbase-v2.txcloud.app/api/mcp");
+
+  // Same server, same version, same description as the other host's package:
+  // two packages of one thing, not two things.
+  const chatgpt = await json("plugin/chatgpt/plugin.json");
+  assert.equal(manifest.version, chatgpt.version);
+  assert.equal(manifest.description, chatgpt.description);
+  assert.equal(
+    Object.values((await json("plugin/chatgpt/mcp.json")).mcpServers)[0].url,
+    servers[0].url,
+  );
+});
+
+test("both packages ship the same skills, and so does the server", async () => {
+  execFileSync(process.execPath, ["scripts/build-plugin.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    encoding: "utf8",
+  });
+  const names = (await readdir(url("skills"), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+
+  for (const name of names) {
+    const source = await read(`skills/${name}/SKILL.md`);
+    for (const host of ["chatgpt", "claude"]) {
+      assert.equal(
+        await read(`dist/plugin/${host}/skills/${name}/SKILL.md`),
+        source,
+        `${host}: the packaged skill must be the shared one`,
+      );
+    }
+    // And the binary embeds the same file, so a host reading it over MCP and a
+    // host reading it from a package cannot get different instructions.
+    assert.match(
+      await read("api/src/skills.rs"),
+      new RegExp(`skills/${name}/SKILL\\.md`),
+      `${name}: is not embedded in the MCP server`,
+    );
+  }
+});
+
+test("the in-conversation app depends on no host's private API", async () => {
+  // The same bundle renders in every host that supports MCP Apps. It talks to
+  // the host over the published AppBridge protocol; reaching for a global one
+  // product happens to provide would quietly make it that product's app.
+  const bundle = await read("api/ui/mcp-app.html");
+  for (const forbidden of [
+    "window.openai",
+    "window.anthropic",
+    "webkit.messageHandlers",
+  ]) {
+    assert.ok(
+      !bundle.includes(forbidden),
+      `the MCP App bundle reaches for ${forbidden}`,
+    );
+  }
+  // What it does use.
+  assert.match(bundle, /ui\/initialize/);
+});
+
 test("nothing in the package is a credential", async () => {
   const files = ["plugin/chatgpt/plugin.json", "plugin/chatgpt/mcp.json"];
   for (const file of files) {

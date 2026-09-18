@@ -9,6 +9,17 @@ written twice. What does differ — the package manifest, the connection URL, th
 icons, the store listing — lives beside it under `plugin/<host>/`, and
 `scripts/build-plugin.mjs` assembles the two into a distributable package.
 
+These files reach a host three ways, and none of them is a copy:
+
+1. **Over MCP.** The server declares `io.modelcontextprotocol/skills` and serves
+   them from `api/src/skills.rs`, which embeds these exact files. A host that
+   supports the extension needs no package.
+2. **As ordinary resources**, for hosts that do not implement the extension.
+3. **In a package**, for hosts that read skills from disk.
+
+`api/tests/skills_over_mcp.rs` asserts the served bytes equal these files, and
+`tests/plugin.test.mjs` asserts every package ships them unchanged.
+
 A skill therefore names only MCP tools (`pathbase_*`) and Basepath concepts. If
 a rule here mentions a host by name, it is in the wrong file.
 

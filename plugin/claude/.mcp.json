@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "basepath": {
+      "type": "http",
+      "url": "https://pathbase-v2.txcloud.app/api/mcp"
+    }
+  }
+}
