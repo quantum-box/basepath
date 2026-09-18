@@ -12,7 +12,16 @@ import html from "../../api/ui/mcp-app.html?raw";
  */
 const defaults = {
   pathbase_get_context: {
-    workspaces: [{ id: "personal", name: "個人", scope: "個人" }],
+    workspaces: [
+      {
+        id: "personal",
+        name: "個人",
+        scope: "個人",
+        timezone: "Asia/Tokyo",
+        role: "owner",
+      },
+    ],
+    basepath_url: "https://basepath.example",
   },
   pathbase_get_graph: {
     items: [
@@ -93,6 +102,49 @@ const defaults = {
     unscheduled: [{ id: "u1", title: "日付未定の項目" }],
   },
   pathbase_complete_action: { id: "change_1", status: "pending" },
+  pathbase_list_changes: {
+    items: [
+      {
+        id: "change_1",
+        workspace_id: "personal",
+        title: "AIからの計画変更",
+        status: "pending",
+        hash: "digest-1",
+        actor: "us_me",
+        proposed_by_connection: "mcpconn_1",
+        created_at: "2026-09-18T00:00:00Z",
+        expires_at: "2099-01-01T00:00:00Z",
+        changes: [
+          {
+            method: "POST",
+            path: "/v1/workspaces/personal/items",
+            collection: "items",
+            id: "new1",
+            title: "新しい行動",
+            effect: "created",
+            before: null,
+            after: { title: "新しい行動", state: "active", kind: "action" },
+          },
+          {
+            method: "DELETE",
+            path: "/v1/workspaces/personal/relations/r9",
+            collection: "relations",
+            id: "r9",
+            title: "消される関係",
+            effect: "deleted",
+            before: { title: "消される関係" },
+            after: null,
+          },
+        ],
+      },
+    ],
+    next_cursor: null,
+  },
+  pathbase_reject_change: { id: "change_1", status: "rejected" },
+  pathbase_apply_changes: {
+    changeset: { id: "change_1", status: "applied" },
+    results: [],
+  },
 };
 
 window.__calls = [];

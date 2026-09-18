@@ -352,8 +352,8 @@ pub(crate) async fn dispatch(
             .await?;
             save_workspace(tx, &mut ws).await?;
             tx.execute(
-                "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq) \
-                 VALUES(?,?,?,'ui',?,?,?)",
+                "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq,connection) \
+                 VALUES(?,?,?,'ui',?,?,?,'')",
                 &params![
                     new_id("audit"),
                     &ws.id,

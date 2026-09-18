@@ -148,6 +148,13 @@ export class WebHost implements PlanHost {
             local_date: args.local_date,
           })}`,
         );
+      case "pathbase_list_changes":
+        return this.request("GET", `/v1/workspaces/${workspace}/changesets`);
+      case "pathbase_get_change":
+        return this.request(
+          "GET",
+          `/v1/workspaces/${workspace}/changesets/${String(args.preview_id ?? "")}`,
+        );
       case "pathbase_get_week":
         return this.request(
           "GET",

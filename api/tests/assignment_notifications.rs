@@ -50,6 +50,7 @@ async fn call(
             &Actor {
                 id: actor.into(),
                 agent: false,
+                connection: None,
             },
             method,
             path,

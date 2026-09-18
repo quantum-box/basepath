@@ -1005,6 +1005,7 @@ impl TachyonAuth {
         Actor {
             id: session.identity.id.clone(),
             agent: false,
+            connection: None,
         }
     }
 }

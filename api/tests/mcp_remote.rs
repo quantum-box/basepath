@@ -246,6 +246,7 @@ async fn approve(service: &Service, actor: &str, scopes: Value) -> Value {
     let who = Actor {
         id: actor.into(),
         agent: false,
+        connection: None,
     };
     let connections = service
         .handle(
@@ -371,7 +372,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
-    assert_eq!(listed.len(), 17);
+    assert_eq!(listed.len(), 18);
     // Annotations describe the real effect: a change set can contain DELETE
     // operations, so proposing and applying one are not "non-destructive".
     let shape = |name: &str| {
@@ -420,6 +421,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     let who = Actor {
         id: "us_alice".into(),
         agent: false,
+        connection: None,
     };
     let connections = service
         .handle(
@@ -509,6 +511,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     let agent = Actor {
         id: "us_bob".into(),
         agent: true,
+        connection: None,
     };
     let refused = service
         .handle(
@@ -578,7 +581,7 @@ async fn consecutive_requests_may_reach_different_instances() {
         json!({}),
     )
     .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 17);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 18);
     assert!(headers.get("mcp-session-id").is_none());
     // Nothing the endpoint returns may be cached by a proxy in between.
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");

@@ -168,7 +168,9 @@ async fn authenticate_remote(mut request: Request, next: Next, remote: RemoteMcp
     let actor = Actor {
         id: identity.id.clone(),
         agent: true,
+        connection: None,
     };
+    // The connection is attached below, once it is known.
     if let Err(error) = remote.service.provision_personal(&actor).await {
         return (
             StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -213,6 +215,12 @@ async fn authenticate_remote(mut request: Request, next: Next, remote: RemoteMcp
             .into_response();
     }
 
+    // Which delegation this request arrived through, for the audit trail. It
+    // never widens what the actor may do: an agent is an agent regardless.
+    let actor = Actor {
+        connection: Some(connection.id.clone()),
+        ..actor
+    };
     request
         .extensions_mut()
         .insert(McpIdentity { actor, connection });
@@ -229,6 +237,7 @@ impl Mcp {
             actor: Some(Actor {
                 id: actor_id.into(),
                 agent: true,
+                connection: None,
             }),
         }
     }
@@ -302,8 +311,17 @@ impl Mcp {
                     .service
                     .handle(&actor, "GET", "/v1/workspaces", &q, json!({}), None)
                     .await?;
+                // Where a person approves a change. The app links here rather
+                // than trying to collect approval itself: a click inside the
+                // app reaches this server as an ordinary tool call, which the
+                // server cannot distinguish from the model's, so it is not
+                // evidence of anything.
+                let basepath_url = std::env::var("PATHBASE_PUBLIC_URL")
+                    .ok()
+                    .map(|value| value.trim_end_matches('/').to_owned())
+                    .filter(|value| !value.is_empty());
                 return Ok(
-                    json!({"me":me,"workspaces":workspaces,"delegation":"proposal_only","approval":"Review pending changes in the PathBase settings screen"}),
+                    json!({"me":me,"workspaces":workspaces,"delegation":"proposal_only","basepath_url":basepath_url,"approval":"Approve a change set in Basepath; an app-initiated call is never accepted as approval"}),
                 );
             }
             "pathbase_search_items" => ("GET", format!("{base}/items"), json!({})),
@@ -332,6 +350,14 @@ impl Mcp {
                 "POST",
                 format!(
                     "{base}/changesets/{}/apply",
+                    args["preview_id"].as_str().unwrap_or("")
+                ),
+                json!({}),
+            ),
+            "pathbase_reject_change" => (
+                "POST",
+                format!(
+                    "{base}/changesets/{}/reject",
                     args["preview_id"].as_str().unwrap_or("")
                 ),
                 json!({}),
@@ -447,7 +473,7 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
             &["workspace_id", "operations", "idempotency_key"],
             &["workspace_id", "operations", "idempotency_key", "title"],
         ),
-        "pathbase_apply_changes" => (
+        "pathbase_apply_changes" | "pathbase_reject_change" => (
             &["workspace_id", "preview_id", "idempotency_key"],
             &["workspace_id", "preview_id", "idempotency_key"],
         ),
@@ -522,6 +548,7 @@ fn tools() -> Vec<Tool> {
         write("pathbase_preview_changes", "Validate and save a pending change set. Never applies the plan; requires human approval in PathBase. The operations may include deletions.", true),
         write("pathbase_propose_plan", "Propose explicit plan operations, without inventing dates or applying changes. The operations may include deletions.", true),
         write("pathbase_apply_changes", "Apply an unexpired change set already approved by the owner in PathBase. An AI-supplied approval flag is not accepted. Applying runs the approved operations, which may include deletions.", true),
+        write("pathbase_reject_change", "Withdraw a change set so it can never be applied. Discarding a proposal changes no plan data.", false),
         write("pathbase_complete_action", "Propose completion for one action occurrence; local default requires owner review.", false),
         write("pathbase_record_checkin", "Propose a note, learning or review record for owner review.", false),
         write("pathbase_record_observation", "Propose a sourced metric observation for owner review.", false),

@@ -1,0 +1,16 @@
+/* Page-level rules for the MCP App document.
+ *
+ * The app owns its whole iframe document, so these belong here rather than in
+ * the shared component stylesheet the web app also loads.
+ */
+:root {
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  color: var(--text-primary, currentColor);
+  background: var(--background-primary, transparent);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.6;
+}

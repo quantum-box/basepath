@@ -1,12 +1,15 @@
-/* Styles for the shared plan view.
+/* Styles for the shared plan and change-review components.
  *
- * The MCP App runs inside the host's conversation, so colours come from the
- * host's CSS variables when it provides them and fall back to values that work
- * on either a light or a dark surface. No font or image is loaded from an
- * external origin: the bundle is self-contained so the resource needs no CSP
- * allowance at all. */
-:root {
-  color-scheme: light dark;
+ * Component scoped on purpose: the web app imports this alongside its own
+ * stylesheet, so nothing here may restyle the document. The MCP App owns its
+ * whole document and sets the page-level rules in mcp-app/document.css.
+ *
+ * Colours come from the host's CSS variables when it provides them and fall
+ * back to values that work on either a light or a dark surface.
+ */
+.plan-panel,
+.change-review,
+.change-approval-screen {
   --plan-text: var(--text-primary, currentColor);
   --plan-muted: var(
     --text-secondary,
@@ -17,14 +20,7 @@
     color-mix(in srgb, currentColor 18%, transparent)
   );
   --plan-accent: var(--accent-primary, #c2703a);
-}
-body {
-  margin: 0;
   color: var(--plan-text);
-  background: var(--background-primary, transparent);
-  font-family: var(--font-sans, system-ui, sans-serif);
-  font-size: 14px;
-  line-height: 1.6;
 }
 .plan-panel {
   padding: 12px 14px 16px;
@@ -297,4 +293,111 @@ body {
 .plan-role {
   font-size: 11px;
   color: var(--plan-muted);
+}
+
+/* Change review */
+.change-review {
+  display: grid;
+  gap: 10px;
+}
+.change-review h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.change-meta,
+.change-summary,
+.change-origin,
+.change-note,
+.change-empty {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--plan-muted);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.change-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.change-row {
+  border: 1px solid var(--plan-line);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.change-row[data-effect="deleted"] {
+  border-color: #c0553a;
+}
+.change-row-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.change-effect {
+  font-size: 11px;
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+.change-row[data-effect="deleted"] .change-effect {
+  border-color: #c0553a;
+  color: #c0553a;
+}
+.change-title {
+  overflow-wrap: anywhere;
+}
+.change-row table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.change-row th,
+.change-row td {
+  text-align: start;
+  padding: 3px 6px;
+  border-top: 1px solid var(--plan-line);
+  overflow-wrap: anywhere;
+}
+.change-row thead th {
+  color: var(--plan-muted);
+  font-weight: 500;
+  border-top: 0;
+}
+.change-warning {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #c0553a;
+}
+.change-notice {
+  margin: 0;
+  font-size: 12px;
+  border-inline-start: 2px solid var(--plan-accent);
+  padding-inline-start: 8px;
+}
+.change-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.change-actions button {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--plan-line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.change-actions a {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  color: var(--plan-accent);
 }

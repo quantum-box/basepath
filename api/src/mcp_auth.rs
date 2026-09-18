@@ -40,6 +40,7 @@ pub fn required_scope(tool: &str) -> &'static str {
         "pathbase_apply_changes" => SCOPE_APPLY,
         "pathbase_preview_changes"
         | "pathbase_propose_plan"
+        | "pathbase_reject_change"
         | "pathbase_complete_action"
         | "pathbase_record_checkin"
         | "pathbase_record_observation" => SCOPE_PROPOSE,
