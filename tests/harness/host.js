@@ -102,6 +102,95 @@ const defaults = {
     unscheduled: [{ id: "u1", title: "日付未定の項目" }],
   },
   pathbase_complete_action: { id: "change_1", status: "pending" },
+  pathbase_get_weekly_review: {
+    workspace_id: "personal",
+    timezone: "Asia/Tokyo",
+    week_start: "2026-09-14",
+    week_end: "2026-09-20",
+    actions: {
+      total: 4,
+      completed: 3,
+      skipped: 1,
+      incomplete: 0,
+      items: [
+        {
+          item_id: "a1",
+          title: "朝の散歩",
+          date: "2026-09-15",
+          status: "completed",
+          record_id: "rec_1",
+          actor: "us_me",
+        },
+        {
+          item_id: "a1",
+          title: "朝の散歩",
+          date: "2026-09-16",
+          status: "skipped",
+          record_id: null,
+          actor: "us_me",
+        },
+      ],
+    },
+    goals: [
+      {
+        item_id: "g1",
+        title: "年間目標",
+        self_assessment: 40,
+        assessed_at: "2026-09-14T00:00:00Z",
+      },
+      {
+        item_id: "g2",
+        title: "未評価の目標",
+        self_assessment: null,
+        assessed_at: null,
+      },
+    ],
+    metrics: [
+      {
+        metric_id: "m1",
+        item_id: "g1",
+        name: "走行距離",
+        unit: "km",
+        latest: 12,
+        previous: 9,
+        delta: 3,
+        status: "current",
+        latest_observation_id: "obs_1",
+      },
+      {
+        metric_id: "m2",
+        item_id: "g1",
+        name: "体重",
+        unit: "kg",
+        latest: null,
+        previous: null,
+        delta: null,
+        status: "unmeasured",
+        latest_observation_id: null,
+      },
+      {
+        metric_id: "m3",
+        item_id: "g1",
+        name: "睡眠時間",
+        unit: "h",
+        latest: 6,
+        previous: null,
+        delta: null,
+        status: "stale",
+        latest_observation_id: "obs_9",
+      },
+    ],
+    members: [],
+    review: null,
+    history: [],
+  },
+  pathbase_preview_changes: {
+    id: "change_2",
+    workspace_id: "personal",
+    status: "pending",
+    hash: "digest-2",
+    changes: [],
+  },
   pathbase_list_changes: {
     items: [
       {
@@ -148,6 +237,8 @@ const defaults = {
 };
 
 window.__calls = [];
+/** Full requests, for tests that care about what was sent, not only that it was. */
+window.__requests = [];
 
 const iframe = document.getElementById("app");
 iframe.srcdoc = html;
@@ -163,6 +254,10 @@ const bridge = new AppBridge(
 
 bridge.oncalltool = async (request) => {
   window.__calls.push(request.name);
+  window.__requests.push({
+    name: request.name,
+    arguments: request.arguments ?? {},
+  });
   const fixtures = window.__fixtures ?? defaults;
   const failure = fixtures[`${request.name}:error`];
   if (failure) {

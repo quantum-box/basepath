@@ -102,9 +102,10 @@ async fn tools_point_at_the_ui_resource_and_the_resource_is_self_contained() {
         vec![
             "pathbase_get_graph",
             "pathbase_get_today",
-            "pathbase_get_week"
+            "pathbase_get_week",
+            "pathbase_get_weekly_review"
         ],
-        "the plan view is opened by the tools that return a plan"
+        "the app is opened by the tools that return a plan or a week of it"
     );
     // A tool without a view must not claim one.
     assert!(listed

@@ -90,9 +90,12 @@ nothing, because there is nothing in a process worth keeping.
 
 ## MCP Apps UI
 
-`pathbase_get_graph`, `pathbase_get_today` and `pathbase_get_week` carry
+`pathbase_get_graph`, `pathbase_get_today`, `pathbase_get_week` and
+`pathbase_get_weekly_review` carry
 `_meta.ui.resourceUri = "ui://basepath/plan.html"`, so a host that supports MCP
-Apps can preload the view before the tool is called. `resources/list` publishes
+Apps can preload the view before the tool is called. Which of them the host ran
+is what the person asked about, so it decides which surface the app opens on:
+the plan, or the week it reviews. `resources/list` publishes
 that resource with `mimeType: text/html;profile=mcp-app` and an **empty** CSP
 (`connectDomains: []`, `resourceDomains: []`): the document is a single
 self-contained file that loads no script, style, font or image from anywhere,

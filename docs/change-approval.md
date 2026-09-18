@@ -54,6 +54,22 @@ was approved **by this same actor**, with a digest matching its current
 content, before the expiry, against an unchanged plan. The app cannot cause an
 apply the person did not already authorize.
 
+### Weekly review text
+
+A proposal may also carry the week's review text, as
+`POST /v1/workspaces/{w}/weekly-reviews/draft`. It is the same contract: the
+app writes a draft nobody has saved, the person reads the diff in Basepath —
+their own words on the left, the proposed ones on the right — and approves it
+there.
+
+Finalizing a week is **not** proposable. Approving a change set means agreeing
+to the text, which is a different statement from declaring the week reviewed,
+so `.../weekly-reviews/{id}/finalize` is refused inside a change set
+(`422 VALIDATION_ERROR`) and stays something the person does in Basepath. The
+draft carries `expected_version` when one already exists, so a proposal written
+against an older draft is refused at apply time with `409 VERSION_CONFLICT`
+rather than overwriting what the person wrote in the meantime.
+
 ## What the server refuses
 
 `api/tests/approval.rs` is written from the attacker's side. Each of these is a
@@ -71,6 +87,8 @@ test:
 | Apply after the plan changed underneath | `409 VERSION_CONFLICT` |
 | Apply after the proposal was withdrawn | `403 APPROVAL_REQUIRED` |
 | Apply an already-applied change set | `409` / `403` |
+| Propose finalizing a weekly review | `422 VALIDATION_ERROR` |
+| Apply a review draft written against an older version | `409 VERSION_CONFLICT` |
 | Re-send the same apply (double click, retry) | the stored result, applied once |
 
 And one more, which is the point of the whole design: **previewing does not

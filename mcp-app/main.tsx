@@ -16,14 +16,29 @@ import {
   HostError,
   McpAppHost,
   loadPlanView,
+  loadWeeklyReview,
   structuredResult,
 } from "../src/shared/host";
 import {
   buildPlanView,
   emptyPlanView,
+  localDateIn,
   type PlanView,
 } from "../src/shared/viewModel";
+import {
+  draftBody,
+  draftDiffers,
+  draftInputFrom,
+  draftKey,
+  emptyDraftInput,
+  isWeeklyReview,
+  mondayOf,
+  weeklyReviewFrom,
+  type WeeklyDraftInput,
+  type WeeklyReviewView,
+} from "../src/shared/weeklyView";
 import { PlanViewPanel, type ActionRequest } from "../src/shared/PlanView";
+import { WeeklyReviewPanel } from "../src/shared/WeeklyReview";
 import { ChangeReview } from "../src/shared/ChangeReview";
 import {
   approvalUrl,
@@ -91,6 +106,24 @@ function BasepathApp() {
   const [basepathUrl, setBasepathUrl] = useState("");
   const [changeBusy, setChangeBusy] = useState(false);
   const [changeNotice, setChangeNotice] = useState<string | null>(null);
+  // The plan is what is intended; the weekly review is what happened. They are
+  // separate questions, so they are separate surfaces rather than one scroll.
+  const [surface, setSurface] = useState<"plan" | "weekly">("plan");
+  const [weekStart, setWeekStart] = useState("");
+  const [weekly, setWeekly] = useState<WeeklyReviewView | null>(null);
+  const [weeklyDraft, setWeeklyDraft] =
+    useState<WeeklyDraftInput>(emptyDraftInput);
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
+  const [weeklyBusy, setWeeklyBusy] = useState(false);
+  const [weeklyNotice, setWeeklyNotice] = useState<string | null>(null);
+  const [weeklyProblem, setWeeklyProblem] = useState<ReturnType<
+    typeof problemFor
+  > | null>(null);
+  const weeklyGeneration = useRef(0);
+  const lastWorkspace = useRef("");
+  // Read by callbacks that must not re-run every keystroke.
+  const weeklyRef = useRef<WeeklyReviewView | null>(null);
+  const draftRef = useRef<WeeklyDraftInput>(emptyDraftInput);
   /** Only the newest load may write to the view. */
   const generation = useRef(0);
   // Folding and selection reset when the workspace does: a node id from one
@@ -108,6 +141,21 @@ function BasepathApp() {
       created.ontoolresult = (params) => {
         try {
           const structured = structuredResult(params);
+          // The weekly summary opens this app too. Which tool the host ran is
+          // what the person asked about, so it decides which surface is shown.
+          if (isWeeklyReview(structured)) {
+            const summary = weeklyReviewFrom(structured);
+            if (summary) {
+              setSurface("weekly");
+              setWeekStart(summary.weekStart);
+              adoptReview(summary);
+              setWeeklyProblem(null);
+              setWeeklyLoading(false);
+              setStale(false);
+              setLoading(false);
+            }
+            return;
+          }
           const next = buildPlanView({ graph: structured, today: structured });
           if (next.nodes.length > 0 || next.actions.length > 0) {
             setView((current) => ({
@@ -132,6 +180,32 @@ function BasepathApp() {
   });
 
   useHostStyleVariables(app);
+
+  /**
+   * Takes a newer weekly summary without discarding unsent text.
+   *
+   * A tool result can arrive at any moment, including mid-sentence. The
+   * numbers are always replaced — they are the server's — but text the person
+   * typed and has not proposed yet is theirs, and retyping it is not free.
+   */
+  const adoptReview = useCallback((next: WeeklyReviewView) => {
+    const current = weeklyRef.current;
+    const unsent =
+      current !== null &&
+      current.weekStart === next.weekStart &&
+      draftDiffers(draftRef.current, current.review);
+    weeklyRef.current = next;
+    setWeekly(next);
+    if (!unsent) {
+      draftRef.current = draftInputFrom(next.review);
+      setWeeklyDraft(draftRef.current);
+    }
+  }, []);
+
+  const changeDraft = useCallback((next: WeeklyDraftInput) => {
+    draftRef.current = next;
+    setWeeklyDraft(next);
+  }, []);
 
   const hostFor = useCallback(() => {
     if (!app) return null;
@@ -189,6 +263,102 @@ function BasepathApp() {
   useEffect(() => {
     if (isConnected) void refresh();
   }, [isConnected, refresh]);
+
+  // The week under review belongs to the workspace, not to the device showing
+  // it, and a week from one workspace means nothing in another: switching
+  // clears the summary and the unsent text rather than carrying them over.
+  useEffect(() => {
+    const workspace = view.workspace;
+    if (!workspace) return;
+    const thisWeek = () =>
+      mondayOf(view.localDate || localDateIn(workspace.timezone));
+    if (lastWorkspace.current && lastWorkspace.current !== workspace.id) {
+      weeklyGeneration.current += 1;
+      weeklyRef.current = null;
+      draftRef.current = emptyDraftInput;
+      setWeekly(null);
+      setWeeklyDraft(emptyDraftInput);
+      setWeeklyNotice(null);
+      setWeeklyProblem(null);
+      setWeekStart(thisWeek());
+    } else {
+      setWeekStart((current) => current || thisWeek());
+    }
+    lastWorkspace.current = workspace.id;
+  }, [view.workspace?.id, view.workspace?.timezone, view.localDate]);
+
+  const refreshWeekly = useCallback(async () => {
+    const host = hostFor();
+    const workspace = view.workspace;
+    if (!host || !workspace || !weekStart) return;
+    const ticket = ++weeklyGeneration.current;
+    setWeeklyLoading(true);
+    const { review, error: failure } = await loadWeeklyReview(
+      host,
+      workspace.id,
+      weekStart,
+    );
+    if (ticket !== weeklyGeneration.current) return;
+    setWeeklyLoading(false);
+    if (failure) {
+      setWeeklyProblem(problemFor(failure));
+      return;
+    }
+    setWeeklyProblem(null);
+    if (review) adoptReview(review);
+  }, [hostFor, view.workspace?.id, weekStart, adoptReview]);
+
+  useEffect(() => {
+    if (isConnected && surface === "weekly") void refreshWeekly();
+  }, [isConnected, surface, refreshWeekly]);
+
+  /**
+   * Turns the person's review text into a change set.
+   *
+   * It is a proposal, not a save. A click here reaches the server as an
+   * ordinary tool call that the server cannot tell apart from the model's, so
+   * it cannot stand in for the person: they approve the diff in Basepath, and
+   * only they can finalize the week there.
+   */
+  const proposeReview = useCallback(async () => {
+    const host = hostFor();
+    const workspace = view.workspace;
+    const summary = weeklyRef.current;
+    if (!host || !workspace || !summary || weeklyBusy) return;
+    const input = draftRef.current;
+    setWeeklyBusy(true);
+    setWeeklyNotice(null);
+    try {
+      await host.call("pathbase_preview_changes", {
+        workspace_id: workspace.id,
+        title: `${summary.weekStart}の週次レビュー案`,
+        operations: [
+          {
+            method: "POST",
+            path: `/v1/workspaces/${workspace.id}/weekly-reviews/draft`,
+            body: draftBody(summary.weekStart, input, summary.review),
+          },
+        ],
+        // The version pins what this proposal was written against; the digest
+        // keeps edited text from colliding with an earlier proposal.
+        idempotency_key: `weekly:${summary.weekStart}:${summary.review?.version ?? 0}:${draftKey(input)}`,
+      });
+      setWeeklyNotice(
+        "変更案を作成しました。Basepathで差分を確認して承認すると保存されます。この週はまだ確定していません。",
+      );
+    } catch (failure) {
+      if (failure instanceof HostError) {
+        const described = problemFor(failure);
+        setWeeklyNotice(`${described.title}: ${described.detail}`);
+      } else {
+        setWeeklyNotice("変更案を作成できませんでした。");
+      }
+    } finally {
+      setWeeklyBusy(false);
+      await refresh();
+      await refreshWeekly();
+    }
+  }, [hostFor, view.workspace?.id, weeklyBusy, refresh, refreshWeekly]);
 
   /**
    * Proposes an action completion.
@@ -306,22 +476,65 @@ function BasepathApp() {
 
   return (
     <>
-      <PlanViewPanel
-        view={view}
-        tree={tree}
-        loading={loading && !problem}
-        problem={problem ? { ...problem, retry: () => void refresh() } : null}
-        stale={stale}
-        onSelectWorkspace={(id) => {
-          setNotice(null);
-          setLimit(undefined);
-          setWorkspaceId(id);
-        }}
-        onPropose={(request) => void propose(request)}
-        busyAction={busyAction}
-        notice={notice}
-        onExpand={() => setLimit(200)}
-      />
+      <nav className="app-surfaces" aria-label="表示の切り替え">
+        <button
+          type="button"
+          aria-pressed={surface === "plan"}
+          onClick={() => setSurface("plan")}
+        >
+          計画
+        </button>
+        <button
+          type="button"
+          aria-pressed={surface === "weekly"}
+          onClick={() => setSurface("weekly")}
+        >
+          週次レビュー
+        </button>
+      </nav>
+      {surface === "plan" ? (
+        <PlanViewPanel
+          view={view}
+          tree={tree}
+          loading={loading && !problem}
+          problem={problem ? { ...problem, retry: () => void refresh() } : null}
+          stale={stale}
+          onSelectWorkspace={(id) => {
+            setNotice(null);
+            setLimit(undefined);
+            setWorkspaceId(id);
+          }}
+          onPropose={(request) => void propose(request)}
+          busyAction={busyAction}
+          notice={notice}
+          onExpand={() => setLimit(200)}
+        />
+      ) : (
+        <WeeklyReviewPanel
+          compact
+          review={weekly}
+          workspaceName={view.workspace?.name}
+          loading={weeklyLoading}
+          problem={
+            weeklyProblem
+              ? { ...weeklyProblem, retry: () => void refreshWeekly() }
+              : null
+          }
+          stale={stale}
+          onSelectWeek={(next) => {
+            setWeeklyNotice(null);
+            setWeekStart(next);
+          }}
+          draft={weeklyDraft}
+          onDraftChange={changeDraft}
+          canEdit={view.workspace?.role !== "viewer"}
+          // No save and no finalize here: this surface cannot prove who
+          // clicked. It can only propose, and the person approves in Basepath.
+          onProposeDraft={() => void proposeReview()}
+          busy={weeklyBusy}
+          notice={weeklyNotice}
+        />
+      )}
       {changes.map((change) => (
         <ChangeReview
           key={change.id}

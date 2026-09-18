@@ -538,3 +538,290 @@ test("an expired proposal offers nothing but a rebuild", async ({ page }) => {
     review.getByRole("button", { name: "Basepathで承認する" }),
   ).toBeHidden();
 });
+
+/**
+ * The weekly review, in the conversation.
+ *
+ * The plan is what is intended; this is what happened. The tests below are
+ * mostly about what must *not* appear: an invented number, a completion rate
+ * over an empty week, or anything that would let the app finish a review on
+ * the person's behalf.
+ */
+async function openWeekly(page, options) {
+  const app = await openHarness(page, options);
+  await app.getByRole("button", { name: "週次レビュー", exact: true }).click();
+  return app;
+}
+
+test("the weekly review shows the server's numbers, not recomputed ones", async ({
+  page,
+}) => {
+  const app = await openWeekly(page);
+
+  await expect(
+    app.getByRole("heading", { name: "週次レビュー", exact: true }),
+  ).toBeVisible();
+  await expect(app.getByText("2026-09-14〜2026-09-20").first()).toBeVisible();
+  // Four occurrences were planned; only two rows came back. The totals are the
+  // server's, so the rate is 75%, not something derived from what is listed.
+  await expect(app.getByText("4件", { exact: true })).toBeVisible();
+  await expect(app.getByText("75%", { exact: true })).toBeVisible();
+  await expect(app.getByText("2026-09-15 · 完了 · 記録あり")).toBeVisible();
+  await expect(app.getByText("2026-09-16 · 見送り")).toBeVisible();
+
+  const calls = await page.evaluate(() => window.__calls);
+  expect(calls).toContain("pathbase_get_weekly_review");
+});
+
+test("an unmeasured metric reads as unmeasured, never as zero", async ({
+  page,
+}) => {
+  const app = await openWeekly(page);
+
+  await expect(app.getByText("12 km", { exact: true })).toBeVisible();
+  await expect(app.getByText("前週差 +3 km", { exact: true })).toBeVisible();
+  // Nothing was observed, so nothing is claimed.
+  await expect(app.getByText("未計測", { exact: true })).toBeVisible();
+  await expect(
+    app.getByText("観測がありません", { exact: true }),
+  ).toBeVisible();
+  // A measurement with nothing to compare against says so rather than "+0".
+  await expect(
+    app.getByText("古い観測（2週間以上前）", { exact: true }),
+  ).toBeVisible();
+  await expect(app.getByText("+0", { exact: false })).toBeHidden();
+  // Assessment and completion are shown as separate things.
+  await expect(app.getByText("行動完了率とは別指標")).toBeVisible();
+  await expect(app.getByText("自己評価 40%", { exact: true })).toBeVisible();
+  await expect(app.getByText("評価未設定", { exact: true })).toBeVisible();
+});
+
+test("an empty week says it is empty instead of showing a 0% week", async ({
+  page,
+}) => {
+  const app = await openWeekly(page, {
+    fixtures: {
+      pathbase_get_context: {
+        workspaces: [
+          {
+            id: "personal",
+            name: "個人",
+            scope: "個人",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+        ],
+      },
+      pathbase_get_graph: { items: [], relations: [] },
+      pathbase_get_today: { local_date: "2026-09-18", items: [] },
+      pathbase_get_week: {
+        start: "2026-09-14",
+        end: "2026-09-20",
+        timezone: "Asia/Tokyo",
+        days: [],
+        unscheduled: [],
+      },
+      pathbase_list_changes: { items: [] },
+      pathbase_get_weekly_review: {
+        workspace_id: "personal",
+        timezone: "Asia/Tokyo",
+        week_start: "2026-09-14",
+        week_end: "2026-09-20",
+        actions: {
+          total: 0,
+          completed: 0,
+          skipped: 0,
+          incomplete: 0,
+          items: [],
+        },
+        goals: [],
+        metrics: [],
+        members: [],
+        review: null,
+        history: [],
+      },
+    },
+  });
+
+  await expect(
+    app.getByText("この週はまだ集計できるデータがありません"),
+  ).toBeVisible();
+  await expect(app.getByText("推測値は作らず", { exact: false })).toBeVisible();
+  // A rate over nothing is not 0%.
+  await expect(app.getByText("—", { exact: true })).toBeVisible();
+  await expect(app.getByText("0%", { exact: true })).toBeHidden();
+  await expect(app.getByText("予定された行動はありません。")).toBeVisible();
+  await expect(app.getByText("成果指標はありません。")).toBeVisible();
+});
+
+test("writing the review here is a proposal, and it says so", async ({
+  page,
+}) => {
+  const app = await openWeekly(page);
+
+  // The app cannot finish a week: it has no save and no finalize at all.
+  await expect(
+    app.getByRole("button", { name: "レビューを確定", exact: true }),
+  ).toBeHidden();
+  await expect(
+    app.getByRole("button", { name: "下書き保存", exact: true }),
+  ).toBeHidden();
+  await expect(
+    app.getByText("確定はBasepathで本人が承認したときだけ行われます", {
+      exact: false,
+    }),
+  ).toBeVisible();
+
+  const propose = app.getByRole("button", {
+    name: "変更案にする",
+    exact: true,
+  });
+  // Nothing written yet, so there is nothing to propose.
+  await expect(propose).toBeDisabled();
+
+  await app.getByLabel("学び", { exact: true }).fill("観測: 3回完了した");
+  await app
+    .getByLabel("課題", { exact: true })
+    .fill("推測: 移動時間が原因かも");
+  await app
+    .getByLabel("次週の重点", { exact: true })
+    .fill("質問: 朝に動かせますか");
+  await expect(propose).toBeEnabled();
+  await propose.click();
+
+  await expect(
+    app.getByText("この週はまだ確定していません", { exact: false }),
+  ).toBeVisible();
+
+  const [request] = await page.evaluate(() =>
+    window.__requests.filter(
+      (call) => call.name === "pathbase_preview_changes",
+    ),
+  );
+  expect(request).toBeTruthy();
+  const [operation] = request.arguments.operations;
+  expect(operation.method).toBe("POST");
+  expect(operation.path).toBe("/v1/workspaces/personal/weekly-reviews/draft");
+  expect(operation.body.week_start).toBe("2026-09-14");
+  expect(operation.body.learnings).toBe("観測: 3回完了した");
+  // No draft exists yet, so there is no version this could overwrite.
+  expect("expected_version" in operation.body).toBe(false);
+  // An idempotency key has to survive an HTTP header.
+  expect(request.arguments.idempotency_key).toMatch(/^[\x20-\x7e]+$/);
+});
+
+test("resending the same review text does not become a second proposal", async ({
+  page,
+}) => {
+  const app = await openWeekly(page);
+  const propose = app.getByRole("button", {
+    name: "変更案にする",
+    exact: true,
+  });
+  const proposals = () =>
+    page.evaluate(() =>
+      window.__requests
+        .filter((call) => call.name === "pathbase_preview_changes")
+        .map((call) => call.arguments.idempotency_key),
+    );
+  const sendOnce = async (text, count) => {
+    await app.getByLabel("学び", { exact: true }).fill(text);
+    await expect(propose).toBeEnabled();
+    await propose.click();
+    await page.waitForFunction(
+      (expected) =>
+        window.__requests.filter(
+          (call) => call.name === "pathbase_preview_changes",
+        ).length === expected,
+      count,
+    );
+  };
+
+  await sendOnce("同じ文章", 1);
+  await sendOnce("同じ文章", 2);
+  const keys = await proposals();
+  // The same text is the same proposal; the key lets the server collapse it.
+  expect(keys[0]).toBe(keys[1]);
+
+  // Edited text is a different proposal and must be able to reach the person.
+  await sendOnce("書き直した文章", 3);
+  const edited = await proposals();
+  expect(edited[2]).not.toBe(edited[0]);
+});
+
+test("stepping to another week asks the server for that week", async ({
+  page,
+}) => {
+  const app = await openWeekly(page);
+  await app.getByRole("button", { name: "前の週", exact: true }).click();
+
+  await page.waitForFunction(() =>
+    window.__requests.some(
+      (call) =>
+        call.name === "pathbase_get_weekly_review" &&
+        call.arguments.week_start === "2026-09-07",
+    ),
+  );
+  // The week is always a Monday, because that is what the server accepts.
+  const weeks = await page.evaluate(() =>
+    window.__requests
+      .filter((call) => call.name === "pathbase_get_weekly_review")
+      .map((call) => call.arguments.week_start),
+  );
+  for (const week of weeks) {
+    expect(new Date(`${week}T00:00:00Z`).getUTCDay()).toBe(1);
+  }
+});
+
+test("a refused weekly review explains itself instead of showing a blank week", async ({
+  page,
+}) => {
+  const app = await openWeekly(page, {
+    fixtures: {
+      pathbase_get_context: {
+        workspaces: [
+          {
+            id: "personal",
+            name: "個人",
+            scope: "個人",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+        ],
+      },
+      pathbase_get_graph: { items: [], relations: [] },
+      pathbase_get_today: { local_date: "2026-09-18", items: [] },
+      pathbase_get_week: {
+        start: "2026-09-14",
+        end: "2026-09-20",
+        timezone: "Asia/Tokyo",
+        days: [],
+        unscheduled: [],
+      },
+      pathbase_list_changes: { items: [] },
+      "pathbase_get_weekly_review:error": {
+        code: "INSUFFICIENT_SCOPE",
+        message: "scope不足",
+        status: 403,
+      },
+    },
+  });
+
+  await expect(app.getByRole("alert")).toContainText("権限が足りません");
+  await expect(
+    app.getByText("目標と行動を読む", { exact: false }),
+  ).toBeVisible();
+});
+
+test("the weekly review stays readable in a narrow conversation pane", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  const app = await openWeekly(page);
+  await expect(app.getByText("走行距離", { exact: true })).toBeVisible();
+
+  const overflow = await app
+    .locator(".weekly-panel")
+    .evaluate((element) => element.scrollWidth - element.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(1);
+});

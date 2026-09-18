@@ -1874,21 +1874,27 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     }
     for op in &ops {
         let p: Vec<_> = op.path.trim_matches('/').split('/').collect();
+        // A weekly review draft may be proposed; finalizing one may not. A
+        // person approving a change set is agreeing to the text, not declaring
+        // the week reviewed — that stays an act they perform in Basepath.
+        let weekly_draft =
+            p.len() == 5 && p[3] == "weekly-reviews" && p[4] == "draft" && op.method == "POST";
         if p.len() < 4
             || p[0] != "v1"
             || p[1] != "workspaces"
             || p[2] != w
-            || ![
-                "items",
-                "relations",
-                "records",
-                "metrics",
-                "observations",
-                "actions",
-                "templates",
-                "views",
-            ]
-            .contains(&p[3])
+            || !(weekly_draft
+                || [
+                    "items",
+                    "relations",
+                    "records",
+                    "metrics",
+                    "observations",
+                    "actions",
+                    "templates",
+                    "views",
+                ]
+                .contains(&p[3]))
             || !["POST", "PATCH", "DELETE"].contains(&op.method.as_str())
         {
             return Err(ApiError::invalid(
@@ -1926,6 +1932,26 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     Ok(c)
 }
 
+/// The newest revision recorded for the week containing `week_start`.
+///
+/// Returns `None` rather than failing when the week cannot be parsed: the
+/// operation itself is about to run and will reject a bad week with the real
+/// message.
+async fn latest_weekly_review(tx: &mut Tx, w: &str, week_start: &str) -> Result<Option<Value>> {
+    let mut query = HashMap::new();
+    query.insert("week_start".to_string(), week_start.to_string());
+    let Ok((start, _)) = review_week(&query) else {
+        return Ok(None);
+    };
+    let mut reviews: Vec<WeeklyReview> = list(tx, w, "weekly_reviews").await?;
+    reviews.retain(|review| review.week_start == start.to_string());
+    reviews.sort_by_key(|review| review.revision);
+    Ok(match reviews.last() {
+        Some(review) => Some(serde_json::to_value(review)?),
+        None => None,
+    })
+}
+
 /// Runs one proposed operation and records what it did.
 ///
 /// The caller is inside a savepoint that will be rolled back, so this is a
@@ -1934,13 +1960,19 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
 async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation) -> Result<Value> {
     let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
     let collection = parts.get(3).copied().unwrap_or("");
-    // `actions` operate on an item; everything else names its own collection.
-    let (target_collection, target_id) = if collection == "actions" {
-        ("items", parts.get(4).copied().unwrap_or(""))
-    } else {
-        (collection, parts.get(4).copied().unwrap_or(""))
+    // `actions` operate on an item; a weekly review draft is addressed by its
+    // week rather than by a row id; everything else names its own collection.
+    let (target_collection, target_id) = match collection {
+        "actions" => ("items", parts.get(4).copied().unwrap_or("")),
+        "weekly-reviews" => ("weekly_reviews", ""),
+        _ => (collection, parts.get(4).copied().unwrap_or("")),
     };
-    let before: Option<Value> = if target_id.is_empty() {
+    // What the operation would replace. For a review draft that is the newest
+    // revision recorded for the week it names, so the person sees their own
+    // words next to the proposed ones instead of an unexplained creation.
+    let before: Option<Value> = if collection == "weekly-reviews" {
+        latest_weekly_review(tx, w, text(&op.body, "week_start")).await?
+    } else if target_id.is_empty() {
         None
     } else {
         get(tx, w, target_collection, target_id).await.ok()
@@ -1969,9 +2001,19 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     let title = after
         .as_ref()
         .or(before.as_ref())
-        .and_then(|value| value["title"].as_str())
-        .unwrap_or("")
-        .to_owned();
+        .and_then(|value| {
+            value["title"]
+                .as_str()
+                .map(str::to_owned)
+                // A weekly review has no title; the week it covers is what
+                // identifies it to a person.
+                .or_else(|| {
+                    value["week_start"]
+                        .as_str()
+                        .map(|week| format!("{week}の週次レビュー"))
+                })
+        })
+        .unwrap_or_default();
     Ok(json!({
         "method": op.method,
         "path": op.path,
