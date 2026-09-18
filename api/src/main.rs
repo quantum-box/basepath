@@ -14,6 +14,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let local_preview = std::env::var("PATHBASE_MODE").as_deref() == Ok("local-preview");
+    // `--migrate` applies the schema and exits, for an operator or a
+    // deployment gate that wants migration separated from serving.
+    if args.iter().any(|arg| arg == "--migrate") {
+        let db = pathbase_api::db::connect_from_env(local_preview)
+            .await
+            .map_err(|e| e.message)?;
+        db.migrate().await.map_err(|e| e.message)?;
+        let status = db.schema_status().await.map_err(|e| e.message)?;
+        println!("{}", serde_json::to_string_pretty(&status)?);
+        db.close().await;
+        if !status.is_ready() {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     let service = Service::open_from_env(local_preview)
         .await
         .map_err(|e| e.message)?;

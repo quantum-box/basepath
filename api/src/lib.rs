@@ -58,12 +58,17 @@ pub fn router_with_mcp(state: HttpState, mcp: Option<Router<HttpState>>) -> Rout
         db::Dialect::MySql => ("tidb", "shared-durable"),
         db::Dialect::Sqlite => ("sqlite", "ephemeral-runtime"),
     };
-    let app: Router<HttpState> = Router::new().route(
-        "/health",
-        get(move || async move {
-            Json(json!({"status":"ok","service":"pathbase-api","storage":storage,"storage_durability":durability}))
-        }),
-    );
+    let app: Router<HttpState> = Router::new()
+        .route(
+            "/health",
+            get(move || async move {
+                Json(json!({"status":"ok","service":"pathbase-api","storage":storage,"storage_durability":durability}))
+            }),
+        )
+        // Readiness, unlike /health, actually reaches the database. A
+        // candidate whose migration did not run, or that was pointed at
+        // another deployment's database, must not be promoted.
+        .route("/health/ready", get(readiness));
     let app = if let Some(mcp) = mcp {
         app.nest("/mcp", mcp)
     } else {
@@ -74,6 +79,52 @@ pub fn router_with_mcp(state: HttpState, mcp: Option<Router<HttpState>>) -> Rout
         .layer(axum::middleware::from_fn(no_cache))
         .with_state(state)
 }
+async fn readiness(State(state): State<HttpState>) -> Response {
+    let status = match state.service.db.schema_status().await {
+        Ok(status) => status,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "status": "unavailable",
+                    "service": "pathbase-api",
+                    "reason": "database_unreachable",
+                    "message": error.message,
+                })),
+            )
+                .into_response()
+        }
+    };
+    let ready = status.is_ready();
+    let reason = if status.schema_version != status.expected_schema_version {
+        "schema_out_of_date"
+    } else if status.database_environment.as_deref() != Some(status.environment.as_str()) {
+        "environment_mismatch"
+    } else {
+        "ok"
+    };
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(json!({
+            "status": if ready { "ready" } else { "unavailable" },
+            "service": "pathbase-api",
+            "schema": if status.schema_version == status.expected_schema_version { "current" } else { "out_of_date" },
+            "storage": status.storage,
+            "storage_durability": status.durability,
+            "schema_version": status.schema_version,
+            "expected_schema_version": status.expected_schema_version,
+            "environment": status.environment,
+            "database_environment": status.database_environment,
+            "reason": reason,
+        })),
+    )
+        .into_response()
+}
+
 async fn no_cache(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let mut response = next.run(request).await;
     response

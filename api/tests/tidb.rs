@@ -121,10 +121,15 @@ async fn migrations_apply_fresh_rerun_and_upgrade() {
             )
             .await
             .unwrap();
-        assert_eq!(versions.len(), 1, "one row per applied migration");
-        assert_eq!(versions[0].int(0).unwrap(), 1);
+        let applied: Vec<i64> = versions.iter().map(|row| row.int(0).unwrap()).collect();
+        assert_eq!(
+            applied,
+            (1..=pathbase_api::db::expected_schema_version()).collect::<Vec<_>>(),
+            "one row per applied migration"
+        );
         // Every table the service writes to must exist.
         for table in [
+            "database_identity",
             "workspaces",
             "memberships",
             "documents",
@@ -577,4 +582,54 @@ async fn revoked_membership_rejects_a_replayed_request() {
         replay.status, 404,
         "a revoked member must not replay a stored response"
     );
+}
+
+#[tokio::test]
+async fn simultaneous_cold_starts_migrate_exactly_once() {
+    let fixture = tidb!();
+    // Several Lambda execution environments can start against a freshly
+    // provisioned database at the same time. The advisory lock has to make
+    // them converge instead of racing the DDL.
+    let starts = (0..4)
+        .map(|_| {
+            let url = fixture.url.clone();
+            tokio::spawn(async move { Service::open(&url).await.map(|_| ()) })
+        })
+        .collect::<Vec<_>>();
+    for start in starts {
+        start
+            .await
+            .unwrap()
+            .expect("a simultaneous cold start failed");
+    }
+
+    let service = fixture.service().await;
+    let mut tx = service.db.begin_read().await.unwrap();
+    let rows = tx
+        .fetch_all(
+            "SELECT version FROM schema_migrations ORDER BY version",
+            &[],
+        )
+        .await
+        .unwrap();
+    let versions: Vec<i64> = rows.iter().map(|row| row.int(0).unwrap()).collect();
+    assert_eq!(
+        versions.len(),
+        versions
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        "each migration must be recorded once: {versions:?}"
+    );
+    let identity = tx
+        .fetch_all("SELECT id FROM database_identity", &[])
+        .await
+        .unwrap();
+    assert_eq!(identity.len(), 1, "the database is claimed exactly once");
+    tx.commit().await.unwrap();
+
+    let status = service.db.schema_status().await.unwrap();
+    assert!(status.is_ready(), "{status:?}");
+    assert_eq!(status.storage, "tidb");
+    assert_eq!(status.durability, "shared-durable");
 }
