@@ -23,12 +23,10 @@ async fn pathbase_request(
         .map_err(|_| ApiError::invalid("Invalid API path"))?;
     let query: HashMap<String, String> = url.query_pairs().into_owned().collect();
     let path = url.path().to_owned();
-    let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        service.handle(&Actor::local(), &method, &path, &query, body, Some(&key))
-    })
-    .await
-    .map_err(|_| ApiError::new(500, "INTERNAL_ERROR", "保存処理に失敗しました"))?
+    service
+        .inner()
+        .handle(&Actor::local(), &method, &path, &query, body, Some(&key))
+        .await
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -42,8 +40,14 @@ pub fn run() {
                 window.navigate(web_url.parse()?)?;
             } else if cfg!(debug_assertions) {
                 let path = app.path().app_data_dir()?.join("preview.sqlite3");
-                let service = Service::open(&path).map_err(|e| e.message)?;
-                service.initialize(true).map_err(|e| e.message)?;
+                let service = tauri::async_runtime::block_on(async {
+                    // The desktop debug window is an explicit local preview; it
+                    // never shares the production database.
+                    let service = Service::open(&path.to_string_lossy()).await?;
+                    service.initialize(true).await?;
+                    Ok::<_, ApiError>(service)
+                })
+                .map_err(|e| e.message)?;
                 app.manage(service);
             } else {
                 return Err(

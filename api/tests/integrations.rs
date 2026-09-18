@@ -178,8 +178,8 @@ async fn auth(s: &MockState) -> TachyonAuth {
     .unwrap()
 }
 
-#[test]
-fn runtime_auth_uses_tachyon_oauth_routes_without_discovery() {
+#[tokio::test]
+async fn runtime_auth_uses_tachyon_oauth_routes_without_discovery() {
     let auth = TachyonAuth::for_runtime(AuthConfig {
         issuer: "https://api.example.com".into(),
         client_id: "pathbase-test".into(),
@@ -204,7 +204,9 @@ fn runtime_auth_uses_tachyon_oauth_routes_without_discovery() {
 #[tokio::test]
 async fn auth_status_uses_the_path_below_the_cloudapp_api_mount() {
     let dir = tempfile::tempdir().unwrap();
-    let service = Service::open(&dir.path().join("db")).unwrap();
+    let service = Service::open(&dir.path().join("db").to_string_lossy())
+        .await
+        .unwrap();
     let auth = TachyonAuth::for_runtime(AuthConfig {
         issuer: "https://api.example.com".into(),
         client_id: "pathbase-test".into(),
@@ -346,12 +348,14 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let service = Service::open(&dir.path().join("db")).unwrap();
+    let service = Service::open(&dir.path().join("db").to_string_lossy())
+        .await
+        .unwrap();
     let actor = pathbase_api::service::Actor {
         id: "us_verified".into(),
         agent: false,
     };
-    service.provision_personal(&actor).unwrap();
+    service.provision_personal(&actor).await.unwrap();
     let ws = service
         .handle(
             &actor,
@@ -361,6 +365,7 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
             json!({}),
             None,
         )
+        .await
         .unwrap();
     let w = ws[0]["id"].as_str().unwrap();
     let outcome = service
@@ -372,10 +377,11 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
             json!({"title":"Sales outcome","kind":"outcome"}),
             Some("item"),
         )
+        .await
         .unwrap();
     let mut metric_ids = vec![];
     for (n, unit) in ["円", "日"].iter().enumerate() {
-        let metric=service.handle(&actor,"POST",&format!("/v1/workspaces/{w}/metrics"),&HashMap::new(),json!({"item_id":outcome["id"],"name":"Metric","unit":unit,"baseline":0,"target":100000,"direction":"increase"}),Some(&format!("metric-{n}"))).unwrap();
+        let metric=service.handle(&actor,"POST",&format!("/v1/workspaces/{w}/metrics"),&HashMap::new(),json!({"item_id":outcome["id"],"name":"Metric","unit":unit,"baseline":0,"target":100000,"direction":"increase"}),Some(&format!("metric-{n}"))).await.unwrap();
         metric_ids.push(metric["id"].clone());
     }
     let app = pathbase_api::router(HttpState {
@@ -538,6 +544,7 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
             json!({}),
             None,
         )
+        .await
         .unwrap();
     assert_eq!(snapshot["observations"].as_array().unwrap().len(), 1);
     assert!(!s
@@ -701,8 +708,10 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
     let (s, server) = upstream().await;
     let a = auth(&s).await;
     let dir = tempfile::tempdir().unwrap();
-    let service = Service::open(&dir.path().join("db")).unwrap();
-    service.initialize(true).unwrap();
+    let service = Service::open(&dir.path().join("db").to_string_lossy())
+        .await
+        .unwrap();
+    service.initialize(true).await.unwrap();
     let app = pathbase_api::router(HttpState {
         service: service.clone(),
         token: "preview-key".into(),
@@ -881,8 +890,10 @@ async fn authenticated_api_uses_verified_identity_and_never_local_owner() {
 #[tokio::test]
 async fn local_http_contract_auth_json_paging_and_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let service = Service::open(&dir.path().join("db")).unwrap();
-    service.initialize(false).unwrap();
+    let service = Service::open(&dir.path().join("db").to_string_lossy())
+        .await
+        .unwrap();
+    service.initialize(false).await.unwrap();
     let app = pathbase_api::router(HttpState {
         service,
         token: "test-only-token".into(),

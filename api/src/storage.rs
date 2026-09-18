@@ -1,82 +1,144 @@
+//! Document-level persistence shared by every entry point (HTTP, MCP, Tauri).
+//!
+//! All statements here are portable between the SQLite preview database and
+//! TiDB; anything dialect-specific comes from [`crate::db::Dialect`].
+use crate::db::Tx;
 use crate::model::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::params;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub fn migrate(db: &Connection) -> Result<()> {
-    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-        CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY);
-        INSERT OR IGNORE INTO migrations VALUES(1);
-        CREATE TABLE IF NOT EXISTS workspaces(id TEXT PRIMARY KEY, body TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS memberships(workspace_id TEXT NOT NULL REFERENCES workspaces(id), actor TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(workspace_id, actor));
-        CREATE TABLE IF NOT EXISTS documents(workspace_id TEXT NOT NULL REFERENCES workspaces(id), collection TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL CHECK(json_valid(body)), PRIMARY KEY(workspace_id, collection, id));
-        CREATE INDEX IF NOT EXISTS document_items ON documents(workspace_id, collection, json_extract(body,'$.state'), json_extract(body,'$.updated_at'));
-        CREATE INDEX IF NOT EXISTS relation_sources ON documents(workspace_id, collection, json_extract(body,'$.source_id'));
-        CREATE INDEX IF NOT EXISTS relation_targets ON documents(workspace_id, collection, json_extract(body,'$.target_id'));
-        CREATE TABLE IF NOT EXISTS idempotency(actor TEXT NOT NULL, workspace_id TEXT NOT NULL, key TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(actor, workspace_id, key));
-        CREATE TABLE IF NOT EXISTS settings(actor TEXT PRIMARY KEY, body TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, actor TEXT NOT NULL, origin TEXT NOT NULL, command TEXT NOT NULL, created_at TEXT NOT NULL);")?;
-    db.execute_batch("BEGIN IMMEDIATE;
-        CREATE TABLE IF NOT EXISTS invitations(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), target_actor TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('editor','viewer')), status TEXT NOT NULL CHECK(status IN ('pending','accepted','declined','revoked')), created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, version INTEGER NOT NULL);
-        CREATE INDEX IF NOT EXISTS invitations_recipient ON invitations(target_actor,status);
-        CREATE INDEX IF NOT EXISTS invitations_workspace ON invitations(workspace_id,status);
-        INSERT OR IGNORE INTO migrations VALUES(2);
-        COMMIT;")?;
+/// Lexicographically sortable creation stamp, replacing SQLite's `rowid`
+/// ordering. Millisecond time keeps rows from different execution
+/// environments in the order they were written; the per-process counter keeps
+/// rows written inside the same millisecond distinct and stable.
+pub fn sequence() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let millis = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let tick = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{millis:013}-{tick:010}-{:08x}", rand_suffix())
+}
+
+fn rand_suffix() -> u32 {
+    // uuid v4 already pulls from the OS entropy source; reuse it rather than
+    // adding a second RNG dependency.
+    u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap())
+}
+
+pub async fn list<T: DeserializeOwned>(tx: &mut Tx, w: &str, col: &str) -> Result<Vec<T>> {
+    let sql = format!(
+        "SELECT body FROM documents WHERE workspace_id=? AND collection=? ORDER BY seq{}",
+        tx.lock_reads()
+    );
+    let rows = tx.fetch_all(&sql, &params![w, col]).await?;
+    rows.iter()
+        .map(|row| Ok(serde_json::from_str(&row.text(0)?)?))
+        .collect()
+}
+
+pub async fn get<T: DeserializeOwned>(tx: &mut Tx, w: &str, col: &str, id: &str) -> Result<T> {
+    let sql = format!(
+        "SELECT body FROM documents WHERE workspace_id=? AND collection=? AND id=?{}",
+        tx.lock_reads()
+    );
+    let row = tx
+        .fetch_optional(&sql, &params![w, col, id])
+        .await?
+        .ok_or_else(ApiError::missing)?;
+    Ok(serde_json::from_str(&row.text(0)?)?)
+}
+
+pub async fn exists(tx: &mut Tx, w: &str, col: &str, id: &str) -> Result<bool> {
+    let sql = format!(
+        "SELECT 1 FROM documents WHERE workspace_id=? AND collection=? AND id=?{}",
+        tx.lock_reads()
+    );
+    Ok(tx
+        .fetch_optional(&sql, &params![w, col, id])
+        .await?
+        .is_some())
+}
+
+pub async fn put<T: Serialize>(tx: &mut Tx, w: &str, col: &str, id: &str, value: &T) -> Result<()> {
+    let sql = tx.dialect().upsert(
+        "documents",
+        &["workspace_id", "collection", "id", "body", "seq"],
+        &["workspace_id", "collection", "id"],
+        &["body"],
+    );
+    tx.execute(
+        &sql,
+        &params![w, col, id, serde_json::to_string(value)?, sequence()],
+    )
+    .await?;
     Ok(())
 }
-pub fn list<T: DeserializeOwned>(db: &Connection, w: &str, col: &str) -> Result<Vec<T>> {
-    let mut q = db.prepare(
-        "SELECT body FROM documents WHERE workspace_id=?1 AND collection=?2 ORDER BY rowid",
-    )?;
-    let rows = q.query_map(params![w, col], |r| r.get::<_, String>(0))?;
-    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+
+/// Insert that leaves an existing document untouched. Used where the same
+/// logical event may be derived more than once (notifications).
+pub async fn put_new<T: Serialize>(
+    tx: &mut Tx,
+    w: &str,
+    col: &str,
+    id: &str,
+    value: &T,
+) -> Result<()> {
+    let sql = tx.dialect().insert_ignore(
+        "documents",
+        &["workspace_id", "collection", "id", "body", "seq"],
+    );
+    tx.execute(
+        &sql,
+        &params![w, col, id, serde_json::to_string(value)?, sequence()],
+    )
+    .await?;
+    Ok(())
 }
-pub fn get<T: DeserializeOwned>(db: &Connection, w: &str, col: &str, id: &str) -> Result<T> {
-    let raw: Option<String> = db
-        .query_row(
-            "SELECT body FROM documents WHERE workspace_id=?1 AND collection=?2 AND id=?3",
-            params![w, col, id],
-            |r| r.get(0),
+
+pub async fn remove(tx: &mut Tx, w: &str, col: &str, id: &str) -> Result<()> {
+    if tx
+        .execute(
+            "DELETE FROM documents WHERE workspace_id=? AND collection=? AND id=?",
+            &params![w, col, id],
         )
-        .optional()?;
-    Ok(serde_json::from_str(&raw.ok_or_else(ApiError::missing)?)?)
-}
-pub fn put<T: Serialize>(db: &Connection, w: &str, col: &str, id: &str, value: &T) -> Result<()> {
-    db.execute("INSERT INTO documents VALUES(?1,?2,?3,?4) ON CONFLICT(workspace_id,collection,id) DO UPDATE SET body=excluded.body",params![w,col,id,serde_json::to_string(value)?])?;
-    Ok(())
-}
-pub fn remove(db: &Connection, w: &str, col: &str, id: &str) -> Result<()> {
-    if db.execute(
-        "DELETE FROM documents WHERE workspace_id=?1 AND collection=?2 AND id=?3",
-        params![w, col, id],
-    )? == 0
+        .await?
+        == 0
     {
         return Err(ApiError::missing());
     }
     Ok(())
 }
-pub fn memberships(db: &Connection, actor: &str) -> Result<Vec<Workspace>> {
-    let mut q = db.prepare("SELECT w.body,m.role FROM workspaces w JOIN memberships m ON w.id=m.workspace_id WHERE m.actor=?1 ORDER BY w.rowid")?;
-    let rows = q.query_map([actor], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
-    rows.map(|r| {
-        let (raw, role) = r?;
-        let mut w: Workspace = serde_json::from_str(&raw)?;
-        w.role = role;
-        Ok(w)
-    })
-    .collect()
+
+pub async fn memberships(tx: &mut Tx, actor: &str) -> Result<Vec<Workspace>> {
+    let sql = format!(
+        "SELECT w.body,m.role FROM workspaces w JOIN memberships m ON w.id=m.workspace_id \
+         WHERE m.actor=? ORDER BY w.seq{}",
+        tx.lock_reads()
+    );
+    let rows = tx.fetch_all(&sql, &params![actor]).await?;
+    rows.iter()
+        .map(|row| {
+            let mut workspace: Workspace = serde_json::from_str(&row.text(0)?)?;
+            workspace.role = row.text(1)?;
+            Ok(workspace)
+        })
+        .collect()
 }
-pub fn authorize(db: &Connection, actor: &str, w: &str, write: bool) -> Result<()> {
-    let role: Option<String> = db
-        .query_row(
-            "SELECT role FROM memberships WHERE workspace_id=?1 AND actor=?2",
-            params![w, actor],
-            |r| r.get(0),
-        )
-        .optional()?;
-    match role.as_deref() {
+
+pub async fn role(tx: &mut Tx, w: &str, actor: &str) -> Result<Option<String>> {
+    let sql = format!(
+        "SELECT role FROM memberships WHERE workspace_id=? AND actor=?{}",
+        tx.lock_reads()
+    );
+    tx.fetch_optional(&sql, &params![w, actor])
+        .await?
+        .map(|row| row.text(0))
+        .transpose()
+}
+
+pub async fn authorize(tx: &mut Tx, actor: &str, w: &str, write: bool) -> Result<()> {
+    match role(tx, w, actor).await?.as_deref() {
         Some("owner" | "editor") => Ok(()),
         Some("viewer") if !write => Ok(()),
         Some("viewer") => Err(ApiError::new(
@@ -87,6 +149,7 @@ pub fn authorize(db: &Connection, actor: &str, w: &str, write: bool) -> Result<(
         _ => Err(ApiError::missing()),
     }
 }
+
 pub fn value<T: Serialize>(v: T) -> Result<Value> {
     Ok(serde_json::to_value(v)?)
 }

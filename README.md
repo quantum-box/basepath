@@ -41,7 +41,9 @@ Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理�
 
 本番では同一オリジンの`/api/*`をRust APIへ転送し、`/api`プレフィックスを除きます。CookieとOriginヘッダーを保持してください。セッション鍵はCloud Appのsecret/credentialとして設定し、`tachyon.yml`やソースへ書きません。
 
-Tachyon Cloud Appは`pathbase-v2`（Cloudflare Worker、SPA配信と同一オリジンの`/api/*`転送）と`pathbase-api`（Lambda、Rust API）の2アプリで構成します。公開URLは`https://pathbase-v2.txcloud.app`です。旧Cloud Run版の`pathbase.txcloud.app`は廃止済みで、現在は経路層が`No route for: pathbase`を返します。`Dockerfile`は単一オリジンのコンテナ実行用に残してあり、`PATHBASE_WEB_ROOT`指定時だけRustサーバーがSPAと`/api/*`を同時に配信します。セッションは実行環境に依存しませんが、SQLiteはLambda実行環境のローカルのままです。再起動・再デプロイで業務データが失われ、複数インスタンスでは内容が分岐するため、共有DB移行までは本番データを保存しないでください。境界・移行・障害時挙動は`docs/production-durability.md`に記載しています。
+Tachyon Cloud Appは`pathbase-v2`（Cloudflare Worker、SPA配信と同一オリジンの`/api/*`転送）と`pathbase-api`（Lambda、Rust API）の2アプリで構成します。公開URLは`https://pathbase-v2.txcloud.app`です。旧Cloud Run版の`pathbase.txcloud.app`は廃止済みで、現在は経路層が`No route for: pathbase`を返します。`Dockerfile`は単一オリジンのコンテナ実行用に残してあり、`PATHBASE_WEB_ROOT`指定時だけRustサーバーがSPAと`/api/*`を同時に配信します。
+
+業務データはSQLxでTachyon管理のTiDB（MySQLプロトコル）へ保存します。`PATHBASE_MODE`が`local-preview`以外のとき`DATABASE_URL`（または`PATHBASE_DATABASE_URL`）が必須で、未設定・接続不可はどちらも起動エラーです。ローカルSQLiteへのフォールバックはありません。`/api/health`は実際の保存先を返し、TiDB接続時は`storage: tidb` / `storage_durability: shared-durable`、明示local-preview時は`storage: sqlite` / `ephemeral-runtime`になります。スキーマは`api/migrations/{sqlite,mysql}/`のversioned migrationsで、起動時に適用されます。方言差・並行制御・移行手順は`docs/production-durability.md`に記載しています。
 
 Fieldは現在のユーザーのTachyonトークンと正規のテナント文脈で呼び、操作ごとに権限を確認します。FieldのタスクをPathBaseで完了しても元タスクは更新しません。タスク参照の重複取り込みを防止し、観測できない値は0に変換しません。実装根拠と設定項目は[連携契約](docs/integration-contracts.md)を参照してください。
 
@@ -75,12 +77,25 @@ cargo check --manifest-path src-tauri/Cargo.toml
 起動・`/health`・認証済み読取・SIGTERMでの終了・設定不備での異常終了までを確認します。バイナリが無い環境では起動確認だけ
 skipします。`PATHBASE_SMOKE_API_BIN`で既存バイナリを指定できます。Rustの自動ビルドは行いません。
 
+共有DBの並行動作（別インスタンス同士のversion競合、冪等性の再送、changesetの二重適用、ロールバック、最後のオーナー、
+権限剥奪後の再送）は実TiDBでのみ検証できるため、`PATHBASE_TEST_DATABASE_URL`を設定したときだけ`api/tests/tidb.rs`が動きます。
+未設定ならskipします。ローカルでは`tiup playground`で起動できます。
+
+```sh
+tiup playground v8.5.8 --db 1 --kv 1 --pd 1 --without-monitor
+PATHBASE_TEST_DATABASE_URL=mysql://root@127.0.0.1:4000/test \
+  cargo test --manifest-path api/Cargo.toml --test tidb
+```
+
+テストはTiDB上に使い捨てのデータベースを作り、`SELECT tidb_version()`が通ることを確認します。MySQL単体では実行できません。
+
 APIテストは一時DBとローカルの模擬OIDC / Tachyon / Fieldサーバーを使用します。`api/tests/fixtures/oidc-test-key.pem`はテスト専用に生成した公開fixtureです。実アカウントの認証情報ではありません。
 
 GitHub ActionsではPRと`main`へのpushで、次の4ジョブを実行します。外部サービスの認証情報は不要です。
 
 - Web：TypeScript、製品ビルド、Sites配信テスト、起動スクリプトのバイナリ選択、配信ファイルとフォントライセンスの存在確認
 - Rust API：fmt、ドメイン・権限・OIDC / Field連携・MCPのテスト、clippy（警告をエラーとして扱う）
+- TiDB：実TiDBコンテナに対する共有DBの並行動作とmigration、DB未設定時の起動拒否
 - Browser：ビルド済みAPIの起動smoke test、Chromiumで目標とメモの永続化、行動完了、同じ領域の複数ワークスペース、モバイルナビゲーションを検証
 - Desktop：macOSでRust fmtとTauriのコンパイル確認
 

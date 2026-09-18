@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod collaboration;
+pub mod db;
 pub mod field;
 pub mod mcp;
 pub mod model;
@@ -51,10 +52,16 @@ pub fn router(state: HttpState) -> Router {
     router_with_mcp(state, None)
 }
 pub fn router_with_mcp(state: HttpState, mcp: Option<Router<HttpState>>) -> Router {
+    // Report what this process actually persists to, so a deploy that silently
+    // came up on the local preview database is visible from /health.
+    let (storage, durability) = match state.service.db.dialect() {
+        db::Dialect::MySql => ("tidb", "shared-durable"),
+        db::Dialect::Sqlite => ("sqlite", "ephemeral-runtime"),
+    };
     let app: Router<HttpState> = Router::new().route(
         "/health",
-        get(|| async {
-            Json(json!({"status":"ok","service":"pathbase-api","storage":"sqlite","storage_durability":"ephemeral-runtime"}))
+        get(move || async move {
+            Json(json!({"status":"ok","service":"pathbase-api","storage":storage,"storage_durability":durability}))
         }),
     );
     let app = if let Some(mcp) = mcp {
@@ -213,7 +220,7 @@ async fn endpoint(
         ));
     }
     if session.is_some() {
-        state.service.provision_personal(&actor)?;
+        state.service.provision_personal(&actor).await?;
     }
     if path == "/v1/openapi.json" && method == Method::GET {
         return Ok(Json(openapi::document()).into_response());
@@ -242,13 +249,10 @@ async fn endpoint(
         .map(|v| Json(v).into_response());
     }
     let method = method.to_string();
-    let v = tokio::task::spawn_blocking(move || {
-        state
-            .service
-            .handle(&actor, &method, &path, &query, body, key.as_deref())
-    })
-    .await
-    .map_err(|_| ApiError::new(500, "INTERNAL_ERROR", "処理に失敗しました"))??;
+    let v = state
+        .service
+        .handle(&actor, &method, &path, &query, body, key.as_deref())
+        .await?;
     Ok(Json(v).into_response())
 }
 fn require_login_origin(auth: &auth::TachyonAuth, headers: &HeaderMap) -> Result<(), ApiError> {
@@ -341,12 +345,8 @@ async fn field_endpoint(
     let w = p[2];
     require_selected_field_tenant(selected_tenant, tenant)?;
     {
-        let db = state
-            .service
-            .db
-            .lock()
-            .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "Storage unavailable"))?;
-        storage::authorize(&db, &actor.id, w, true)?;
+        let mut tx = state.service.db.begin_read().await?;
+        storage::authorize(&mut tx, &actor.id, w, true).await?;
     }
     match p[4] {
         "attach-task" => {
@@ -362,7 +362,7 @@ async fn field_endpoint(
                 source_updated_at: task.updated_at,
                 source_status: task.status,
             };
-            state.service.handle(actor,"POST",&format!("/v1/workspaces/{w}/items"),&HashMap::new(),json!({"title":task.title,"kind":"action","description":"Fieldの営業タスクを参照する行動。元のタスクの状態はFieldで管理します。","fields":{"field_reference":reference}}),key)
+            state.service.handle(actor,"POST",&format!("/v1/workspaces/{w}/items"),&HashMap::new(),json!({"title":task.title,"kind":"action","description":"Fieldの営業タスクを参照する行動。元のタスクの状態はFieldで管理します。","fields":{"field_reference":reference}}),key).await
         }
         "record-metric" => {
             service::only(&body, &["tenant_id", "metric_id", "field_key"])?;
@@ -370,12 +370,8 @@ async fn field_endpoint(
                 .as_str()
                 .ok_or_else(|| ApiError::invalid("metric_idが必要です"))?;
             let metric: model::Metric = {
-                let db = state
-                    .service
-                    .db
-                    .lock()
-                    .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "Storage unavailable"))?;
-                storage::get(&db, w, "metrics", metric_id)?
+                let mut tx = state.service.db.begin_read().await?;
+                storage::get(&mut tx, w, "metrics", metric_id).await?
             };
             let field_key = body["field_key"].as_str().unwrap_or("");
             let unit = match field_key {
@@ -398,7 +394,7 @@ async fn field_endpoint(
                     "Fieldに観測値がありません。0として記録しません",
                 )
             })?;
-            state.service.handle_derived(actor,path,&body,model::Operation{method:"POST".into(),path:format!("/v1/workspaces/{w}/observations"),body:json!({"metric_id":metric_id,"value":value,"unit":unit,"source":format!("Field API /v1/erp/sales-contracts/metrics · {tenant} · {field_key}"),"observed_at":service::now()})},key)
+            state.service.handle_derived(actor,path,&body,model::Operation{method:"POST".into(),path:format!("/v1/workspaces/{w}/observations"),body:json!({"metric_id":metric_id,"value":value,"unit":unit,"source":format!("Field API /v1/erp/sales-contracts/metrics · {tenant} · {field_key}"),"observed_at":service::now()})},key).await
         }
         "refresh-task" => {
             service::only(&body, &["tenant_id", "item_id"])?;
@@ -406,12 +402,8 @@ async fn field_endpoint(
                 .as_str()
                 .ok_or_else(|| ApiError::invalid("item_idが必要です"))?;
             let item: Item = {
-                let db = state
-                    .service
-                    .db
-                    .lock()
-                    .map_err(|_| ApiError::new(500, "STORAGE_ERROR", "Storage unavailable"))?;
-                storage::get(&db, w, "items", item_id)?
+                let mut tx = state.service.db.begin_read().await?;
+                storage::get(&mut tx, w, "items", item_id).await?
             };
             let reference = item.fields.field_reference.as_ref().ok_or_else(|| {
                 ApiError::invalid("Fieldの営業タスクを参照している行動を指定してください")
@@ -433,21 +425,24 @@ async fn field_endpoint(
                 source_updated_at: task.updated_at,
                 source_status: task.status,
             };
-            state.service.handle_derived(
-                actor,
-                path,
-                &body,
-                model::Operation {
-                    method: "PATCH".into(),
-                    path: format!("/v1/workspaces/{w}/items/{item_id}"),
-                    body: json!({
-                        "expected_version": item.version,
-                        "title": task.title,
-                        "fields": {"field_reference": refreshed_reference}
-                    }),
-                },
-                key,
-            )
+            state
+                .service
+                .handle_derived(
+                    actor,
+                    path,
+                    &body,
+                    model::Operation {
+                        method: "PATCH".into(),
+                        path: format!("/v1/workspaces/{w}/items/{item_id}"),
+                        body: json!({
+                            "expected_version": item.version,
+                            "title": task.title,
+                            "fields": {"field_reference": refreshed_reference}
+                        }),
+                    },
+                    key,
+                )
+                .await
         }
         _ => Err(ApiError::missing()),
     }

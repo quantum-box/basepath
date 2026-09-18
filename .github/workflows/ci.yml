@@ -16,6 +16,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: 1.95.0
+  TIDB_VERSION: v8.5.8
 
 jobs:
   web:
@@ -71,6 +72,40 @@ jobs:
           path: api/target/debug/pathbase-api
           if-no-files-found: error
           retention-days: 1
+
+  tidb:
+    name: Shared TiDB behaviour
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            api/target
+          key: ${{ runner.os }}-api-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('api/Cargo.lock') }}
+      # A real TiDB, not MySQL: the concurrency contract these tests check
+      # depends on TiDB's pessimistic transactions and snapshot reads.
+      - name: Start TiDB
+        run: |
+          docker run -d --name tidb -p 4000:4000 pingcap/tidb:${{ env.TIDB_VERSION }}
+          for attempt in $(seq 1 60); do
+            if mysql -h 127.0.0.1 -P 4000 -u root -e 'SELECT tidb_version()' >/dev/null 2>&1; then
+              echo "TiDB is ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "TiDB did not become ready"; docker logs tidb; exit 1
+      - run: cargo +"$RUST_TOOLCHAIN" test --locked --manifest-path api/Cargo.toml --test tidb --test database_configuration
+        env:
+          PATHBASE_TEST_DATABASE_URL: mysql://root@127.0.0.1:4000/test
+      - name: TiDB logs on failure
+        if: failure()
+        run: docker logs tidb
 
   browser:
     name: Browser integration tests
