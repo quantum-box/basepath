@@ -292,6 +292,7 @@ impl Mcp {
             "pathbase_get_weekly_review" => ("GET", format!("{base}/weekly-review"), json!({})),
             "pathbase_get_planning" => ("GET", format!("{base}/planning"), json!({})),
             "pathbase_get_alignment" => ("GET", format!("{base}/alignment"), json!({})),
+            "pathbase_get_dashboard" => ("GET", format!("{base}/dashboard"), json!({})),
             "pathbase_list_changes" => ("GET", format!("{base}/changesets"), json!({})),
             "pathbase_get_change" => (
                 "GET",
@@ -424,7 +425,7 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
         // `cycle_id` selects a period other than the one today falls in, which
         // is how a caller looks at the last quarter or the next one.
         "pathbase_get_planning" => (&["workspace_id"], &["workspace_id", "cycle_id"]),
-        "pathbase_get_alignment" => (
+        "pathbase_get_alignment" | "pathbase_get_dashboard" => (
             &["workspace_id"],
             &["workspace_id", "owner_kind", "owner_id", "cycle_id"],
         ),
@@ -512,6 +513,7 @@ fn tools() -> Vec<Tool> {
         read("pathbase_get_weekly_review", "Get the weekly summary for a Monday-starting week: completion, skipped, metric observations with their deltas and staleness, and the saved review. The numbers are already aggregated for the workspace's own timezone — report them, do not recompute them. `latest: null` means unmeasured and `delta: null` means there is nothing to compare with; neither is zero. Completed actions are not goal achievement, and `self_assessment` is the person's, not yours. When writing the review, say separately what was observed, what you infer from it, and what you need to ask. Propose the text with pathbase_preview_changes as POST /v1/workspaces/{workspace_id}/weekly-reviews/draft; only the person can finalize a week in Basepath."),
         read("pathbase_get_planning", "Get the workspace's planning periods and which one today falls in, with the previous and next period, how many items each holds, how much work belongs to no period, and the person's own words from their last finalized weekly review. Periods are the workspace's own local dates. Report the period that is there; creating one, or carrying work into it, is a change to propose."),
         read("pathbase_get_alignment", "Get one workspace's goal alignment: each goal's owner (organization, team or person), its period, what it is `part_of`, what it `contributes_to`, what rolls up into it, and how much work sits beneath it. `part_of` is structure and `contributes_to` is contribution — they are different questions, so do not merge them. A goal connected to nothing above it is reported as an orphan, which is normal for a top-level goal. This is one workspace's graph: goals in someone's personal workspace are not in it and cannot be reached from it."),
+        read("pathbase_get_dashboard", "Get the goal dashboard. Four different things are reported and none of them substitutes for another: `action_completion` (what was planned and what happened; `rate` is null when nothing was planned), `metric_progress` (derived from observations by the method the goal names; null when it names none, and `metrics[].status` says which are unmeasured or stale), `self_assessment` (the person's own judgement), and `health` (somebody's stated view, with their name and the date). `suggested_health` is derived from listed signals and is a suggestion only — it is never the health. Report these separately. Do not average them, do not present completion as progress toward a goal, and do not treat a goal with no metric as 0%."),
         read("pathbase_list_changes", "List saved change sets and their current status, so a UI can show what is awaiting approval."),
         read("pathbase_get_change", "Get one change set: its operations, status, approval and expiry."),
         read("pathbase_list_templates", "List versioned templates and their creation previews."),

@@ -39,6 +39,7 @@ import { CalendarView } from "./CalendarView";
 import { WeeklyReviewScreen } from "./WeeklyReview";
 import { PlanningScreen } from "./PlanningScreen";
 import { AlignmentScreen } from "./AlignmentScreen";
+import { DashboardScreen } from "./DashboardScreen";
 import {
   MemoEditor,
   ItemEditor,
@@ -71,6 +72,7 @@ const navigation = [
   { label: "振り返り", icon: "book" },
   { label: "計画期間", icon: "calendar" },
   { label: "アラインメント", icon: "tree" },
+  { label: "ダッシュボード", icon: "chart" },
   { label: "テンプレート", icon: "stack" },
   { label: "メンバー", icon: "users" },
 ] as const;
@@ -84,6 +86,7 @@ const navigationRoutes: Record<NavigationLabel, string> = {
   振り返り: "reflection",
   計画期間: "cycles",
   アラインメント: "alignment",
+  ダッシュボード: "dashboard",
   テンプレート: "templates",
   メンバー: "members",
 };
@@ -96,6 +99,7 @@ const navigationDescriptions: Record<NavigationLabel, string> = {
   振り返り: "できたことや気づきを残し、次の行動につなげます。",
   計画期間: "四半期・月・週の区切りで計画を運用し、次の期間へ引き継ぎます。",
   アラインメント: "誰の目標が、どの目標に効いているかをたどります。",
+  ダッシュボード: "実施・指標・自己評価・状況を混ぜずに並べて確認します。",
   テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
   メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
 };
@@ -1802,6 +1806,21 @@ export function App() {
               )}
             </div>
           </div>
+        ) : activeNav === "ダッシュボード" ? (
+          <DashboardScreen
+            store={store}
+            workspace={currentWorkspace}
+            onOpenItem={(id) => {
+              const item = allItems.find(
+                (entry) =>
+                  entry.workspace_id === currentWorkspace?.id &&
+                  entry.id === id,
+              );
+              if (!item) return;
+              selectGoal(uiId(item));
+              navigate("目標マップ");
+            }}
+          />
         ) : activeNav === "アラインメント" ? (
           <AlignmentScreen
             workspace={currentWorkspace}
