@@ -8,7 +8,7 @@
 - 5種類のテンプレート、任意の日付・時刻、週の実施回数、実施日ごとの完了・見送り・再開、アーカイブと復元
 - 4種類の関連、循環検出、次の一歩、メモの下書き、学び・振り返りの追記履歴
 - 自己評価と成果指標を分離。出典・日時・単位付き観測、訂正履歴、未計測表示。行動の完了で目標の達成率を変更しない
-- ワークスペースの現地週による週次レビュー。行動実績、自己評価、成果指標、担当者別集計、下書き・確定・訂正履歴、印刷用要約
+- ワークスペースの現地週による週次レビュー。行動実績、自己評価、成果指標、担当者別集計、下書き・確定・訂正履歴、印刷用要約。会話内（MCP Apps）でも同じ集計値を表示し、そこでの編集は変更案として本人の承認を経由します
 - SQLite永続化、トランザクション、楽観的ロック、再送の重複防止、領域ごとのアクセス制御、JSONバックアップと検証付き復元
 - Tachyon OIDCログイン、PKCE・state・nonce・署名検証、サーバー側セッション。Tachyonの正規ユーザーIDから個人領域を解決
 - 共有ワークスペースの作成・名前変更、TachyonユーザーID宛ての期限付き招待、参加・辞退・取り消し、オーナー／編集／閲覧の権限管理と退出。複数ワークスペースを名前で選択
@@ -79,7 +79,7 @@ transportはstateless Streamable HTTP（JSON応答）です。Lambdaでは連続
 
 toolのannotationsは実際の副作用に合わせています。変更案はDELETEを含みうるので、preview / propose / applyは`destructiveHint: true`です。`pathbase_get_graph`は最大`limit`件（既定・上限とも200）を返し、`truncated`を明示します。
 
-MCP Apps対応として、`pathbase_get_graph` / `pathbase_get_today` / `pathbase_get_week` に `_meta.ui.resourceUri`（`ui://basepath/plan.html`）を付け、`resources/list` で `text/html;profile=mcp-app` のUI resourceを公開します。バンドルは外部から何も読み込まない単一ファイルなので、CSPは空（許可する配信元なし）です。UIは空のシェルで、業務データも資格情報も埋め込みません。ホスト経由で取得し、認可はRust側で毎回行います。表示はホストの承認や認可の代替ではありません。UI非対応ホストでも通常の `structuredContent` / text でそのまま使えます。
+MCP Apps対応として、`pathbase_get_graph` / `pathbase_get_today` / `pathbase_get_week` / `pathbase_get_weekly_review` に `_meta.ui.resourceUri`（`ui://basepath/plan.html`）を付け、`resources/list` で `text/html;profile=mcp-app` のUI resourceを公開します。バンドルは外部から何も読み込まない単一ファイルなので、CSPは空（許可する配信元なし）です。どのツールが呼ばれたかで開く画面（計画／週次レビュー）が決まります。UIは空のシェルで、業務データも資格情報も埋め込みません。ホスト経由で取得し、認可はRust側で毎回行います。表示はホストの承認や認可の代替ではありません。UI非対応ホストでも通常の `structuredContent` / text でそのまま使えます。
 
 UIは `mcp-app/` と `src/shared/`（Web / Tauriと共有する表示部品とビューモデル）から `npm run build:mcp-app` で1ファイルに束ね、`api/ui/mcp-app.html` としてコミットします（Lambdaに Node もCDNも無いため）。CIが再ビルドして差分があれば失敗し、サイズ上限も検査します。
 

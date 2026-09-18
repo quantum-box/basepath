@@ -18,6 +18,7 @@ import {
   weekBounds,
   type PlanView,
 } from "./viewModel";
+import { weeklyReviewFrom, type WeeklyReviewView } from "./weeklyView";
 
 export type HostKind = "mcp" | "web" | "fixture";
 
@@ -155,6 +156,13 @@ export class WebHost implements PlanHost {
           "GET",
           `/v1/workspaces/${workspace}/changesets/${String(args.preview_id ?? "")}`,
         );
+      case "pathbase_get_weekly_review":
+        return this.request(
+          "GET",
+          `/v1/workspaces/${workspace}/weekly-review${query({
+            week_start: args.week_start,
+          })}`,
+        );
       case "pathbase_get_week":
         return this.request(
           "GET",
@@ -226,6 +234,36 @@ export async function loadPlanView(
   } catch (error) {
     return {
       view: emptyPlanView,
+      error:
+        error instanceof HostError
+          ? error
+          : new HostError(String(error), "UNKNOWN"),
+    };
+  }
+}
+
+/**
+ * Loads one week's review.
+ *
+ * Separate from `loadPlanView` because it is a separate question: the plan is
+ * what is intended, this is what happened. Failures are returned rather than
+ * thrown so the caller can say which week could not be read, and an empty week
+ * is a successful answer, not an error.
+ */
+export async function loadWeeklyReview(
+  host: PlanHost,
+  workspaceId: string,
+  weekStart: string,
+): Promise<{ review: WeeklyReviewView | null; error: HostError | null }> {
+  try {
+    const value = await host.call("pathbase_get_weekly_review", {
+      workspace_id: workspaceId,
+      week_start: weekStart,
+    });
+    return { review: weeklyReviewFrom(value), error: null };
+  } catch (error) {
+    return {
+      review: null,
       error:
         error instanceof HostError
           ? error

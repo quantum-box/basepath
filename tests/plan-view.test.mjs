@@ -279,3 +279,299 @@ test("an action carries what a proposal needs, without inventing it", () => {
   assert.equal(fallback.version, 1);
   assert.equal(fallback.assignee, null);
 });
+
+// --- The weekly review -------------------------------------------------
+//
+// The server already aggregated the week. These tests are about the line the
+// view model must not cross: it may reshape and label, never recompute, and
+// never turn an absence into a number.
+
+const {
+  weeklyReviewFrom,
+  isWeeklyReview,
+  mondayOf,
+  shiftWeek,
+  draftInputFrom,
+  draftBody,
+  draftDiffers,
+  draftKey,
+  hasDraftText,
+} = await import("../src/shared/weeklyView.ts");
+
+const week = {
+  workspace_id: "personal",
+  timezone: "Asia/Tokyo",
+  week_start: "2026-09-14",
+  week_end: "2026-09-20",
+  actions: {
+    total: 4,
+    completed: 3,
+    skipped: 1,
+    incomplete: 0,
+    items: [
+      {
+        item_id: "a1",
+        title: "朝の散歩",
+        date: "2026-09-15",
+        status: "completed",
+        record_id: "rec_1",
+        actor: "us_me",
+      },
+      {
+        item_id: "a1",
+        title: "朝の散歩",
+        date: "2026-09-16",
+        status: "skipped",
+        record_id: null,
+        actor: "us_me",
+      },
+    ],
+  },
+  goals: [
+    {
+      item_id: "g1",
+      title: "体力をつける",
+      self_assessment: 40,
+      assessed_at: "2026-09-14T00:00:00Z",
+    },
+    {
+      item_id: "g2",
+      title: "未評価の目標",
+      self_assessment: null,
+      assessed_at: null,
+    },
+  ],
+  metrics: [
+    {
+      metric_id: "m1",
+      item_id: "g1",
+      name: "走行距離",
+      unit: "km",
+      latest: 12,
+      previous: 9,
+      delta: 3,
+      status: "current",
+      latest_observation_id: "obs_1",
+    },
+    {
+      metric_id: "m2",
+      item_id: "g1",
+      name: "体重",
+      unit: "kg",
+      latest: null,
+      previous: null,
+      delta: null,
+      status: "unmeasured",
+      latest_observation_id: null,
+    },
+    {
+      metric_id: "m3",
+      item_id: "g1",
+      name: "睡眠",
+      unit: "h",
+      latest: 6,
+      previous: null,
+      delta: null,
+      status: "stale",
+      latest_observation_id: "obs_9",
+    },
+  ],
+  members: [],
+  review: null,
+  history: [],
+};
+
+test("the weekly view reports the server's own counts, not its own", () => {
+  const view = weeklyReviewFrom(week);
+  assert.equal(view.totals.completed, 3);
+  assert.equal(view.totals.skipped, 1);
+  assert.equal(view.totals.incomplete, 0);
+  // Four occurrences were planned even though only two rows are listed: the
+  // totals are the server's and are never re-derived from the visible rows.
+  assert.equal(view.totals.total, 4);
+  assert.equal(view.actions.length, 2);
+  assert.equal(view.completionRate, 75);
+  assert.equal(view.empty, false);
+});
+
+test("an unmeasured value stays unmeasured instead of becoming zero", () => {
+  const view = weeklyReviewFrom(week);
+  const [current, unmeasured, stale] = view.metrics;
+  assert.equal(current.latest, 12);
+  assert.equal(current.delta, 3);
+  assert.equal(unmeasured.latest, null);
+  assert.equal(unmeasured.previous, null);
+  assert.equal(unmeasured.delta, null);
+  assert.equal(unmeasured.status, "unmeasured");
+  // A measurement with nothing to compare against has no delta, not a zero one.
+  assert.equal(stale.latest, 6);
+  assert.equal(stale.delta, null);
+  assert.equal(stale.status, "stale");
+  // A goal nobody assessed is unassessed, never 0%.
+  assert.equal(view.goals[1].selfAssessment, null);
+});
+
+test("a week with nothing in it has no completion rate at all", () => {
+  const view = weeklyReviewFrom({
+    ...week,
+    actions: { total: 0, completed: 0, skipped: 0, incomplete: 0, items: [] },
+    goals: [],
+    metrics: [],
+  });
+  assert.equal(view.totals.total, 0);
+  // Not 0%: there was nothing to complete, which is a different statement.
+  assert.equal(view.completionRate, null);
+  assert.equal(view.empty, true);
+});
+
+test("completing actions is kept apart from achieving a goal", () => {
+  const view = weeklyReviewFrom(week);
+  // Every action done, the goal still assessed at 40%. Nothing combines them.
+  assert.equal(view.completionRate, 75);
+  assert.equal(view.goals[0].selfAssessment, 40);
+  assert.ok(!("progress" in view));
+});
+
+test("a malformed or unrelated payload is not rendered as a week", () => {
+  assert.equal(weeklyReviewFrom(null), null);
+  assert.equal(weeklyReviewFrom({ items: [] }), null);
+  assert.equal(isWeeklyReview({ week_start: "2026-09-14" }), false);
+  assert.equal(isWeeklyReview(week), true);
+  // A week whose lists are missing renders empty rather than throwing.
+  const view = weeklyReviewFrom({ week_start: "2026-09-14", actions: {} });
+  assert.equal(view.totals.total, 0);
+  assert.deepEqual(view.actions, []);
+  assert.equal(view.review, null);
+});
+
+test("the review shown is the newest revision, with the history kept", () => {
+  const view = weeklyReviewFrom({
+    ...week,
+    review: {
+      id: "wr2",
+      status: "draft",
+      revision: 2,
+      version: 1,
+      learnings: "第2版",
+      challenges: "",
+      next_focus: "",
+      author: "us_me",
+      updated_at: "2026-09-21T00:00:00Z",
+      finalized_at: null,
+    },
+    history: [
+      {
+        id: "wr1",
+        status: "finalized",
+        revision: 1,
+        version: 2,
+        learnings: "第1版",
+        challenges: "",
+        next_focus: "",
+        author: "us_me",
+        updated_at: "2026-09-20T00:00:00Z",
+        finalized_at: "2026-09-20T00:00:00Z",
+      },
+      {
+        id: "wr2",
+        status: "draft",
+        revision: 2,
+        version: 1,
+        learnings: "第2版",
+        challenges: "",
+        next_focus: "",
+        author: "us_me",
+        updated_at: "2026-09-21T00:00:00Z",
+        finalized_at: null,
+      },
+    ],
+  });
+  assert.equal(view.review.learnings, "第2版");
+  assert.equal(view.history.length, 2);
+  // The correction never rewrites what the earlier revision said.
+  assert.equal(view.history[0].learnings, "第1版");
+  assert.equal(view.history[0].status, "finalized");
+});
+
+test("the week boundary is Monday to Sunday, whatever date is given", () => {
+  assert.equal(mondayOf("2026-09-17"), "2026-09-14");
+  assert.equal(mondayOf("2026-09-14"), "2026-09-14");
+  assert.equal(mondayOf("2026-09-20"), "2026-09-14");
+  assert.equal(shiftWeek("2026-09-14", -1), "2026-09-07");
+  assert.equal(shiftWeek("2026-09-14", 1), "2026-09-21");
+  // A month boundary is not a special case.
+  assert.equal(shiftWeek("2026-10-05", -1), "2026-09-28");
+});
+
+test("a save carries a version only when it could overwrite an edit", () => {
+  const draft = { learnings: "学び", challenges: "", next_focus: "" };
+  const input = { learnings: "学び", challenges: "", nextFocus: "" };
+  // Nothing saved yet: there is no version to conflict with.
+  assert.equal(
+    "expected_version" in draftBody("2026-09-14", input, null),
+    false,
+  );
+  const saved = {
+    id: "wr1",
+    status: "draft",
+    revision: 1,
+    version: 4,
+    learnings: "前の下書き",
+    challenges: "",
+    nextFocus: "",
+    author: "us_me",
+    updatedAt: "",
+    finalizedAt: null,
+  };
+  const body = draftBody("2026-09-14", input, saved);
+  assert.equal(body.expected_version, 4);
+  assert.equal(body.week_start, "2026-09-14");
+  assert.equal(body.next_focus, "");
+  // A finalized revision is never written over: a correction starts a new one.
+  assert.equal(
+    "expected_version" in
+      draftBody("2026-09-14", input, { ...saved, status: "finalized" }),
+    false,
+  );
+  assert.equal(draft.learnings, "学び");
+});
+
+test("unsent text is recognised so a newer result cannot silently drop it", () => {
+  const saved = {
+    id: "wr1",
+    status: "draft",
+    revision: 1,
+    version: 1,
+    learnings: "保存済み",
+    challenges: "",
+    nextFocus: "",
+    author: "us_me",
+    updatedAt: "",
+    finalizedAt: null,
+  };
+  assert.equal(draftDiffers(draftInputFrom(saved), saved), false);
+  assert.equal(
+    draftDiffers(
+      { learnings: "書きかけ", challenges: "", nextFocus: "" },
+      saved,
+    ),
+    true,
+  );
+  assert.equal(
+    hasDraftText({ learnings: "  ", challenges: "", nextFocus: "" }),
+    false,
+  );
+  assert.equal(
+    hasDraftText({ learnings: "", challenges: "課題", nextFocus: "" }),
+    true,
+  );
+  // Edited text is a different proposal and must not collide with the earlier
+  // one, while resending the same text must.
+  const a = { learnings: "同じ", challenges: "", nextFocus: "" };
+  const b = { learnings: "同じ", challenges: "", nextFocus: "" };
+  const c = { learnings: "ちがう", challenges: "", nextFocus: "" };
+  assert.equal(draftKey(a), draftKey(b));
+  assert.notEqual(draftKey(a), draftKey(c));
+  // The key is safe in an HTTP header, which rejects non-ASCII.
+  assert.match(draftKey(c), /^[0-9a-f]+$/);
+});

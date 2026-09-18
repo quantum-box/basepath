@@ -32,10 +32,11 @@ const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
 
 /// Tools that open the plan view. The host may preload the resource as soon as
 /// it sees one of these in `tools/list`, before the tool is even called.
-const UI_TOOLS: [&str; 3] = [
+const UI_TOOLS: [&str; 4] = [
     "pathbase_get_graph",
     "pathbase_get_today",
     "pathbase_get_week",
+    "pathbase_get_weekly_review",
 ];
 
 #[derive(Clone)]
@@ -540,7 +541,7 @@ fn tools() -> Vec<Tool> {
         read("pathbase_get_graph", "Get the goal graph for one workspace. Returns at most `limit` nodes (default and maximum 200) with the relations between them, plus `truncated` and the `limit` that was applied. When `truncated` is true the graph is a slice, not the plan: narrow the request or read the missing subtree with pathbase_get_item."),
         read("pathbase_get_today", "Get actions and completion for a local date, without changing outcomes."),
         read("pathbase_get_week", "Get scheduled actions, due dates and habit occurrences between two local dates (at most 62 days), for a week view."),
-        read("pathbase_get_weekly_review", "Get the weekly summary for a Monday-starting week: completion, skipped, metric observations with their deltas and staleness, and the saved review."),
+        read("pathbase_get_weekly_review", "Get the weekly summary for a Monday-starting week: completion, skipped, metric observations with their deltas and staleness, and the saved review. The numbers are already aggregated for the workspace's own timezone — report them, do not recompute them. `latest: null` means unmeasured and `delta: null` means there is nothing to compare with; neither is zero. Completed actions are not goal achievement, and `self_assessment` is the person's, not yours. When writing the review, say separately what was observed, what you infer from it, and what you need to ask. Propose the text with pathbase_preview_changes as POST /v1/workspaces/{workspace_id}/weekly-reviews/draft; only the person can finalize a week in Basepath."),
         read("pathbase_list_changes", "List saved change sets and their current status, so a UI can show what is awaiting approval."),
         read("pathbase_get_change", "Get one change set: its operations, status, approval and expiry."),
         read("pathbase_list_templates", "List versioned templates and their creation previews."),
@@ -614,7 +615,7 @@ impl ServerHandler for Mcp {
         Ok(serde_json::from_value(json!({"resources":[{
             "uri": UI_RESOURCE_URI,
             "name": "Basepath plan view",
-            "description": "Goal tree and the day's actions, rendered in the conversation.",
+            "description": "Goal tree, the day's actions, and the weekly review, rendered in the conversation.",
             "mimeType": UI_RESOURCE_MIME,
             // The bundle is self-contained, so no origin is requested. An empty
             // policy is the strongest one the host can apply.
@@ -672,7 +673,7 @@ impl ServerHandler for Mcp {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
-        Ok(serde_json::from_value(json!({"prompts":[{"name":"plan_week","description":"Plan a week with explicit scope and human-reviewed changes"},{"name":"break_down_goal","description":"Break a goal into optional initiatives and actions"},{"name":"review_period","description":"Review execution separately from measured outcomes"}]})).unwrap())
+        Ok(serde_json::from_value(json!({"prompts":[{"name":"plan_week","description":"Plan a week with explicit scope and human-reviewed changes"},{"name":"break_down_goal","description":"Break a goal into optional initiatives and actions"},{"name":"review_period","description":"Review execution separately from measured outcomes, keeping observations, inferences and open questions apart"}]})).unwrap())
     }
     async fn get_prompt(
         &self,
@@ -682,6 +683,6 @@ impl ServerHandler for Mcp {
         if !["plan_week", "break_down_goal", "review_period"].contains(&r.name.as_str()) {
             return Err(ErrorData::invalid_params("Unknown prompt", None));
         }
-        Ok(serde_json::from_value(json!({"messages":[{"role":"user","content":{"type":"text","text":format!("{}: Get my PathBase context and ask which workspace and period to use. Use records as evidence, separate completed actions from outcomes, and propose changes for my review. Do not invent missing measurements, dates, or approval.",r.name)}}]})).unwrap())
+        Ok(serde_json::from_value(json!({"messages":[{"role":"user","content":{"type":"text","text":format!("{}: Get my PathBase context and ask which workspace and period to use. Use records as evidence, separate completed actions from outcomes, and propose changes for my review. Say separately what you observed, what you infer, and what you need to ask. An unmeasured value stays unmeasured: do not report it as zero or as a guess. Do not invent missing measurements, dates, or approval.",r.name)}}]})).unwrap())
     }
 }

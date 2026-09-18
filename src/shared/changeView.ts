@@ -59,6 +59,11 @@ const REVIEWABLE = [
   ["name", "名前"],
   ["target", "目標値"],
   ["baseline", "基準値"],
+  // A weekly review has no title of its own; these are what it says.
+  ["week_start", "対象週"],
+  ["learnings", "学び"],
+  ["challenges", "課題"],
+  ["next_focus", "次週の重点"],
 ] as const;
 
 const FIELD_LABELS = new Map<string, string>(

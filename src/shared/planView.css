@@ -401,3 +401,254 @@
   overflow-wrap: anywhere;
   color: var(--plan-accent);
 }
+
+/* The weekly review.
+ *
+ * The markup is shared, so the class names are the ones Basepath's own
+ * stylesheet already styles. Only the layout that both surfaces need lives
+ * here; everything under `.weekly-panel` is the conversation surface, which
+ * has no Basepath stylesheet behind it and no room for columns.
+ */
+.weekly-review {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.weekly-review .evidence-static {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 2px;
+  text-align: left;
+}
+.weekly-review .evidence-static > span,
+.weekly-review .evidence-list button > span {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.weekly-note,
+.weekly-notice {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.weekly-review .weekly-notice {
+  color: var(--plan-text, currentColor);
+}
+
+.weekly-panel {
+  --plan-text: var(--text-primary, currentColor);
+  --plan-muted: var(
+    --text-secondary,
+    color-mix(in srgb, currentColor 60%, transparent)
+  );
+  --plan-line: var(
+    --border-primary,
+    color-mix(in srgb, currentColor 18%, transparent)
+  );
+  --plan-accent: var(--accent-primary, #c2703a);
+  color: var(--plan-text);
+  padding: 12px 14px 16px;
+  gap: 12px;
+}
+.weekly-panel[data-stale="true"] {
+  opacity: 0.72;
+}
+.weekly-panel .weekly-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--plan-line);
+  padding-bottom: 8px;
+}
+.weekly-panel .weekly-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.weekly-panel .weekly-header span,
+.weekly-panel .section-header span,
+.weekly-panel small,
+.weekly-panel .empty-value,
+.weekly-panel .review-history span,
+.weekly-panel .weekly-editor p {
+  color: var(--plan-muted);
+  font-size: 12px;
+}
+.weekly-panel .weekly-week-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.weekly-panel button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--plan-line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.weekly-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.weekly-panel .primary-button {
+  border-color: var(--plan-accent);
+  color: var(--plan-accent);
+}
+.weekly-panel .panel {
+  border: 1px solid var(--plan-line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: none;
+}
+.weekly-panel .weekly-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.weekly-panel .metric-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.weekly-panel .metric-card strong {
+  font-size: 20px;
+}
+.weekly-panel .weekly-columns {
+  display: grid;
+  gap: 12px;
+}
+.weekly-panel .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.weekly-panel .section-header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.weekly-panel .evidence-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.weekly-panel .evidence-list li + li {
+  border-top: 1px solid var(--plan-line);
+}
+.weekly-panel .evidence-list button {
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  padding: 8px 0;
+  text-align: left;
+}
+.weekly-panel .evidence-static {
+  padding: 8px 0;
+}
+.weekly-panel .metric-review-grid,
+.weekly-panel .member-review-grid {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.weekly-panel .metric-review-grid > *,
+.weekly-panel .member-review-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid var(--plan-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.weekly-panel .metric-review-grid [data-status="unmeasured"] span,
+.weekly-panel .metric-review-grid [data-status="stale"] span {
+  color: var(--plan-muted);
+}
+.weekly-panel .weekly-editor-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.weekly-panel .weekly-editor-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.weekly-panel textarea {
+  min-height: 84px;
+  resize: vertical;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid var(--plan-line);
+  border-radius: 8px;
+  padding: 8px;
+  line-height: 1.6;
+}
+.weekly-panel .reflection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.weekly-panel .reflection-actions > span {
+  margin-inline-end: auto;
+  color: var(--plan-muted);
+}
+.weekly-panel .review-history {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+}
+.weekly-panel .review-history li {
+  padding: 4px 0;
+}
+.weekly-panel .review-history span {
+  display: block;
+}
+.weekly-panel .weekly-empty {
+  text-align: center;
+}
+.weekly-panel .weekly-empty h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.weekly-panel .weekly-empty p {
+  margin: 0;
+  color: var(--plan-muted);
+  font-size: 12px;
+}
+
+/* Switching between the plan and the week, inside the conversation. */
+.app-surfaces {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px 0;
+}
+.app-surfaces button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid
+    var(--border-primary, color-mix(in srgb, currentColor 18%, transparent));
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.app-surfaces button[aria-pressed="true"] {
+  border-color: var(--accent-primary, #c2703a);
+  color: var(--accent-primary, #c2703a);
+}
