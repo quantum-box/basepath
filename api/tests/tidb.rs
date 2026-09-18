@@ -41,7 +41,7 @@ impl Fixture {
             "unexpected server banner: {version}"
         );
         let name = format!("pathbase_test_{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE `{name}`")))
+        sqlx::query(&format!("CREATE DATABASE `{name}`"))
             .execute(&admin)
             .await
             .expect("the test account must be allowed to create a database");

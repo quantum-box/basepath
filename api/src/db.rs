@@ -224,11 +224,11 @@ pub struct Tx {
 }
 
 // Every statement in this crate is a compile-time literal or a string built
-// from literals by `Dialect`; values always arrive as bound parameters. sqlx
-// still needs the promise explicitly because the string is not `'static`.
+// from literals by `Dialect`; values always arrive as bound parameters and are
+// never interpolated into the statement.
 macro_rules! bind_all {
     ($sql:expr, $params:expr) => {{
-        let mut query = sqlx::query(sqlx::AssertSqlSafe($sql.to_owned()));
+        let mut query = sqlx::query($sql);
         for param in $params {
             query = match param {
                 Param::Text(value) => query.bind(value.clone()),
