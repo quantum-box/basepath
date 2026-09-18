@@ -30,6 +30,14 @@ Object.assign(process.env, {
   PATHBASE_API_TOKEN: randomBytes(32).toString("hex"),
   PATHBASE_API_PORT: apiPort,
   PATHBASE_SEED_DEMO: "0",
+  // The hosted MCP endpoint and, with it, the OAuth consent screen an AI host
+  // sends the person to. The browser suite drives that screen, so it has to
+  // exist here; the URLs are this run's own loopback origin.
+  PATHBASE_MCP_ENABLED: "1",
+  PATHBASE_PUBLIC_URL: `http://127.0.0.1:${webPort}`,
+  PATHBASE_API_BASE_URL: `http://127.0.0.1:${webPort}/api`,
+  PATHBASE_MCP_RESOURCE: `http://127.0.0.1:${webPort}/api/mcp`,
+  PATHBASE_MCP_ALLOWED_HOSTS: "127.0.0.1",
 });
 
 let vite;

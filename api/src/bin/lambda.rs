@@ -34,8 +34,8 @@ async fn main() -> Result<(), Error> {
     };
     let field = pathbase_api::field::FieldClient::from_env().map_err(|error| error.message)?;
     let token = std::env::var("PATHBASE_API_TOKEN").unwrap_or_default();
-    let remote_mcp = pathbase_api::remote_mcp_router(service.clone(), auth.as_ref())
-        .map_err(|error| error.message)?;
+    let remote_mcp =
+        pathbase_api::remote_mcp_router(service.clone()).map_err(|error| error.message)?;
     let app = pathbase_api::router_with_mcp(
         HttpState {
             service,

@@ -20,11 +20,14 @@
     "preflight": "node scripts/preflight.mjs",
     "api:mcp": "cargo run --manifest-path api/Cargo.toml --bin pathbase-api -- --mcp-stdio",
     "test:api": "cargo test --manifest-path api/Cargo.toml",
-    "test": "npm run check && npm run test:api && npm run test:sites && npm run test:config && npm run test:view && npm run test:smoke",
+    "test": "npm run check && npm run test:api && npm run test:sites && npm run test:config && npm run test:view && npm run test:plugin && npm run test:smoke",
     "test:smoke": "node --test tests/api-smoke.test.mjs",
     "build:mcp-app": "node scripts/build-mcp-app.mjs",
     "check:mcp-app": "node scripts/build-mcp-app.mjs --check",
-    "test:view": "node --test tests/plan-view.test.mjs"
+    "test:view": "node --test tests/plan-view.test.mjs",
+    "build:plugin": "node scripts/build-plugin.mjs",
+    "check:plugin": "node scripts/build-plugin.mjs --check",
+    "test:plugin": "node --test tests/plugin.test.mjs"
   },
   "dependencies": {
     "@fontsource/noto-sans-jp": "^5.2.6",

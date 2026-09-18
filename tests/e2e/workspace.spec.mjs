@@ -618,13 +618,18 @@ test("settings explains that an AI connection must be allowed first", async ({
   await expect(
     dialog.getByRole("heading", { name: "AIクライアントの接続" }),
   ).toBeVisible();
-  // Nothing is connected yet, and the screen says what that means rather than
-  // showing an empty list with no explanation.
+  // The screen states the two things a person needs before deciding: an AI
+  // client they have not allowed can read nothing, and allowing one still does
+  // not let it change the plan on its own.
   await expect(
-    dialog.getByText("まだ接続はありません", { exact: false }),
+    dialog.getByText("許可していないAIクライアントは何も読み取れません", {
+      exact: false,
+    }),
   ).toBeVisible();
   await expect(
-    dialog.getByText("許可するまでAI側は何も読み取れません", { exact: false }),
+    dialog.getByText("あなたが差分を確認して承認するまで反映されません", {
+      exact: false,
+    }),
   ).toBeVisible();
 });
 

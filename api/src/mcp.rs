@@ -1,4 +1,3 @@
-use crate::auth::TachyonAuth;
 use crate::mcp_auth::{self, McpIdentity, ResourceConfig};
 use crate::service::{Actor, Service};
 use axum::{
@@ -51,7 +50,6 @@ pub struct Mcp {
 #[derive(Clone)]
 pub struct RemoteMcp {
     pub service: Service,
-    pub auth: Arc<TachyonAuth>,
     pub resource: Arc<ResourceConfig>,
 }
 
@@ -126,52 +124,36 @@ async fn authenticate_remote(mut request: Request, next: Next, remote: RemoteMcp
         );
     };
 
-    let verified = match remote.auth.inspect_access_token(presented).await {
-        Ok(verified) => verified,
-        Err(error) => {
-            return challenge(
-                &remote.resource,
-                Some(("invalid_token", "the access token is not valid")),
-                StatusCode::from_u16(error.status).unwrap_or(StatusCode::UNAUTHORIZED),
-                json!({"error":"INVALID_TOKEN","message":"アクセストークンを確認できません"}),
-            )
-        }
-    };
-    // Audience: a token issued to the web sign-in client is not a token for
-    // this resource, however valid it is.
-    if verified.client_id != remote.resource.client_id {
-        return challenge(
-            &remote.resource,
-            Some((
-                "invalid_token",
-                "the access token was issued for another resource",
-            )),
-            StatusCode::UNAUTHORIZED,
-            json!({"error":"INVALID_AUDIENCE","message":"このMCPエンドポイント向けのトークンではありません"}),
-        );
-    }
-    // Canonical identity and the user id PathBase authorizes against come from
-    // Tachyon, not from a claim the client could shape.
-    let identity = match remote.auth.verify_identity(presented).await {
-        Ok(identity) => identity,
-        Err(error) => {
-            return challenge(
-                &remote.resource,
-                Some(("invalid_token", "the access token is not valid")),
-                StatusCode::from_u16(error.status).unwrap_or(StatusCode::UNAUTHORIZED),
-                json!({"error":"INVALID_TOKEN","message":"利用者を確認できません"}),
-            )
-        }
-    };
+    // The token is Basepath's own: issued by the authorization server in
+    // `api/src/oauth.rs` after the person consented on Basepath's origin, and
+    // checked here against the live delegation rather than against a claim
+    // inside the token. A disconnect therefore takes effect on the next
+    // request, in every execution environment.
+    let (actor, connection) =
+        match crate::oauth::verify_access_token(&remote.service.db, &remote.resource, presented)
+            .await
+        {
+            Ok(identity) => identity,
+            Err(error) => {
+                let (code, description) = if error.code == "INVALID_AUDIENCE" {
+                    (
+                        "invalid_token",
+                        "the access token was issued for another resource",
+                    )
+                } else {
+                    ("invalid_token", "the access token is not valid")
+                };
+                return challenge(
+                    &remote.resource,
+                    Some((code, description)),
+                    StatusCode::from_u16(error.status).unwrap_or(StatusCode::UNAUTHORIZED),
+                    json!({"error": error.code, "message": error.message}),
+                );
+            }
+        };
 
     // The person's own workspace is theirs whether they arrive through the
     // browser or through an AI client, and provisioning is idempotent.
-    let actor = Actor {
-        id: identity.id.clone(),
-        agent: true,
-        connection: None,
-    };
-    // The connection is attached below, once it is known.
     if let Err(error) = remote.service.provision_personal(&actor).await {
         return (
             StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -180,29 +162,6 @@ async fn authenticate_remote(mut request: Request, next: Next, remote: RemoteMcp
             .into_response();
     }
 
-    let client_name = request
-        .headers()
-        .get("mcp-client-name")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("MCP client")
-        .to_owned();
-    let connection = match mcp_auth::ensure_pending(
-        &remote.service.db,
-        &identity.id,
-        &remote.resource.client_id,
-        &client_name,
-    )
-    .await
-    {
-        Ok(connection) => connection,
-        Err(error) => {
-            return (
-                StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                axum::Json(error),
-            )
-                .into_response()
-        }
-    };
     if connection.status != "active" {
         let error = mcp_auth::insufficient_scope(mcp_auth::SCOPE_READ, &connection);
         return (

@@ -452,6 +452,12 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         include_str!("../migrations/sqlite/0004_audit_connection.sql"),
         include_str!("../migrations/mysql/0004_audit_connection.sql"),
     ),
+    (
+        5,
+        "oauth clients and grants",
+        include_str!("../migrations/sqlite/0005_oauth_clients.sql"),
+        include_str!("../migrations/mysql/0005_oauth_clients.sql"),
+    ),
 ];
 
 /// The schema version this build expects. Readiness compares against it, so a

@@ -190,3 +190,60 @@ test("proxies MCP requests without losing auth headers or caching them", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test("forwards authorization server metadata from the origin root", async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (request) => {
+    seen.push(request.url);
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request(
+        "https://example.test/.well-known/oauth-authorization-server",
+      ),
+      { PATHBASE_API_ORIGIN: "https://api.example.test" },
+    );
+    assert.equal(response.status, 200);
+    // The path is not rewritten: RFC 8414 fixes it relative to the issuer, so
+    // a client that follows the spec looks exactly here.
+    assert.deepEqual(seen, [
+      "https://api.example.test/.well-known/oauth-authorization-server",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("restores the WWW-Authenticate header API Gateway renames", async () => {
+  const originalFetch = globalThis.fetch;
+  const challenge =
+    'Bearer realm="pathbase", resource_metadata="https://example.test/.well-known/oauth-protected-resource/api/mcp"';
+  globalThis.fetch = async () =>
+    new Response('{"error":"UNAUTHENTICATED"}', {
+      status: 401,
+      headers: { "x-amzn-remapped-www-authenticate": challenge },
+    });
+  try {
+    const response = await worker.fetch(
+      new Request("https://example.test/api/mcp", { method: "POST" }),
+      { PATHBASE_API_ORIGIN: "https://api.example.test" },
+    );
+
+    assert.equal(response.status, 401);
+    // Without this the client is told "no" with no way to find out where to ask.
+    assert.equal(response.headers.get("www-authenticate"), challenge);
+    assert.equal(
+      response.headers.get("x-amzn-remapped-www-authenticate"),
+      null,
+    );
+    assert.equal(
+      JSON.parse(await response.text()).error,
+      "UNAUTHENTICATED",
+      "the body survives the header rewrite",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -121,8 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::net::Ipv4Addr::LOCALHOST
     };
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
-    let remote_mcp =
-        pathbase_api::remote_mcp_router(service.clone(), auth.as_ref()).map_err(|e| e.message)?;
+    let remote_mcp = pathbase_api::remote_mcp_router(service.clone()).map_err(|e| e.message)?;
     let api = pathbase_api::router_with_mcp(
         HttpState {
             service,

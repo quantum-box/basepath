@@ -6,6 +6,7 @@ pub mod mcp;
 pub mod mcp_auth;
 pub mod migrate;
 pub mod model;
+pub mod oauth;
 pub mod openapi;
 pub mod preflight;
 mod seed;
@@ -52,23 +53,13 @@ impl IntoResponse for ApiError {
 }
 /// Builds the hosted MCP router when this deployment exposes one.
 ///
-/// It is enabled by `PATHBASE_MCP_CLIENT_ID`, the OAuth client an access token
-/// must have been issued to. There is no shared-secret mode: an MCP client
-/// authenticates as the person, or not at all.
-pub fn remote_mcp_router(
-    service: service::Service,
-    auth: Option<&Arc<auth::TachyonAuth>>,
-) -> Result<Option<Router<HttpState>>, ApiError> {
+/// It is enabled by `PATHBASE_MCP_ENABLED`. There is no shared-secret mode: an
+/// MCP client presents a token Basepath issued after the person consented, or
+/// it gets nothing.
+pub fn remote_mcp_router(service: service::Service) -> Result<Option<Router<HttpState>>, ApiError> {
     let Some(resource) = mcp_auth::ResourceConfig::from_env()? else {
         return Ok(None);
     };
-    let auth = auth.ok_or_else(|| {
-        ApiError::new(
-            500,
-            "AUTH_CONFIGURATION",
-            "MCPを公開するにはTachyon認証の設定が必要です",
-        )
-    })?;
     let allowed_hosts = std::env::var("PATHBASE_MCP_ALLOWED_HOSTS")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -111,7 +102,6 @@ pub fn remote_mcp_router(
     Ok(Some(mcp::remote_router(
         mcp::RemoteMcp {
             service,
-            auth: auth.clone(),
             resource: Arc::new(resource),
         },
         allowed_hosts,
@@ -222,6 +212,49 @@ async fn endpoint(
             return Err(ApiError::missing());
         }
         return Ok(Json(resource.metadata()).into_response());
+    }
+    // RFC 8414 authorization server metadata. Basepath is the authorization
+    // server for its own MCP resource; `api/src/oauth.rs` explains why it
+    // cannot be the Cognito pool. Public, for the same reason as above.
+    if method == Method::GET && path.starts_with("/.well-known/oauth-authorization-server") {
+        let resource = mcp_auth::ResourceConfig::from_env()?.ok_or_else(ApiError::missing)?;
+        return Ok(Json(oauth::metadata(&resource)).into_response());
+    }
+    // The OAuth endpoints a client calls without a browser: registration and
+    // the token endpoint. They carry no session and no CSRF header, because
+    // they are not same-origin requests — the client authenticates with PKCE
+    // and its own client id, which is what the flow is for.
+    if path == "/oauth/register" || path == "/oauth/token" || path == "/oauth/revoke" {
+        if method != Method::POST {
+            return Ok(oauth_error(&oauth::OAuthError::invalid_request(
+                "POST is required",
+            )));
+        }
+        let resource = mcp_auth::ResourceConfig::from_env()?.ok_or_else(ApiError::missing)?;
+        let form = match form_body(&headers, &bytes) {
+            Ok(form) => form,
+            Err(error) => return Ok(oauth_error(&error)),
+        };
+        let outcome = match path.as_str() {
+            "/oauth/register" => oauth::register(&state.service.db, &form).await,
+            "/oauth/token" => oauth::token(&state.service.db, &resource, &form).await,
+            _ => {
+                oauth::revoke_token(&state.service.db, &form).await?;
+                Ok(json!({}))
+            }
+        };
+        return Ok(match outcome {
+            Ok(value) => (
+                if path == "/oauth/register" {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                Json(value),
+            )
+                .into_response(),
+            Err(error) => oauth_error(&error),
+        });
     }
     if path == "/auth/status" && method == Method::GET {
         return Ok(Json(json!({"mode":if state.auth.is_some(){"tachyon"}else{"local-preview"},"configured":state.auth.is_some(),"field_configured":state.field.is_some()})).into_response());
@@ -355,6 +388,61 @@ async fn endpoint(
     if session.is_some() {
         state.service.provision_personal(&actor).await?;
     }
+    // The consent screen's own endpoints. They sit *after* the session and
+    // CSRF checks on purpose: the whole point of this screen is that it is a
+    // signed-in person acting on Basepath's origin. A call made from inside an
+    // AI host cannot reach here, which is what makes the answer evidence.
+    if path == "/oauth/authorize" {
+        let resource = mcp_auth::ResourceConfig::from_env()?.ok_or_else(ApiError::missing)?;
+        if method == Method::GET {
+            return Ok(Json(
+                match oauth::begin_authorization(
+                    &state.service.db,
+                    &resource,
+                    &resource.issuer,
+                    &query,
+                )
+                .await?
+                {
+                    oauth::Authorization::Ask(pending, handle) => {
+                        json!({ "ask": pending.describe(&handle) })
+                    }
+                    oauth::Authorization::Redirect(url) => json!({ "redirect_to": url }),
+                },
+            )
+            .into_response());
+        }
+        if method == Method::POST {
+            #[derive(Deserialize)]
+            struct Decision {
+                request_id: String,
+                #[serde(default)]
+                scopes: Vec<String>,
+                #[serde(default)]
+                allow: bool,
+            }
+            let decision: Decision = serde_json::from_slice(&bytes).map_err(|_| {
+                ApiError::new(400, "INVALID_JSON", "接続の許可内容を確認してください")
+            })?;
+            return Ok(Json(
+                oauth::decide(
+                    &state.service,
+                    &actor,
+                    &resource.issuer,
+                    &decision.request_id,
+                    &decision.scopes,
+                    decision.allow,
+                )
+                .await?,
+            )
+            .into_response());
+        }
+        return Err(ApiError::new(
+            405,
+            "METHOD_NOT_ALLOWED",
+            "対応していない操作です",
+        ));
+    }
     if path == "/v1/openapi.json" && method == Method::GET {
         return Ok(Json(openapi::document()).into_response());
     }
@@ -388,6 +476,34 @@ async fn endpoint(
         .await?;
     Ok(Json(v).into_response())
 }
+/// An OAuth error response: its own wire shape, and never cached.
+fn oauth_error(error: &oauth::OAuthError) -> Response {
+    (
+        StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_REQUEST),
+        Json(error.body()),
+    )
+        .into_response()
+}
+
+/// The token endpoint speaks `application/x-www-form-urlencoded`, as OAuth
+/// requires. JSON is accepted too because some clients send it, and refusing
+/// would only produce a failure the person cannot act on.
+fn form_body(headers: &HeaderMap, bytes: &Bytes) -> std::result::Result<Value, oauth::OAuthError> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    if content_type.starts_with("application/json") {
+        return serde_json::from_slice(bytes)
+            .map_err(|_| oauth::OAuthError::invalid_request("the request body is not valid JSON"));
+    }
+    let mut form = serde_json::Map::new();
+    for (key, value) in url::form_urlencoded::parse(bytes) {
+        form.insert(key.into_owned(), Value::String(value.into_owned()));
+    }
+    Ok(Value::Object(form))
+}
+
 fn require_login_origin(auth: &auth::TachyonAuth, headers: &HeaderMap) -> Result<(), ApiError> {
     if headers
         .get("x-pathbase-request")

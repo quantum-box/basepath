@@ -67,9 +67,11 @@ PATHBASE_MODE=local-preview PATHBASE_DB=/absolute/path/to/data/pathbase.sqlite3 
 
 hosted MCP は Streamable HTTP の `/mcp`（`PATHBASE_WEB_ROOT` 使用時は `/api/mcp`）で提供します。OAuth 2.1のprotected resourceとして動作し、固定トークン方式はありません。
 
-- 認証: Tachyon管理のCognitoユーザープールが発行したaccess tokenを、プールのJWKSで検証します（issuer / 署名 / 期限 / `token_use`）。canonicalな利用者IDはTachyonの`/v1/me`から取ります。
-- audience: MCPエンドポイントは専用のOAuthクライアント（`pathbase-mcp`）を持ちます。Web用サインインクライアントのtokenは受け付けませんし、その逆も同様です。
-- 同意: tokenは「誰か」を証明するだけです。どのAIクライアントに何を許すかは`mcp_connections`の記録で、本人がPathBaseの設定画面で許可するまで何も読めません。解除は共有DBを見るので即座に効きます。
+- 認可サーバー: このリソースの認可サーバーはBasepath自身です（`/.well-known/oauth-authorization-server`）。Cognitoプールのdiscoveryは`code_challenge_methods_supported`もregistration endpointも公開しておらず、redirect URIもデプロイ時固定のため、接続ごとにcallbackを発行するホストからは使えません。実測の根拠は[docs/chatgpt-plugin.md](docs/chatgpt-plugin.md)にあります。
+- 認証: サインインは従来どおりTachyon管理のCognitoユーザープールです。Basepathが発行するのは「どのAIクライアントに何を許すか」という委譲だけで、これは元々Basepathが持っていた状態です。
+- 登録: RFC 7591のdynamic client registrationに対応します。登録しただけでは何も得られません。本人がBasepathの許可画面でサインインした状態で権限を選んではじめて、トークンが発行されます。
+- audience: トークンは1つのリソースに紐づきます。preview用のトークンは本番では通りませんし、その逆も同様です。
+- 同意: どのAIクライアントに何を許すかは`mcp_connections`の記録です。許可画面で選んだ権限がそのまま記録になり、設定画面でいつでも狭められます。接続を解除すると、有効期限の残っているトークンも同じトランザクションで無効になります。
 - 権限: `pathbase.read` / `pathbase.propose` / `pathbase.apply`。scopeがあっても変更は案のままで、本人が差分を確認して承認するまで反映されません。`apply`は本人が承認済みの案だけを適用できます。
 - 認可: 操作ごとにワークスペース権限を再検証します。引数で別のworkspaceを指定しても権限は得られません。
 
@@ -83,7 +85,9 @@ MCP Apps対応として、`pathbase_get_graph` / `pathbase_get_today` / `pathbas
 
 UIは `mcp-app/` と `src/shared/`（Web / Tauriと共有する表示部品とビューモデル）から `npm run build:mcp-app` で1ファイルに束ね、`api/ui/mcp-app.html` としてコミットします（Lambdaに Node もCDNも無いため）。CIが再ビルドして差分があれば失敗し、サイズ上限も検査します。
 
-discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT / Claude実機での接続確認は未実施です。
+discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）と`/.well-known/oauth-authorization-server`（RFC 8414）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。API GatewayがこのヘッダーをリネームするのでWorkerが元に戻します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT実機での接続確認は未実施です。
+
+ChatGPT向けの配布パッケージは`plugin/chatgpt/`（manifest・接続先・アイコン）と`skills/`（ホスト非依存のワークフロー）から`npm run build:plugin`で組み立てます。ワークフローは1か所にしか書きません。手順・接続導線・検証済み/未検証の切り分けは[docs/chatgpt-plugin.md](docs/chatgpt-plugin.md)を参照してください。
 
 18個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 

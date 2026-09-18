@@ -31,6 +31,7 @@ import {
 import { FieldIntegration } from "./FieldIntegration";
 import { McpConnections } from "./McpConnections";
 import { ChangeApproval, changeRouteFromPath } from "./ChangeApproval";
+import { OAuthConsent, isConsentPath } from "./OAuthConsent";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { OnboardingWizard } from "./OnboardingWizard";
 import { AiSuggestions } from "./AiSuggestions";
@@ -428,6 +429,16 @@ export function App() {
   // the AI host.
   const [changeRoute, setChangeRoute] = useState(() =>
     changeRouteFromPath(window.location.pathname),
+  );
+  // An AI host sends the person here to authorize a connection. Like approval,
+  // it needs this origin and this session, so it is a screen rather than
+  // something the host could do on its own.
+  // Captured on the first render, before any effect can rewrite the URL: the
+  // sign-in and tenant screens replace the location, and the authorization
+  // request lives in its query string. Someone who has to sign in first must
+  // still end up back at the connection they were asked about.
+  const [consenting] = useState(() =>
+    isConsentPath(window.location.pathname) ? window.location.search : null,
   );
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -933,6 +944,17 @@ export function App() {
         }}
         backLabel="ログイン画面に戻る"
         backPendingLabel="ログアウト中…"
+      />
+    );
+  // The connection consent screen, once the person is signed in, for the same
+  // reason: a delegation is theirs to grant, so it needs their session.
+  if (consenting !== null)
+    return (
+      <OAuthConsent
+        search={consenting}
+        onLeave={() => {
+          window.location.replace("/");
+        }}
       />
     );
   // The approval deep link, once the person is signed in. It comes after the
