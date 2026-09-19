@@ -36,6 +36,23 @@ rendered. All three are things an AI host cannot supply.
 The conversation's job is to get someone there with context: it shows the diff,
 says plainly that approving happens in Basepath, and offers the link.
 
+**Approving is applying.** The operations run in the same transaction as the
+approval, and the change set comes back as `applied`. There is no second
+button, and no state where someone approved something that is not in their
+plan.
+
+That was not always true, and the reason it changed is worth keeping. The two
+steps exist so an *agent* can only apply what the person approved — the server
+checks `approved_hash` and `approved_by`. What they were never for was making
+the **person** act twice. A person who has read the diff and pressed approve
+has decided; a further button between that decision and their plan is one they
+forget, and the proposal then expires having written nothing. That happened
+(PLT-4916): a goal was approved in Basepath and never existed.
+
+So the guarantee is unchanged and its cost moved: an agent still cannot apply
+anything a person has not approved, and a person is no longer asked to confirm
+a decision they have already made.
+
 ## What each surface may do
 
 | Action | AI host (MCP App) | Basepath |
@@ -43,8 +60,8 @@ says plainly that approving happens in Basepath, and offers the link.
 | See the diff | yes | yes |
 | Propose / re-propose | yes | yes |
 | Withdraw a proposal | yes | yes |
-| **Approve** | **no** | yes |
-| Apply an approved change set | yes, if *that person* approved it | yes |
+| **Approve** (which applies) | **no** | yes |
+| Apply a change set approved before approving applied | yes, if *that person* approved it | yes |
 
 Withdrawing is allowed from the app because it only discards a proposal:
 nothing is applied, and anyone can propose again.
@@ -53,6 +70,12 @@ Applying is allowed from the app because the server checks that the change set
 was approved **by this same actor**, with a digest matching its current
 content, before the expiry, against an unchanged plan. The app cannot cause an
 apply the person did not already authorize.
+
+In practice there is now nothing for it to apply: the approval did that. The
+path remains for change sets approved before this was so, and an apply that
+arrives for one already applied by this same person returns the change set with
+`already_applied: true` rather than an error — a model relaying "I approved it"
+should not report a failure about something that is in the plan.
 
 ### Weekly review text
 
@@ -67,8 +90,9 @@ to the text, which is a different statement from declaring the week reviewed,
 so `.../weekly-reviews/{id}/finalize` is refused inside a change set
 (`422 VALIDATION_ERROR`) and stays something the person does in Basepath. The
 draft carries `expected_version` when one already exists, so a proposal written
-against an older draft is refused at apply time with `409 VERSION_CONFLICT`
-rather than overwriting what the person wrote in the meantime.
+against an older draft is refused at approval with `409 VERSION_CONFLICT`
+rather than overwriting what the person wrote in the meantime — while they are
+still in front of the screen to read the refusal.
 
 ## What the server refuses
 
@@ -84,12 +108,15 @@ test:
 | Approve content other than what was shown (`hash` mismatch) | `409 CHANGESET_SUPERSEDED` |
 | Apply someone else's approval | `403` / `404` |
 | Use a change-set id from another workspace | `404` |
-| Apply after the plan changed underneath | `409 VERSION_CONFLICT` |
-| Apply after the proposal was withdrawn | `403 APPROVAL_REQUIRED` |
-| Apply an already-applied change set | `409` / `403` |
+| Approve or apply after the plan changed underneath | `409 VERSION_CONFLICT` |
+| Approve or apply after the proposal was withdrawn | `409` / `403 APPROVAL_REQUIRED` |
+| Approve or apply an expired proposal | `409 VERSION_CONFLICT` |
+| Approve an already-applied change set | `409 VERSION_CONFLICT` |
+| Apply someone else's already-applied change set | refused, not `already_applied` |
 | Propose finalizing a weekly review | `422 VALIDATION_ERROR` |
-| Apply a review draft written against an older version | `409 VERSION_CONFLICT` |
-| Re-send the same apply (double click, retry) | the stored result, applied once |
+| Approve a review draft written against an older version | `409 VERSION_CONFLICT` |
+| Re-send the same approval (double click, retry) | the stored result, written once |
+| Apply what this person's approval already applied | the change set, `already_applied: true`, nothing written |
 
 And one more, which is the point of the whole design: **previewing does not
 change the plan.** The operations run inside a savepoint that is rolled back;
@@ -113,14 +140,20 @@ something" is the thing most worth not missing.
 
 Every write records the actor, the origin (`ui` or `mcp`) and — for MCP — the
 connection id. So for one change set the trail answers: which AI connection
-proposed it, that the person approved it in the browser, and which connection
-applied it. The same history is visible in Basepath and through
-`pathbase_get_change`.
+proposed it, and that the person approved it in the browser — which is also
+where it was written, so `applied_by_connection` is null for an approval made
+in Basepath rather than naming the connection the proposal arrived on. The same
+history is visible in Basepath and through `pathbase_get_change`.
 
 ## Recovering from a lost connection
 
 Status is always re-readable: `pathbase_get_change` and the approval screen both
 report `pending` / `approved` / `applied` / `rejected`, with `approved_at` and
-`applied_at`. A client that lost its connection mid-apply re-reads rather than
-guessing, and re-sending the same idempotency key returns the original result
-instead of applying twice.
+`applied_at`. A client that lost its connection mid-approval re-reads rather
+than guessing, and re-sending the same idempotency key returns the original
+result instead of writing twice.
+
+`approved` now only appears on change sets approved before approving applied.
+They are shown as 承認済み・未反映 and, once past their expiry, as expired with
+an invitation to propose again — an approval that was never written does not
+disappear quietly.

@@ -308,7 +308,7 @@ export function AiSuggestions({
               disabled={busy}
               onClick={() => void approve()}
             >
-              この差分を承認
+              この差分を承認して反映
             </button>
           ) : (
             <button
