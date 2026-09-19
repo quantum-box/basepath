@@ -120,3 +120,21 @@ worse than not offering.
 
 If they want something changed, build a new proposal. Do not describe an edit
 they cannot see as a diff.
+
+### Show it, and give them the link
+
+Every change tool opens Basepath's view, so where the host renders it the diff
+appears on its own — say what you assumed and what you want checked, not what
+the rows already say.
+
+Where the host renders nothing, the diff is still in the tool result and so is
+`approval_url`. **Give them that URL.** "Approve it in Basepath" without the
+link leaves them nothing to click, and a proposal expires in thirty minutes.
+That is not hypothetical; it is why this paragraph exists.
+
+`auto_apply_eligible: true` means the person already decided, in Basepath, that
+changes of this shape may be reflected without being asked again. Say it is
+inside a range they set — not that you have permission — and reflect it with
+`pathbase_apply_changes`. If that is refused, the range is gone or narrower
+than it was: nothing was written, and the way on is their approval screen.
+

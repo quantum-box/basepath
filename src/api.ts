@@ -168,10 +168,14 @@ export type ChangeSet = {
   id: string;
   workspace_id: string;
   title: string;
-  status: "pending" | "approved" | "applied";
+  status: "pending" | "approved" | "applied" | "rejected";
   operations: Operation[];
   expires_at: string;
   created_at: string;
+  /** Applied under a range the person set in advance, rather than approved. */
+  auto_applied?: boolean;
+  applied_at?: string | null;
+  proposed_by_connection?: string | null;
 };
 export type SuggestionEvidence = {
   goal: { id: string; title: string; version: number };

@@ -22,6 +22,30 @@ AI host reaches this server as an ordinary tool call, indistinguishable from
 the model's. Approval happens on Basepath's origin, with the person's session.
 See [change-approval.md](change-approval.md).
 
+One thing in that column has changed and one has not. What has not: a click
+here is still not evidence. What has: a person can decide **in advance**, in
+Basepath, that proposals of a given shape from a given connection may be
+reflected — and then the app offers a trigger, because the evidence is the
+range rather than the click. Never a deletion, never a date or owner unless
+they said so, never another workspace or another connection, never
+indefinitely. The full argument and the refusals are in
+[change-approval.md](change-approval.md#deciding-in-advance).
+
+### Whether the view actually appears
+
+The client matrix above is a published claim, not a measurement. Basepath now
+records its own: reading a `ui://` resource stamps the connection, and
+**設定 → AIクライアントの接続** shows 「会話内に表示あり・<日時>」 or
+「会話内の表示はまだありません」 per client. A host reads that resource only in
+order to draw it.
+
+Two things were fixed before that timestamp meant anything. The tools that
+*create* a change set carried no view at all, so the diff never appeared at the
+moment it mattered; they all name one now. And only the MCP Apps spelling of
+"this tool has a view" was published, which is the one Claude reads and not the
+one ChatGPT reads — both are published now. See
+[chatgpt-plugin.md](chatgpt-plugin.md#the-in-conversation-view-and-which-spelling-chatgpt-reads).
+
 ## Connecting claude.ai or Claude Desktop
 
 1. **Settings → Connectors → Add custom connector.**
@@ -109,7 +133,9 @@ client get separate delegations, and neither inherits the other's scopes.
 | Disconnected in Basepath | The next call fails. Reconnecting starts a fresh consent |
 | Access token expired (1 hour) | Refreshed silently; refresh tokens rotate |
 | Authorization request expired (15 min) | The consent page says so and grants nothing |
-| Host does not render MCP Apps | Every tool returns the same data as text. Only the view is missing |
+| Host does not render MCP Apps | Every tool returns the same data as text, including `approval_url`, so the model can hand over a working link rather than a description of one |
+| A proposal is outside every pre-set range | The app shows the diff and the Basepath link. Nothing is applied |
+| A proposal is inside a range | The app offers 「この内容を反映する」 and says afterwards what it did |
 | A workspace the person cannot see | `404`. Naming a workspace in the arguments never grants access |
 
 ## Verified, and not
@@ -122,9 +148,22 @@ client get separate delegations, and neither inherits the other's scopes.
 | The in-conversation app uses no host's private API | **CI** | `tests/plugin.test.mjs` |
 | Two people using one client get separate delegations | **CI** | `api/tests/oauth.rs` |
 | OAuth discovery and the `WWW-Authenticate` challenge work in production | **verified** | `curl` against `https://pathbase-v2.txcloud.app`, 2026-09-19 |
-| **Connecting from real claude.ai or Claude Desktop** | **not verified** | Not performed |
-| **MCP Apps rendering in Claude** | **not verified** | Same |
+| Every change tool names a view, in both conventions | **CI** | `api/tests/mcp_apps.rs` |
+| A proposal renders as a diff the moment it is made | **CI** | `tests/e2e/mcp-app.spec.mjs`, through the real AppBridge |
+| A range is set on Basepath's origin, and an AI connection can neither read nor write one | **CI** | `api/tests/auto_apply.rs` — 12 tests; `tests/e2e/oauth-consent.spec.mjs` for the screen |
+| A deletion is never auto-applied, under any range that can be saved | **CI** | `api/tests/auto_apply.rs` |
+| **Connecting from real claude.ai or Claude Desktop** | **not verified** | Not performed in this repository |
+| **MCP Apps rendering in Claude** | **not verified** | Read `ui_read_at` in 設定 → AIクライアントの接続 after connecting, and record it below with the host version and the date |
 | **Supported plans and versions** | **not measured** | Fill in from an actual connection; do not copy from documentation |
+
+### Real-host log
+
+One row per actual connection. An empty row is the honest state; harness
+results do not belong here.
+
+| Date | Host and version | View rendered (`ui_read_at`) | Proposal → reflected in Basepath | Notes |
+| --- | --- | --- | --- | --- |
+| | | | | |
 
 A custom connector is not a directory listing. Submitting Basepath to any public
 connector directory is a separate decision and has not been prepared for or

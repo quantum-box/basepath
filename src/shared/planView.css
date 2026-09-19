@@ -380,11 +380,26 @@
   border-inline-start: 2px solid var(--plan-accent);
   padding-inline-start: 8px;
 }
+/* What happened, stated where the button was. Distinct from a notice so an
+   outcome does not read as one more instruction. */
+.change-applied {
+  margin: 0;
+  font-size: 12px;
+  border-inline-start: 2px solid #3f7a4f;
+  padding-inline-start: 8px;
+  color: var(--plan-ink, inherit);
+}
 .change-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
+}
+/* The sentence that explains a control takes the whole line, so it never ends
+   up wedged between two buttons where it reads as a caption for neither. */
+.change-actions .change-note {
+  flex-basis: 100%;
+  margin: 0;
 }
 .change-actions button {
   font: inherit;

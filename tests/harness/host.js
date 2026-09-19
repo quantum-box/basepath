@@ -275,4 +275,22 @@ bridge.oncalltool = async (request) => {
 await bridge.connect(
   new PostMessageTransport(iframe.contentWindow, iframe.contentWindow),
 );
+
+/**
+ * Pushes a tool result to the view, the way a real host does when the model
+ * has just run a tool.
+ *
+ * This is the path a proposal actually arrives on: the model calls a change
+ * tool, the host opens the view and hands it the result. Driving it here is
+ * what keeps "the diff appears the moment it is proposed" a tested claim
+ * rather than an intention.
+ */
+window.__pushToolResult = async (structured) => {
+  await bridge.sendToolInput({ arguments: {} });
+  await bridge.sendToolResult({
+    isError: false,
+    structuredContent: structured,
+    content: [{ type: "text", text: JSON.stringify(structured) }],
+  });
+};
 window.__bridgeReady = true;

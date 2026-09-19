@@ -8,11 +8,19 @@ import { expect, test } from "@playwright/test";
  * tests drive it the way a host does — register a client, send the person to
  * the authorization endpoint, and read what comes back on the redirect.
  */
-async function registerClient(request, redirect) {
+/**
+ * Registers a client, optionally under its own name.
+ *
+ * The browser suite shares one database, so every connection registered as
+ * "E2E AI host" lands in the same settings list. A test that needs to act on
+ * *its* connection names it, rather than picking one of several identical rows
+ * and hoping.
+ */
+async function registerClient(request, redirect, name = "E2E AI host") {
   const response = await request.post("/api/oauth/register", {
     headers: { "content-type": "application/json" },
     data: {
-      client_name: "E2E AI host",
+      client_name: name,
       redirect_uris: [redirect],
       token_endpoint_auth_method: "none",
     },
@@ -231,8 +239,12 @@ test("a granted connection is listed in settings and can be disconnected there",
     .getByRole("button", { name: "設定", exact: true });
   await settings.focus();
   await settings.press("Enter");
+  // Scoped to the connections list: the same panel now also lists this client
+  // under the ranges below it, and that is a different question.
   const dialog = page.getByRole("dialog");
-  const entry = dialog.locator("li", { hasText: "E2E AI host" }).last();
+  const entry = dialog
+    .locator(".mcp-connections > ul > li", { hasText: "E2E AI host" })
+    .last();
   await expect(entry).toBeVisible();
   await expect(entry.getByText("接続中", { exact: false })).toBeVisible();
   // Only the scope the person granted is checked.
@@ -245,4 +257,132 @@ test("a granted connection is listed in settings and can be disconnected there",
 
   await entry.getByRole("button", { name: "接続を解除", exact: true }).click();
   await expect(entry.getByText("解除済みです", { exact: false })).toBeVisible();
+});
+
+test("a person can set, narrow and remove a range that skips per-change approval", async ({
+  page,
+  request,
+}) => {
+  // The point of this test is where the decision is made. Every apply that
+  // later proceeds without a per-change approval proceeds because of a row
+  // written on this screen, with this session — and for no other reason.
+  const clientId = await registerClient(request, REDIRECT, "E2E 範囲テスト");
+  await page.goto("/");
+  const { challenge } = await pkce(page, "range");
+  await page.goto(
+    authorizeUrl(
+      clientId,
+      REDIRECT,
+      challenge,
+      "pathbase.read pathbase.propose pathbase.apply",
+    ),
+  );
+  await page.getByRole("button", { name: "許可する", exact: true }).click();
+  await page.waitForURL((url) => url.pathname === "/e2e-oauth-callback");
+
+  await page.goto("/");
+  const settings = page
+    .getByRole("navigation", { name: "ユーティリティ" })
+    .getByRole("button", { name: "設定", exact: true });
+  await settings.focus();
+  await settings.press("Enter");
+
+  const ranges = page.getByRole("dialog").locator(".auto-apply");
+  await expect(ranges).toBeVisible();
+  // The edges are stated while the permission is being granted, not in a
+  // document somewhere else.
+  await expect(
+    ranges.getByText("削除は、どの設定でも自動反映されません", {
+      exact: false,
+    }),
+  ).toBeVisible();
+
+  const entry = ranges.locator("ul > li", { hasText: "E2E 範囲テスト" }).last();
+  await expect(entry.getByText("設定なし", { exact: false })).toBeVisible();
+  // Adding is offered by default; rewriting what the person wrote, and the
+  // values that read afterwards as their decisions, are not.
+  await expect(
+    entry.getByRole("checkbox", { name: /追加を自動で反映する/ }),
+  ).toBeChecked();
+  await expect(
+    entry.getByRole("checkbox", { name: /更新も自動で反映する/ }),
+  ).not.toBeChecked();
+  await expect(
+    entry.getByRole("checkbox", { name: /期限・担当・目標値なども含める/ }),
+  ).not.toBeChecked();
+
+  await entry.getByRole("button", { name: "この範囲で許可する" }).click();
+  const granted = entry.locator(".auto-apply-current > li");
+  await expect(granted).toHaveCount(1);
+  await expect(granted.getByText("追加", { exact: false })).toBeVisible();
+
+  // Nothing is indefinite, and removing it is one press.
+  await expect(
+    granted.getByRole("button", { name: "この範囲を解除" }),
+  ).toBeVisible();
+  await granted.getByRole("button", { name: "この範囲を解除" }).click();
+  await expect(entry.getByText("設定なし", { exact: false })).toBeVisible();
+});
+
+test("a second workspace's range is visible and revocable, not hidden behind the first", async ({
+  page,
+  request,
+}) => {
+  // Ranges are keyed by workspace, so one connection can hold several. The
+  // screen used to collapse them to one, which left a live permission nobody
+  // could see — and therefore nobody could take back.
+  const second = await request.post("/api/v1/workspaces", {
+    headers: {
+      "idempotency-key": `e2e-range-ws-${Date.now()}`,
+      "content-type": "application/json",
+    },
+    data: { name: `E2E範囲B-${Date.now()}`, scope: "チーム" },
+  });
+  expect(second.ok(), await second.text()).toBeTruthy();
+  const secondId = (await second.json()).id;
+
+  const clientId = await registerClient(request, REDIRECT, "E2E 二つの範囲");
+  await page.goto("/");
+  const { challenge } = await pkce(page, "two-ranges");
+  await page.goto(
+    authorizeUrl(
+      clientId,
+      REDIRECT,
+      challenge,
+      "pathbase.read pathbase.propose pathbase.apply",
+    ),
+  );
+  await page.getByRole("button", { name: "許可する", exact: true }).click();
+  await page.waitForURL((url) => url.pathname === "/e2e-oauth-callback");
+
+  await page.goto("/");
+  const settings = page
+    .getByRole("navigation", { name: "ユーティリティ" })
+    .getByRole("button", { name: "設定", exact: true });
+  await settings.focus();
+  await settings.press("Enter");
+
+  const ranges = page.getByRole("dialog").locator(".auto-apply");
+  const entry = ranges.locator("ul > li", { hasText: "E2E 二つの範囲" }).last();
+  const picker = entry.getByLabel("ワークスペース");
+  // The save control specifically: the granted ranges above it each carry a
+  // button of their own.
+  const save = entry.locator(".auto-apply-actions button");
+  const live = entry.locator(".auto-apply-current > li");
+
+  const first = await picker.locator("option").first().getAttribute("value");
+  await picker.selectOption(first);
+  await save.click();
+  await expect(live).toHaveCount(1);
+
+  await picker.selectOption(secondId);
+  await save.click();
+  // Both are shown, and each has its own way off.
+  await expect(live).toHaveCount(2);
+  await expect(
+    live.getByRole("button", { name: "この範囲を解除" }),
+  ).toHaveCount(2);
+
+  await live.first().getByRole("button", { name: "この範囲を解除" }).click();
+  await expect(live).toHaveCount(1);
 });

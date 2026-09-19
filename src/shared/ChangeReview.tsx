@@ -12,6 +12,15 @@
  *
  * Withdrawing a proposal is available in both, because discarding a proposal
  * changes no plan data.
+ *
+ * There is now one more control in the conversation, and it does not weaken
+ * any of that. When the person has already decided — in Basepath, on their own
+ * session — that proposals of this shape from this AI client may be reflected,
+ * the button here is the *trigger*, not the evidence. The evidence is the
+ * range, which is why the server re-reads it on every apply rather than
+ * believing anything this component sends. If there is no range, the button is
+ * not rendered and the link out is, because a person who cannot act on what
+ * they are reading is where the last two proposals died.
  */
 import type { ChangeSet, ChangeRow } from "./changeView";
 import { isExpired, summarize } from "./changeView";
@@ -30,6 +39,11 @@ function effectLabel(effect: ChangeRow["effect"]) {
 }
 
 function statusLabel(change: ChangeSet) {
+  // Said differently from an approval, because they are different acts and the
+  // person reading their own history needs to be able to tell which happened.
+  if (change.status === "applied" && change.autoApplied) {
+    return "自動反映済み";
+  }
   switch (change.status) {
     case "approved":
       // Approving applies. Anything still sitting here was approved back when
@@ -102,6 +116,14 @@ export type ChangeReviewProps = {
    * wherever the approver is; the server still checks.
    */
   onApply?: () => void;
+  /**
+   * Reflect a proposal that falls inside a range the person set in advance.
+   *
+   * Present only when the server said this one is covered. The server checks
+   * again when it is called; this prop decides whether a control is shown, and
+   * never whether it is allowed.
+   */
+  onAutoApply?: () => void;
   /** Where to go to approve, when approval is not possible here. */
   approveHref?: string;
   onOpenApproval?: () => void;
@@ -115,6 +137,7 @@ export function ChangeReview({
   onApprove,
   onReject,
   onApply,
+  onAutoApply,
   approveHref,
   onOpenApproval,
   busy,
@@ -174,6 +197,22 @@ export function ChangeReview({
         </ul>
       )}
 
+      {/* What actually happened, said where the person just pressed the
+          button. "I clicked and I do not know what it did" is the failure this
+          replaces, and it is the same failure whichever way it was applied. */}
+      {change.status === "applied" && (
+        <p className="change-applied" role="status">
+          {change.autoApplied
+            ? "この内容は、事前に決めた範囲としてBasepathに反映されました。差分はこのまま残るので、あとから確認できます。"
+            : "この内容はBasepathに反映されました。"}
+          {change.appliedAt ? ` ・ ${change.appliedAt}` : ""}
+        </p>
+      )}
+      {change.status === "rejected" && (
+        <p className="change-notice" role="status">
+          この変更案は取り下げられました。反映されていません。
+        </p>
+      )}
       {expired && open && (
         <p className="change-warning" role="status">
           この変更案は期限切れです。もう一度作り直してください。
@@ -191,23 +230,44 @@ export function ChangeReview({
             この内容で承認して反映する
           </button>
         )}
-        {!onApprove && change.status === "pending" && !expired && (
-          <>
-            {onOpenApproval ? (
-              <button type="button" disabled={busy} onClick={onOpenApproval}>
-                Basepathで承認する
+        {!onApprove &&
+          change.status === "pending" &&
+          !expired &&
+          (change.autoApplyEligible && onAutoApply ? (
+            <>
+              <button type="button" disabled={busy} onClick={onAutoApply}>
+                この内容を反映する
               </button>
-            ) : null}
-            {approveHref && (
-              <a href={approveHref} target="_blank" rel="noreferrer">
-                {approveHref}
-              </a>
-            )}
-            <p className="change-note">
-              承認はBasepathで行います。ここでの操作は本人確認の代わりになりません。
-            </p>
-          </>
-        )}
+              <p className="change-note">
+                この変更案は、あなたがBasepathで事前に決めた範囲に入っています。
+                ここでの操作は承認の代わりではなく、その範囲での反映を実行するだけです。
+                範囲はBasepathの設定からいつでも解除できます。
+              </p>
+              {/* Still offered. A range is a decision about a kind of change,
+                  not a reason to stop showing where the full history is. */}
+              {approveHref && (
+                <a href={approveHref} target="_blank" rel="noreferrer">
+                  Basepathで確認する
+                </a>
+              )}
+            </>
+          ) : (
+            <>
+              {onOpenApproval ? (
+                <button type="button" disabled={busy} onClick={onOpenApproval}>
+                  Basepathで承認する
+                </button>
+              ) : null}
+              {approveHref && (
+                <a href={approveHref} target="_blank" rel="noreferrer">
+                  {approveHref}
+                </a>
+              )}
+              <p className="change-note">
+                承認はBasepathで行います。ここでの操作は本人確認の代わりになりません。
+              </p>
+            </>
+          ))}
         {onApply && change.status === "approved" && !expired && (
           <button type="button" disabled={busy} onClick={onApply}>
             承認済みの内容を適用する

@@ -2234,6 +2234,54 @@ async fn dispatch_inner(
             only(body, &[])?;
             return value(crate::mcp_auth::revoke(tx, &actor.id, id).await?);
         }
+        // Ranges the person decided in advance: which proposals from which AI
+        // client they have already said yes to.
+        //
+        // `!actor.agent` is the whole security argument and it is the same one
+        // as everywhere else. A range is evidence of the person's decision
+        // only because it can only have been written here, on Basepath's
+        // origin, with their session. An agent that could read these would
+        // learn where the edges are; an agent that could write one would be
+        // approving itself. So an MCP request falls through this match
+        // entirely and gets a 404 — not a 403, which would confirm the route
+        // exists and that something is there to widen.
+        ("GET", ["v1", "mcp", "auto-apply"]) if !actor.agent => {
+            return value(crate::auto_apply::list(tx, &actor.id).await?);
+        }
+        ("POST", ["v1", "mcp", "auto-apply"]) if !actor.agent => {
+            only(
+                body,
+                &[
+                    "workspace_id",
+                    "connection_id",
+                    "allow_create",
+                    "allow_update",
+                    "allow_guarded",
+                    "days",
+                ],
+            )?;
+            // Read as stated, never inferred. An omitted permission is not a
+            // granted one, and `unwrap_or(false)` is the only reading of a
+            // missing checkbox that cannot surprise anybody.
+            let flag = |key: &str| body[key].as_bool().unwrap_or(false);
+            return value(
+                crate::auto_apply::save(
+                    tx,
+                    &actor.id,
+                    text(body, "workspace_id"),
+                    text(body, "connection_id"),
+                    flag("allow_create"),
+                    flag("allow_update"),
+                    flag("allow_guarded"),
+                    body["days"].as_i64().unwrap_or(0),
+                )
+                .await?,
+            );
+        }
+        ("POST", ["v1", "mcp", "auto-apply", id, "revoke"]) if !actor.agent => {
+            only(body, &[])?;
+            return value(crate::auto_apply::revoke(tx, &actor.id, id).await?);
+        }
         ("GET", ["v1", "settings"]) => {
             let raw = tx
                 .fetch_optional(
@@ -2624,7 +2672,15 @@ async fn dispatch_inner(
                 .unwrap_or(50)
                 .clamp(1, 200);
             let more = items.len() > start + limit;
-            let page: Vec<_> = items.into_iter().skip(start).take(limit).collect();
+            let mut page: Vec<_> = items.into_iter().skip(start).take(limit).collect();
+            if col == "changesets" {
+                // Read once for the page, not once per row: the answer is the
+                // same range for every change set in it.
+                let rule = crate::auto_apply::in_force(tx, actor, w).await?;
+                for change in &mut page {
+                    mark_auto_apply(&rule, change);
+                }
+            }
             let cursor = if more {
                 page.last().map(|i| text(i, "id").to_string())
             } else {
@@ -2648,7 +2704,12 @@ async fn dispatch_inner(
                 ]
                 .contains(&col) =>
         {
-            get(tx, w, col, id).await
+            let mut row: Value = get(tx, w, col, id).await?;
+            if col == "changesets" {
+                let rule = crate::auto_apply::in_force(tx, actor, w).await?;
+                mark_auto_apply(&rule, &mut row);
+            }
+            Ok(row)
         }
         ("POST", "items", "", "") => {
             only(
@@ -3774,10 +3835,37 @@ async fn dispatch_inner(
             // click — is asking for something that is already true, so it is
             // answered rather than refused. Telling the person "適用できません"
             // about a change that is in their plan would be worse than useless.
-            if c["status"] == "applied" && c["approved_by"] == actor.id {
+            if c["status"] == "applied"
+                && (c["approved_by"] == actor.id || c["applied_by"] == actor.id)
+            {
                 return Ok(json!({"changeset":c,"results":[],"already_applied":true}));
             }
             validate_preview(tx, w, &c).await?;
+            // A range the person set in Basepath, before any of this was
+            // proposed.
+            //
+            // This is the only place an apply proceeds without a per-change
+            // approval, and it is not the server believing the caller. The
+            // range was written on Basepath's origin with the person's own
+            // session — the same evidence an approval carries — and it is read
+            // here, now, so revoking it takes effect immediately. What it can
+            // cover is bounded in `crate::auto_apply`: never a deletion, never
+            // a committing value unless they said so, never another workspace
+            // or another connection, never indefinitely.
+            //
+            // `approved_by` stays null. The trail has to answer "did they
+            // approve this one, or had they already decided about this kind?"
+            // differently, and it can only do that if the two are not written
+            // into the same field.
+            if c["status"] == "pending" {
+                if let Some(rule) = crate::auto_apply::covering(tx, actor, w, &c).await? {
+                    c["auto_applied"] = json!(true);
+                    c["auto_apply_rule"] = json!(rule.id);
+                    let output = commit(tx, actor, &mut c).await?;
+                    put(tx, w, col, id, &c).await?;
+                    return Ok(json!({"changeset":c,"results":output,"auto_applied":true}));
+                }
+            }
             // Applying is allowed for the person who approved this exact
             // content, whichever surface they are on. It is never allowed
             // because a caller says it was approved.
@@ -4083,6 +4171,11 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
         .unwrap_or_default();
     let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"changes":changes,"assumptions":assumptions,"status":"pending","actor":actor.id,"proposed_by_connection":actor.connection,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
     put(tx, w, "changesets", text(&c, "id"), &c).await?;
+    // Answered on the way out, never stored: a range can be revoked a second
+    // later, and a flag written into the row would still say yes.
+    let mut c = c;
+    let rule = crate::auto_apply::in_force(tx, actor, w).await?;
+    mark_auto_apply(&rule, &mut c);
     Ok(c)
 }
 
@@ -4237,6 +4330,24 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
     c["applied_by_connection"] = json!(actor.connection);
     Ok(output)
 }
+/// Says, on a change set as it is read, whether it could be applied from the
+/// conversation it arrived in.
+///
+/// One boolean, and only the boolean. The range's edges — what else it would
+/// cover, when it ends, that it exists at all — stay unreadable through an AI
+/// connection. This much is published because the alternative is a button in
+/// the conversation that looks available and is not, and because a caller can
+/// establish the same bit by calling apply and reading the answer. It reveals
+/// nothing that trying would not.
+fn mark_auto_apply(rule: &Option<crate::auto_apply::Rule>, c: &mut Value) {
+    let eligible = c["status"] == "pending"
+        && rule.as_ref().is_some_and(|rule| {
+            c["proposed_by_connection"].as_str() == Some(rule.connection_id.as_str())
+                && rule.covers(c)
+        });
+    c["auto_apply_eligible"] = json!(eligible);
+}
+
 async fn validate_preview(tx: &mut Tx, w: &str, c: &Value) -> Result<()> {
     if text(c, "expires_at") < now().as_str()
         || text(c, "base_version") != workspace_version(tx, w).await?
