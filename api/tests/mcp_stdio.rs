@@ -75,7 +75,7 @@ async fn stdio_negotiates_and_requires_human_approval_before_writing() {
     assert!(initialized["capabilities"]["tools"].is_object());
     client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
     let tools = client.request(2, "tools/list", json!({}));
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 32);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 34);
     // The same retrieval contract the hosted transport serves: same names,
     // and `context_kind` required in the schema rather than inferred. A host
     // that reads the schema and a host that does not both get one answer.

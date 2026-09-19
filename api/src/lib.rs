@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod breakdown;
 pub mod collaboration;
+pub mod copilot;
 pub mod db;
 pub mod field;
 pub mod mcp;
@@ -646,7 +647,7 @@ async fn field_endpoint(
                     "Fieldに観測値がありません。0として記録しません",
                 )
             })?;
-            state.service.handle_derived(actor,path,&body,model::Operation{method:"POST".into(),path:format!("/v1/workspaces/{w}/observations"),body:json!({"metric_id":metric_id,"value":value,"unit":unit,"source":format!("Field API /v1/erp/sales-contracts/metrics · {tenant} · {field_key}"),"observed_at":service::now()})},key).await
+            state.service.handle_derived(actor,path,&body,model::Operation{method:"POST".into(),path:format!("/v1/workspaces/{w}/observations"),body:json!({"metric_id":metric_id,"value":value,"unit":unit,"source":format!("Field API /v1/erp/sales-contracts/metrics · {tenant} · {field_key}"),"observed_at":service::now()}),basis:None},key).await
         }
         "refresh-task" => {
             service::only(&body, &["tenant_id", "item_id"])?;
@@ -691,6 +692,7 @@ async fn field_endpoint(
                             "title": task.title,
                             "fields": {"field_reference": refreshed_reference}
                         }),
+                        basis: None,
                     },
                     key,
                 )

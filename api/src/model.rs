@@ -411,6 +411,15 @@ pub struct Operation {
     pub path: String,
     #[serde(default)]
     pub body: Value,
+    /// Where a date, a number, an owner or a target in this operation came
+    /// from.
+    ///
+    /// On the operation rather than inside the body, because it is a claim
+    /// about the proposal and not a property of the thing proposed: a goal
+    /// does not have a "basis" field, and it should not grow one because an
+    /// AI suggested it.
+    #[serde(default)]
+    pub basis: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {

@@ -18,6 +18,13 @@ export type ChangeRow = {
   collection: string;
   method: string;
   fields: FieldChange[];
+  /**
+   * Values in this row that will be read afterwards as commitments — a date,
+   * an owner, a target. Named so a person can look at those first.
+   */
+  guardedValues: string[];
+  /** Where those values came from, in the proposer's words. */
+  basis: string;
 };
 
 export type ChangeSet = {
@@ -36,6 +43,13 @@ export type ChangeSet = {
   createdAt: string;
   expiresAt: string;
   rows: ChangeRow[];
+  /**
+   * What the proposer assumed, in their own words.
+   *
+   * Approving a breakdown is agreeing to the reasoning as much as to the rows,
+   * and reasoning that is not shown is reasoning that is not agreed to.
+   */
+  assumptions: string[];
 };
 
 type Unknown = Record<string, unknown>;
@@ -116,6 +130,12 @@ export function changeSetFrom(value: unknown): ChangeSet | null {
           change.effect === "deleted"
             ? []
             : fieldChanges(change.before, change.after),
+        guardedValues: Array.isArray(change.guarded_values)
+          ? (change.guarded_values as unknown[]).filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [],
+        basis: text(change.basis),
       }))
     : [];
   return {
@@ -139,6 +159,11 @@ export function changeSetFrom(value: unknown): ChangeSet | null {
     createdAt: text(source.created_at),
     expiresAt: text(source.expires_at),
     rows,
+    assumptions: Array.isArray(source.assumptions)
+      ? (source.assumptions as unknown[]).filter(
+          (line): line is string => typeof line === "string",
+        )
+      : [],
   };
 }
 

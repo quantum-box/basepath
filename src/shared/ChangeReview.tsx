@@ -69,6 +69,15 @@ function Row({ row }: { row: ChangeRow }) {
           </tbody>
         </table>
       )}
+      {/* A date, an owner or a target reads afterwards as something the
+          person decided, so it is called out with where it came from rather
+          than left as one row in a table of many. */}
+      {row.guardedValues.length > 0 && (
+        <p className="change-basis">
+          <strong>{row.guardedValues.join("・")}</strong>
+          {row.basis ? `の根拠: ${row.basis}` : "が設定されます"}
+        </p>
+      )}
       {row.effect === "deleted" && (
         <p className="change-warning">この項目は削除されます。</p>
       )}
@@ -132,6 +141,19 @@ export function ChangeReview({
           </p>
         )}
       </header>
+
+      {change.assumptions.length > 0 && (
+        <section className="change-assumptions">
+          <h4>前提</h4>
+          {/* Approving a breakdown is agreeing to the reasoning as much as to
+              the rows, and reasoning that is not shown is not agreed to. */}
+          <ul>
+            {change.assumptions.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {change.rows.length === 0 ? (
         <p className="change-empty">表示できる変更内容がありません。</p>
