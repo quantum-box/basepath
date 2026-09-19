@@ -187,7 +187,7 @@ test("the skills that write say the change is a proposal", async () => {
     const source = await read(`skills/${name}/SKILL.md`);
     assert.match(
       source,
-      /pathbase_preview_changes|pathbase_record|pathbase_complete_action/,
+      /pathbase_preview_changes|pathbase_propose_plan|pathbase_record|pathbase_complete_action/,
     );
     // The one rule none of them may leave out: approval happens in Basepath,
     // and the model cannot stand in for it.
