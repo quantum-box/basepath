@@ -7,13 +7,17 @@ import { expect, test } from "@playwright/test";
  * has to load it a piece at a time, and has to keep "what makes this happen"
  * and "why am I doing this" as separate answers.
  */
-async function openBreakdown(page) {
-  await page.goto("/");
-  const menu = page.getByRole("button", {
+/** Opens the sidebar, without navigating away from the current context. */
+async function showMenu(page) {
+  const opener = page.getByRole("button", {
     name: "メニューを開く",
     exact: true,
   });
-  if (await menu.isVisible().catch(() => false)) await menu.click();
+  if (await opener.isVisible().catch(() => false)) await opener.click();
+}
+
+async function goToBreakdown(page) {
+  await showMenu(page);
   const entry = page
     .getByRole("navigation", { name: "メインメニュー" })
     .getByRole("button", { name: "分解", exact: true });
@@ -22,6 +26,11 @@ async function openBreakdown(page) {
   await expect(
     page.getByRole("heading", { name: "分解", exact: true, level: 1 }),
   ).toBeVisible();
+}
+
+async function openBreakdown(page) {
+  await page.goto("/");
+  await goToBreakdown(page);
 }
 
 async function post(request, path, data) {
@@ -58,8 +67,16 @@ async function chain(request, w, steps) {
   return ids;
 }
 
+/** Crosses to the workspace this test made, then picks a root inside it. */
 async function pick(page, name, root) {
-  await page.getByRole("combobox").first().selectOption({ label: name });
+  await showMenu(page);
+  await page
+    .getByRole("group", { name: "現在の場所" })
+    .getByRole("button", { name: new RegExp(name) })
+    .click();
+  // Crossing contexts lands on that context's home, so the screen is chosen
+  // again rather than reloaded — a reload would throw the context away.
+  await goToBreakdown(page);
   if (root) await page.getByLabel("起点").selectOption({ label: root });
 }
 

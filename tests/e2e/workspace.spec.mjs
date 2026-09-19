@@ -350,7 +350,35 @@ for (const failure of [
 
 async function openApp(page) {
   await page.goto("/");
-  await expect(page.getByLabel("現在のワークスペース")).toHaveValue(/.+/);
+  // The URL names the context, and the app rewrites it as soon as it knows
+  // which one it is in. Waiting for that is waiting for the app to be ready.
+  await expect(page).toHaveURL(/\/(personal|org)\//);
+}
+
+/**
+ * The workspace the app is currently showing.
+ *
+ * Read from the URL, which is where the context now lives: an organization
+ * names its id in the path, and a person has exactly one of their own.
+ */
+async function currentWorkspaceId(page, request) {
+  const match = /\/org\/([^/]+)/.exec(new URL(page.url()).pathname);
+  if (match) return match[1];
+  const workspaces = await (await request.get("/api/v1/workspaces")).json();
+  return workspaces.find((workspace) => workspace.scope === "個人").id;
+}
+
+/** Crosses to another workspace through the top-level context switcher. */
+async function switchTo(page, name) {
+  const opener = page.getByRole("button", {
+    name: "メニューを開く",
+    exact: true,
+  });
+  if (await opener.isVisible().catch(() => false)) await opener.click();
+  await page
+    .getByRole("group", { name: "現在の場所" })
+    .getByRole("button", { name: new RegExp(name) })
+    .click();
 }
 
 test("empty workspace onboarding keeps a draft and saves only confirmed fields", async ({
@@ -385,9 +413,7 @@ test("empty workspace onboarding keeps a draft and saves only confirmed fields",
   await expect(
     page.getByRole("heading", { name: "週に一度、本を読む時間をつくる" }),
   ).toBeVisible();
-  const workspaceId = await page
-    .getByLabel("現在のワークスペース")
-    .inputValue();
+  const workspaceId = await currentWorkspaceId(page, request);
   const saved = await snapshot(request, workspaceId);
   const activeItems = saved.items.filter((item) => !item.archived_at);
   expect(activeItems).toHaveLength(1);
@@ -429,9 +455,7 @@ test("title-only goal and memo survive a fresh browser context", async ({
   browser,
 }) => {
   await openApp(page);
-  const workspaceId = await page
-    .getByLabel("現在のワークスペース")
-    .inputValue();
+  const workspaceId = await currentWorkspaceId(page, request);
   const title = "E2E: 読書の時間をつくる";
   const memo = "通勤中に一章ずつ読み進める";
   await createGoal(page, title, workspaceId);
@@ -471,9 +495,7 @@ test("action completion persists once without fabricating an outcome assessment"
   request,
 }) => {
   await openApp(page);
-  const workspaceId = await page
-    .getByLabel("現在のワークスペース")
-    .inputValue();
+  const workspaceId = await currentWorkspaceId(page, request);
   const goalTitle = "E2E: 毎日の学び";
   const actionTitle = "E2E: 本を一章読む";
   await createGoal(page, goalTitle, workspaceId);
@@ -515,7 +537,7 @@ test("two team workspaces keep goals in the selected workspace", async ({
   await openApp(page);
   await page
     .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "メンバー", exact: true })
+    .getByRole("button", { name: "ワークスペース", exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: "メンバー", exact: true, level: 1 }),
@@ -538,9 +560,11 @@ test("two team workspaces keep goals in the selected workspace", async ({
     ids.push(await manager.getByLabel("管理するワークスペース").inputValue());
   }
   expect(ids[0]).not.toBe(ids[1]);
+  // Creating the second workspace moved the app into it, so this is now an
+  // organization context — where the front page is called 概要.
   await page
     .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "ホーム", exact: true })
+    .getByRole("button", { name: "概要", exact: true })
     .click();
   const title = "E2E: 勉強会の目標";
   await createGoal(page, title);
@@ -549,12 +573,21 @@ test("two team workspaces keep goals in the selected workspace", async ({
   ).toContain(title);
   expect((await snapshot(request, ids[0])).items).toHaveLength(0);
 
-  const chooser = page.getByLabel("現在のワークスペース");
-  await chooser.selectOption(ids[0]);
-  await expect(chooser).toHaveValue(ids[0]);
-  await chooser.selectOption(ids[1]);
+  // Each workspace is its own context with its own URL, so crossing between
+  // them is the top-level switch rather than a dropdown inside one screen.
+  await switchTo(page, "E2E: 読書会");
+  await expect(page).toHaveURL(new RegExp(`/org/${ids[0]}/`));
+  await switchTo(page, "E2E: 勉強会");
+  await expect(page).toHaveURL(new RegExp(`/org/${ids[1]}/`));
+
+  // And a reload stays where the URL says, rather than falling back to
+  // whichever workspace answered first.
   await page.reload();
-  await expect(chooser).toHaveValue(ids[1]);
+  await expect(page).toHaveURL(new RegExp(`/org/${ids[1]}/`));
+  await page
+    .getByRole("navigation", { name: "メインメニュー" })
+    .getByRole("button", { name: "組織の目標", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: title, exact: true }),
   ).toBeVisible();
@@ -570,7 +603,7 @@ test("mobile navigation opens the workspace manager page and returns home", asyn
     .click();
   await page
     .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "メンバー", exact: true })
+    .getByRole("button", { name: "ワークスペース", exact: true })
     .click();
   await expect(
     page.getByRole("heading", {

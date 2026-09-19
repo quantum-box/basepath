@@ -5,10 +5,13 @@ test("AI proposal stays read-only until preview approval and apply", async ({
   request,
 }) => {
   await page.goto("/");
-  await expect(page.getByLabel("現在のワークスペース")).toHaveValue(/.+/);
-  const workspaceId = await page
-    .getByLabel("現在のワークスペース")
-    .inputValue();
+  // The URL names the context, and the app rewrites it once it knows which
+  // one it is in — which is also how the test learns the workspace.
+  await expect(page).toHaveURL(/\/(personal|org)\//);
+  const workspaces = await (await request.get("/api/v1/workspaces")).json();
+  const workspaceId =
+    /\/org\/([^/]+)/.exec(new URL(page.url()).pathname)?.[1] ??
+    workspaces.find((workspace) => workspace.scope === "個人").id;
   await page
     .locator("#templates")
     .getByRole("button", { name: /自由形式/ })

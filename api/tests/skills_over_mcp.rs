@@ -237,7 +237,16 @@ async fn a_host_without_the_extension_can_still_read_the_instructions() {
         .iter()
         .map(|resource| resource["uri"].as_str().unwrap())
         .collect();
-    assert!(uris.contains(&"ui://basepath/plan.html"));
+    // Both plan views are listed beside the skills. They are separate
+    // resources because they are separate places.
+    assert!(
+        uris.contains(&"ui://basepath/personal/plan.html"),
+        "{uris:?}"
+    );
+    assert!(
+        uris.contains(&"ui://basepath/organization/plan.html"),
+        "{uris:?}"
+    );
     assert!(
         uris.contains(&"skill://basepath-weekly-review/SKILL.md"),
         "{uris:?}"

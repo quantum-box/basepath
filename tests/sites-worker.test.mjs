@@ -328,3 +328,33 @@ test("the app shell is served even when index.html itself redirects", async () =
   assert.equal(await response.text(), "app");
   assert.deepEqual(asked, ["/changes/personal/c1", "/index.html", "/"]);
 });
+
+test("a context deep link reaches the app instead of the asset binding", async () => {
+  // Personal and organization are separate URLs, so a reload or a shared link
+  // has to land in the context it names. None of these paths is a file, so
+  // each one has to come back as the app shell rather than a miss.
+  for (const path of [
+    "/personal",
+    "/personal/goals",
+    "/personal/memory",
+    "/org/ws_acme",
+    "/org/ws_acme/alignment",
+    "/org/ws_acme/breakdown",
+  ]) {
+    const response = await worker.fetch(
+      new Request(`https://example.test${path}`, {
+        headers: { accept: "text/html" },
+      }),
+      {
+        ASSETS: {
+          fetch: async (request) =>
+            new URL(request.url).pathname === "/index.html"
+              ? new Response("app", { status: 200 })
+              : new Response("missing", { status: 404 }),
+        },
+      },
+    );
+    assert.equal(response.status, 200, path);
+    assert.equal(await response.text(), "app", path);
+  }
+});

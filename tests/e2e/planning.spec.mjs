@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { open } from "./navigate.mjs";
 
 /**
  * Planning periods, in the browser.
@@ -32,33 +33,9 @@ async function post(request, path, data) {
 }
 
 async function openPlanning(page, workspaceName) {
-  await page.goto("/");
-  // The menu button only exists where the navigation is collapsed.
-  const menu = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await menu.isVisible().catch(() => false)) await menu.click();
-  // Driven by keyboard because the entry can sit below the fold.
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "計画期間", exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "計画期間", exact: true, level: 1 }),
-  ).toBeVisible();
-  if (workspaceName) {
-    await page
-      .getByRole("combobox")
-      .first()
-      .selectOption({ label: workspaceName });
-    // The panel names the workspace it is showing, so this waits for the
-    // reload rather than for the option element, which a closed select hides.
-    await expect(page.locator(".planning-intro .eyebrow")).toHaveText(
-      workspaceName,
-    );
-  }
+  // The workspace is the context now, so it is crossed to before the screen is
+  // opened rather than chosen from a dropdown inside it.
+  await open(page, { workspace: workspaceName, screen: "計画期間" });
 }
 
 test("a workspace with no periods says so and offers no chore", async ({
@@ -163,9 +140,11 @@ test("the bar shows elapsed time, and calls it elapsed time", async ({
   await expect(page.getByText(/進捗 \d+%/)).toBeHidden();
 });
 
-test("the planning screen is usable at 390px", async ({ page }) => {
+test("the planning screen is usable at 390px", async ({ page, request }) => {
+  const workspace = `E2E狭幅期間${Date.now()}`;
+  await ownWorkspace(request, workspace);
   await page.setViewportSize({ width: 390, height: 844 });
-  await openPlanning(page);
+  await openPlanning(page, workspace);
   await expect(
     page.getByRole("heading", { name: "計画期間", exact: true, level: 1 }),
   ).toBeVisible();

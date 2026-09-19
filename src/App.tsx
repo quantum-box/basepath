@@ -40,6 +40,20 @@ import { WeeklyReviewScreen } from "./WeeklyReview";
 import { PlanningScreen } from "./PlanningScreen";
 import { AlignmentScreen } from "./AlignmentScreen";
 import { BreakdownScreen } from "./BreakdownScreen";
+import {
+  contextLabel,
+  contextOf,
+  emptyStateFor,
+  landingFor,
+  navFor,
+  navItemFor,
+  parsePath,
+  pathFor,
+  screenBelongs,
+  stillAvailable,
+  type AppContext,
+  type Screen,
+} from "./shared/appContext";
 import { DashboardScreen } from "./DashboardScreen";
 import { ReviewScreen } from "./ReviewScreen";
 import { MemoryScreen } from "./MemoryScreen";
@@ -116,12 +130,21 @@ const navigationDescriptions: Record<NavigationLabel, string> = {
   メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
 };
 
-function navigationFromHash(): NavigationLabel {
-  const route = window.location.hash.replace(/^#\/?/, "");
-  return (
-    navigation.find((item) => navigationRoutes[item.label] === route)?.label ??
-    "ホーム"
+/**
+ * Which screen the URL names, in either form.
+ *
+ * The context path is the real one. The old `#/goals` hash is still read so
+ * that a link someone saved before this existed still opens the screen they
+ * meant — it just opens it in whichever context they are in.
+ */
+function screenFromUrl(): Screen | null {
+  const route = parsePath(window.location.pathname);
+  if (route) return route.screen;
+  const hash = window.location.hash.replace(/^#\/?/, "");
+  const known = navigation.find(
+    (item) => navigationRoutes[item.label] === hash,
   );
+  return known ? (navigationRoutes[known.label] as Screen) : null;
 }
 
 const screenPaths = new Set(["/login", "/tenants"]);
@@ -432,9 +455,21 @@ export function App() {
   const [scope, setScope] = useState<Scope | "すべて">(
     (route.get("scope") as Scope) || "すべて",
   );
-  const [workspaceId, setWorkspaceId] = useState(route.get("workspace") || "");
-  const [activeNav, setActiveNav] =
-    useState<NavigationLabel>(navigationFromHash);
+  // A context deep link names the workspace in the path, and that is the
+  // authority on load: `/org/{id}/alignment` has to open that organization,
+  // not whichever workspace happened to come back first.
+  const [workspaceId, setWorkspaceId] = useState(
+    () =>
+      parsePath(window.location.pathname)?.orgId ||
+      route.get("workspace") ||
+      "",
+  );
+  // The screen, by route segment. The context it belongs to comes from the
+  // workspace, so this is only half of "where am I" — which is the point: a
+  // screen name alone never decides which side of the boundary it is on.
+  const [screen, setScreen] = useState<Screen>(
+    () => screenFromUrl() ?? landingFor(),
+  );
   const [activeTab, setActiveTab] = useState(
     route.get("view") || "タイムライン",
   );
@@ -482,6 +517,30 @@ export function App() {
     store.workspaces.find((s) => s.id === w)?.scope || "個人";
   const currentWorkspace =
     store.workspaces.find((w) => w.id === workspaceId) || store.workspaces[0];
+  /**
+   * Where the person is: their own Basepath, or an organization's.
+   *
+   * Derived from the workspace rather than stored beside it, so the two can
+   * never disagree. A context that says "personal" over an organization's data
+   * is the exact failure the separation exists to prevent.
+   */
+  const context: AppContext | null = currentWorkspace
+    ? contextOf(currentWorkspace)
+    : null;
+  const contextKind = context?.kind ?? "personal";
+  /** The person's own workspace, which they always have exactly one of. */
+  const personalWorkspaceId = () =>
+    store.workspaces.find((w) => w.scope === "個人")?.id ?? "";
+  const navItems = navFor(contextKind);
+  // The screen that is actually shown. A deep link into a screen this context
+  // does not have lands on its home instead of rendering an empty one, because
+  // an empty memory screen in an organization answers "is my memory here?"
+  // with a maybe.
+  const shownScreen: Screen = screenBelongs(contextKind, screen)
+    ? screen
+    : landingFor();
+  const navItem = navItemFor(contextKind, shownScreen);
+  const activeNav = navItem.page as NavigationLabel;
   const currentSnapshot = store.snapshots.find(
     (snapshot) => snapshot.workspace_id === currentWorkspace?.id,
   );
@@ -709,7 +768,13 @@ export function App() {
       setSelectedId(p.get("item") || "");
       setScope((p.get("scope") as Scope) || "すべて");
       setActiveTab(p.get("view") || "タイムライン");
-      setActiveNav(navigationFromHash());
+      setScreen(screenFromUrl() ?? landingFor());
+      // Going back across a context boundary changes context. The URL is the
+      // authority here, not what was on screen a moment ago — otherwise the
+      // back button leaves someone in one context reading another's menu.
+      const route = parsePath(window.location.pathname);
+      if (route?.kind === "organization") setWorkspaceId(route.orgId);
+      if (route?.kind === "personal") setWorkspaceId(personalWorkspaceId());
       setSidebar(false);
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -771,9 +836,66 @@ export function App() {
   ]);
 
   useEffect(() => {
+    // The tab title says the context too, so a person with both open in two
+    // windows can tell them apart without switching to either.
+    const where = contextLabel(contextKind);
     document.title =
-      activeNav === "ホーム" ? "PathBase" : `${activeNav} | PathBase`;
-  }, [activeNav]);
+      shownScreen === "home"
+        ? `${where} | PathBase`
+        : `${navItem.label}（${where}） | PathBase`;
+  }, [contextKind, navItem.label, shownScreen]);
+
+  /**
+   * A context that stopped being the person's.
+   *
+   * Removed from an organization, the workspace disappears from the list and
+   * this drops them into their own Basepath at once, rather than leaving an
+   * organization's screen up until something happens to reload.
+   */
+  useEffect(() => {
+    if (store.loading || store.workspaces.length === 0 || !context) return;
+    if (stillAvailable(context, store.workspaces)) return;
+    const own = personalWorkspaceId();
+    if (!own) return;
+    notify("このワークスペースを利用できなくなりました");
+    switchContext(own);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.loading, store.workspaces, context?.workspaceId]);
+
+  /**
+   * A personal deep link, once the workspace list has arrived.
+   *
+   * `/personal/...` cannot name an id — a person has exactly one — so the
+   * workspace is resolved here rather than guessed at the first render.
+   */
+  useEffect(() => {
+    if (store.workspaces.length === 0) return;
+    const route = parsePath(window.location.pathname);
+    if (route?.kind !== "personal") return;
+    const own = personalWorkspaceId();
+    if (own && own !== workspaceId) setWorkspaceId(own);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.workspaces.length]);
+
+  /**
+   * Keeps the URL honest about which context is being shown.
+   *
+   * The workspace can change from places that do not go through `goTo` — the
+   * first load, a member screen, a deep link that named a workspace in the
+   * query string. Whatever the reason, the address bar has to end up saying
+   * which side of the boundary this is.
+   */
+  useEffect(() => {
+    if (!context) return;
+    const route = parsePath(window.location.pathname);
+    const expected = pathFor(context, shownScreen);
+    if (route && window.location.pathname === expected && !window.location.hash)
+      return;
+    const url = new URL(window.location.href);
+    url.pathname = expected;
+    url.hash = "";
+    window.history.replaceState(null, "", url);
+  }, [context?.kind, context?.workspaceId, shownScreen]);
 
   function toggleTask(id: string) {
     const item = raw(id);
@@ -788,13 +910,19 @@ export function App() {
       () => notify(doneFor(item) ? "未完了に戻しました" : "行動を記録しました"),
     );
   }
-  function navigate(label: NavigationLabel) {
-    const url = new URL(window.location.href);
-    url.hash = `/${navigationRoutes[label]}`;
-    if (window.location.hash !== url.hash) {
-      window.history.pushState(null, "", url);
+  /** Moves to a screen inside the context the person is already in. */
+  function goTo(target: Screen, into: AppContext | null = context) {
+    if (into) {
+      const url = new URL(window.location.href);
+      url.pathname = pathFor(into, target);
+      // The hash was the old route. Leaving it behind would let a stale
+      // `#/goals` win on the next read of the URL.
+      url.hash = "";
+      if (url.pathname !== window.location.pathname || window.location.hash) {
+        window.history.pushState(null, "", url);
+      }
     }
-    setActiveNav(label);
+    setScreen(target);
     setSidebar(false);
     window.requestAnimationFrame(() => mainRef.current?.focus());
     setModal(null);
@@ -802,6 +930,61 @@ export function App() {
     setNotifications(false);
     setSearchOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /**
+   * The old way of naming a screen, kept for the many call sites that say
+   * "go to 目標マップ". It resolves to whatever that screen is called in the
+   * context the person is in.
+   */
+  function navigate(label: NavigationLabel) {
+    const item =
+      navItems.find((entry) => entry.page === label) ??
+      navFor(contextKind === "personal" ? "organization" : "personal").find(
+        (entry) => entry.page === label,
+      );
+    if (item) goTo(item.screen);
+  }
+
+  /**
+   * Crossing between a person's own Basepath and an organization's.
+   *
+   * Deliberately not `selectWorkspace` with a different argument: nothing is
+   * carried over. The selected goal, the search and any open panel are all
+   * pointers into the context being left, and a stale one either shows nothing
+   * or, worse, looks like it belongs here.
+   */
+  function switchContext(id: string, keepScreen = false, scopeHint?: Scope) {
+    // A workspace created a moment ago is not in the list yet. Its scope comes
+    // back with it, which is enough to know which side of the boundary it is
+    // on — and refusing to move there until a refresh catches up would leave
+    // the person looking at the wrong context.
+    const target =
+      store.workspaces.find((w) => w.id === id) ??
+      (scopeHint ? { id, name: "", scope: scopeHint } : undefined);
+    if (!target) return;
+    const next = contextOf(target);
+    setWorkspaceId(id);
+    setScope(target.scope);
+    setSelectedId("");
+    setSearch("");
+    setSearchOpen(false);
+    setModal(null);
+    notify(
+      next.kind === "personal"
+        ? "個人のBasepathに切り替えました"
+        : `${target.name || "組織"}に切り替えました`,
+    );
+    // Crossing from the switcher lands on the new context's front page, so
+    // the change is unmissable. Crossing from inside a screen that exists on
+    // both sides — choosing a workspace while managing workspaces — stays
+    // there, because the person is still doing the same thing. Either way the
+    // selection, the search and any open panel are gone.
+    const landing =
+      keepScreen && screenBelongs(next.kind, shownScreen)
+        ? shownScreen
+        : landingFor();
+    goTo(landing, next);
   }
   function changeScope(value: Scope | "すべて") {
     setScope(value);
@@ -821,14 +1004,17 @@ export function App() {
       if (first) setSelectedId(uiId(first));
     }
   }
+  /**
+   * Choosing a workspace from anywhere else in the app.
+   *
+   * Every workspace is a context, so this is the same act as using the
+   * switcher and goes through the same door: the URL is rewritten and nothing
+   * from the previous context is carried over. Two ways to cross a boundary,
+   * one of which quietly kept the old selection, is how the two stop being
+   * separate in practice.
+   */
   function selectWorkspace(id: string, selectedScope?: Scope) {
-    const target = store.workspaces.find((w) => w.id === id);
-    setWorkspaceId(id);
-    setScope(target?.scope || selectedScope || "すべて");
-    routeTo({
-      workspace: id,
-      scope: target?.scope || selectedScope || "すべて",
-    });
+    switchContext(id, true, selectedScope);
   }
   async function saveForm(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -1055,49 +1241,54 @@ export function App() {
             </button>
           )}
         </div>
-        <div className="workspace-switch">
-          {(["個人", "チーム", "組織"] as Scope[]).map((item) => (
-            <button
-              key={item}
-              className={currentWorkspace?.scope === item ? "active" : ""}
-              disabled={!store.workspaces.some((w) => w.scope === item)}
-              onClick={() => {
-                changeScope(item);
-              }}
-            >
-              {item}
-            </button>
-          ))}
-          <Icon name="down" size={13} />
+        {/* The top-level choice: this person's own Basepath, or an
+            organization's. Not a filter over one list — two separate places,
+            and the control says which one it is in words. */}
+        <div className="context-switch" role="group" aria-label="現在の場所">
+          <button
+            className={contextKind === "personal" ? "active" : ""}
+            aria-pressed={contextKind === "personal"}
+            disabled={!personalWorkspaceId()}
+            onClick={() => switchContext(personalWorkspaceId())}
+          >
+            <Icon name="home" size={18} weight="duotone" />
+            <span>
+              個人
+              <small>あなただけのBasepath</small>
+            </span>
+          </button>
+          {store.workspaces
+            .filter((w) => w.scope !== "個人")
+            .map((w) => (
+              <button
+                key={w.id}
+                className={currentWorkspace?.id === w.id ? "active" : ""}
+                aria-pressed={currentWorkspace?.id === w.id}
+                onClick={() => switchContext(w.id)}
+              >
+                <Icon name="users" size={18} weight="duotone" />
+                <span>
+                  {w.name}
+                  <small>組織{w.role === "viewer" ? "・閲覧のみ" : ""}</small>
+                </span>
+              </button>
+            ))}
         </div>
-        <select
-          className="workspace-name-select"
-          aria-label="現在のワークスペース"
-          value={currentWorkspace?.id || ""}
-          onChange={(event) => selectWorkspace(event.target.value)}
-        >
-          {store.workspaces.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-              {w.role === "viewer" ? "（閲覧のみ）" : ""}
-            </option>
-          ))}
-        </select>
         <nav className="main-nav" aria-label="メインメニュー">
-          {navigation.map((item) => (
+          {navItems.map((item) => (
             <button
-              key={item.label}
-              className={activeNav === item.label ? "active" : ""}
-              aria-current={activeNav === item.label ? "page" : undefined}
-              onClick={() => navigate(item.label)}
+              key={item.screen}
+              className={shownScreen === item.screen ? "active" : ""}
+              aria-current={shownScreen === item.screen ? "page" : undefined}
+              onClick={() => goTo(item.screen)}
             >
               <Icon
                 name={item.icon}
                 size={23}
-                weight={activeNav === item.label ? "fill" : "regular"}
+                weight={shownScreen === item.screen ? "fill" : "regular"}
               />
               <span>{item.label}</span>
-              {item.label === "メンバー" && store.invitations.length > 0 && (
+              {item.screen === "members" && store.invitations.length > 0 && (
                 <span className="invitation-count">
                   {store.invitations.length}
                 </span>
@@ -1166,6 +1357,19 @@ export function App() {
             >
               <Icon name="menu" />
             </button>
+            {/* Where you are, in words. Not a colour and not an icon: a person
+                who has not been told what the colour means cannot read it,
+                and this is the one thing they must never misread. */}
+            <p className="context-breadcrumb" data-context={contextKind}>
+              <span className="context-chip">
+                {contextLabel(contextKind)}
+                {contextKind === "organization" && currentWorkspace
+                  ? `・${currentWorkspace.name}`
+                  : ""}
+              </span>
+              <span aria-hidden="true">/</span>
+              <span className="context-screen">{navItem.label}</span>
+            </p>
             <div className="search-wrap">
               <Icon name="search" size={17} />
               <input
