@@ -169,7 +169,13 @@ async fn start_server(
                     .map(String::from)
                     .unwrap_or(format!("{public}/mcp")),
             )
-            .env("PATHBASE_MCP_ALLOWED_HOSTS", "127.0.0.1")
+            // Two names, because a real deployment is reached by two: the
+            // public one a client calls, and the origin a proxy forwards to.
+            // The `Host` the process sees is whatever the last hop addressed.
+            .env(
+                "PATHBASE_MCP_ALLOWED_HOSTS",
+                "127.0.0.1,pathbase-api.internal",
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -844,4 +850,35 @@ async fn consecutive_requests_may_reach_different_instances() {
         .await
         .unwrap();
     assert!(rebind.status().is_client_error(), "{}", rebind.status());
+
+    // The second configured host is accepted, which is what a proxied
+    // deployment depends on: the client calls the public name and the proxy
+    // forwards to the origin, so the `Host` that arrives is the origin's.
+    //
+    // Without this the suite only proved that a *wrong* host is refused, and
+    // an allowlist naming solely the public name passed CI while refusing
+    // every real request in production — after authentication had already
+    // succeeded, so the connection looked approved and nothing worked.
+    let proxied = client
+        .post(&second_url)
+        .bearer_auth(&token)
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .header("host", "pathbase-api.internal")
+        .json(&json!({"jsonrpc":"2.0","id":8,"method":"tools/list","params":{}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        proxied.status().is_success(),
+        "a host this deployment serves must be accepted, got {}",
+        proxied.status()
+    );
+    let listed: Value = proxied.json().await.unwrap();
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .is_some_and(|t| !t.is_empty()),
+        "{listed}"
+    );
 }
