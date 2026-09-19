@@ -430,3 +430,66 @@ async fn upgrading_a_database_from_before_the_boundary_discards_its_workspaces()
     assert_eq!(fresh.as_array().unwrap().len(), 1);
     assert_eq!(fresh[0]["tenant_id"], ALPHA);
 }
+
+/// An idempotency key is spent inside one tenant, not across them.
+///
+/// The routes that carry no workspace segment — creating a workspace, most of
+/// all — used to share one idempotency namespace per person. Replaying a key
+/// in a second tenant then returned the *first* tenant's answer: the person
+/// asked for a workspace here and was handed one that exists somewhere they
+/// are not currently acting, while nothing was created. Same key, different
+/// tenant, different request.
+#[tokio::test]
+async fn an_idempotency_key_does_not_carry_across_tenants() {
+    let (_dir, s) = service().await;
+    let alpha = acting_in(ALPHA, "us_alice");
+    let beta = acting_in(BETA, "us_alice");
+    personal(&s, &alpha).await;
+    personal(&s, &beta).await;
+
+    let body = json!({"name":"営業部","scope":"チーム"});
+    let in_alpha = post(&s, &alpha, "/v1/workspaces", body.clone(), "same-key")
+        .await
+        .unwrap();
+    let in_beta = post(&s, &beta, "/v1/workspaces", body.clone(), "same-key")
+        .await
+        .unwrap();
+
+    assert_ne!(
+        in_alpha["id"], in_beta["id"],
+        "the second tenant must get its own workspace, not a replay of the first"
+    );
+    assert_eq!(in_beta["tenant_id"], BETA);
+    assert!(
+        get(
+            &s,
+            &beta,
+            &format!("/v1/workspaces/{}/items", in_beta["id"].as_str().unwrap())
+        )
+        .await
+        .is_ok(),
+        "the workspace the second tenant was told about has to actually be there"
+    );
+
+    // Replaying inside one tenant is still a replay, and a different body
+    // under a spent key is still a conflict — within that tenant.
+    assert_eq!(
+        post(&s, &alpha, "/v1/workspaces", body, "same-key")
+            .await
+            .unwrap()["id"],
+        in_alpha["id"]
+    );
+    assert_eq!(
+        post(
+            &s,
+            &alpha,
+            "/v1/workspaces",
+            json!({"name":"別の名前","scope":"チーム"}),
+            "same-key",
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "IDEMPOTENCY_CONFLICT"
+    );
+}

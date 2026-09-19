@@ -10,6 +10,13 @@ DELETE FROM workspaces;
 DELETE FROM auto_apply_rules;
 DELETE FROM mcp_grants;
 DELETE FROM mcp_connections;
+-- The index steps are conditional; the two ADD COLUMNs cannot be, because
+-- SQLite has no `IF NOT EXISTS` for them. A process that dies between the
+-- committed column and the version row therefore leaves a database this
+-- script cannot re-run. That is survivable only because SQLite here is
+-- local preview — a developer's own file, replaced by deleting it — and not
+-- because the window does not exist. Production is TiDB, where the MySQL
+-- file spells every step conditionally.
 ALTER TABLE workspaces ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS workspaces_tenant ON workspaces(tenant_id);
 ALTER TABLE mcp_connections ADD COLUMN tenant TEXT NOT NULL DEFAULT '';

@@ -2153,8 +2153,17 @@ impl Service {
             authorize(&mut tx, actor, w, workspace_write).await?;
         }
         crate::collaboration::authorize_route(&mut tx, actor, method, &parts).await?;
+        // Namespaced by tenant as well as by person and by kind.
+        //
+        // The workspace column carries the tenant for every route that names
+        // a workspace, because a workspace id belongs to one tenant. The
+        // routes that do not name one — creating a workspace above all — have
+        // an empty workspace column, so without the tenant here the same key
+        // replayed in a second tenant returned the first tenant's answer:
+        // nothing created, and an id for somewhere the person is not acting.
         let idempotency_actor = format!(
-            "{}:{}",
+            "{}\u{1f}{}:{}",
+            actor.tenant,
             actor.id,
             if actor.agent { "agent" } else { "human" }
         );

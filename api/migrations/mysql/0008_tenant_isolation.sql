@@ -30,10 +30,19 @@ DELETE FROM workspaces;
 DELETE FROM auto_apply_rules;
 DELETE FROM mcp_grants;
 DELETE FROM mcp_connections;
-ALTER TABLE workspaces ADD COLUMN tenant_id VARCHAR(191) NOT NULL DEFAULT '';
-CREATE INDEX workspaces_tenant ON workspaces(tenant_id);
-ALTER TABLE mcp_connections ADD COLUMN tenant VARCHAR(191) NOT NULL DEFAULT '';
+-- Each DDL step is conditional because the runner cannot make it atomic.
+--
+-- A migration's statements run in separate transactions and the version row
+-- is written only after the last one, so a process that dies partway through
+-- re-runs the whole script on the next start. TiDB does not roll back DDL, so
+-- an unconditional `ADD COLUMN` would then fail as a duplicate and every
+-- subsequent startup would stop here until somebody repaired the schema by
+-- hand. This script has five DDL steps, which is five chances to land in that
+-- state; `IF [NOT] EXISTS` makes a retry finish instead.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(191) NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS workspaces_tenant ON workspaces(tenant_id);
+ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS tenant VARCHAR(191) NOT NULL DEFAULT '';
 -- One connection per client *per tenant*: the same person using the same AI
 -- client in two tenants is two delegations, each with its own scopes.
-ALTER TABLE mcp_connections DROP INDEX mcp_connections_owner;
-CREATE UNIQUE INDEX mcp_connections_owner ON mcp_connections(actor, tenant, client_id)
+ALTER TABLE mcp_connections DROP INDEX IF EXISTS mcp_connections_owner;
+CREATE UNIQUE INDEX IF NOT EXISTS mcp_connections_owner ON mcp_connections(actor, tenant, client_id)
