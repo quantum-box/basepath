@@ -1241,61 +1241,66 @@ export function App() {
             </button>
           )}
         </div>
-        {/* The top-level choice: this person's own Basepath, or an
-            organization's. Not a filter over one list — two separate places,
-            and the control says which one it is in words. */}
-        <div className="context-switch" role="group" aria-label="現在の場所">
-          <button
-            className={contextKind === "personal" ? "active" : ""}
-            aria-pressed={contextKind === "personal"}
-            disabled={!personalWorkspaceId()}
-            onClick={() => switchContext(personalWorkspaceId())}
-          >
-            <Icon name="home" size={18} weight="duotone" />
-            <span>
-              個人
-              <small>あなただけのBasepath</small>
-            </span>
-          </button>
-          {store.workspaces
-            .filter((w) => w.scope !== "個人")
-            .map((w) => (
+        {/* The places and the screens scroll as one. They are one column of
+            choices to a person reading it; two scroll areas stacked in a
+            sidebar cut each other off and hide the bottom of both. */}
+        <div className="sidebar-nav">
+          {/* The top-level choice: this person's own Basepath, or an
+              organization's. Not a filter over one list — two separate places,
+              and the control says which one it is in words. */}
+          <div className="context-switch" role="group" aria-label="現在の場所">
+            <button
+              className={contextKind === "personal" ? "active" : ""}
+              aria-pressed={contextKind === "personal"}
+              disabled={!personalWorkspaceId()}
+              onClick={() => switchContext(personalWorkspaceId())}
+            >
+              <Icon name="home" size={18} weight="duotone" />
+              <span>
+                個人
+                <small>あなただけのBasepath</small>
+              </span>
+            </button>
+            {store.workspaces
+              .filter((w) => w.scope !== "個人")
+              .map((w) => (
+                <button
+                  key={w.id}
+                  className={currentWorkspace?.id === w.id ? "active" : ""}
+                  aria-pressed={currentWorkspace?.id === w.id}
+                  onClick={() => switchContext(w.id)}
+                >
+                  <Icon name="users" size={18} weight="duotone" />
+                  <span>
+                    {w.name}
+                    <small>組織{w.role === "viewer" ? "・閲覧のみ" : ""}</small>
+                  </span>
+                </button>
+              ))}
+          </div>
+          <nav className="main-nav" aria-label="メインメニュー">
+            {navItems.map((item) => (
               <button
-                key={w.id}
-                className={currentWorkspace?.id === w.id ? "active" : ""}
-                aria-pressed={currentWorkspace?.id === w.id}
-                onClick={() => switchContext(w.id)}
+                key={item.screen}
+                className={shownScreen === item.screen ? "active" : ""}
+                aria-current={shownScreen === item.screen ? "page" : undefined}
+                onClick={() => goTo(item.screen)}
               >
-                <Icon name="users" size={18} weight="duotone" />
-                <span>
-                  {w.name}
-                  <small>組織{w.role === "viewer" ? "・閲覧のみ" : ""}</small>
-                </span>
+                <Icon
+                  name={item.icon}
+                  size={23}
+                  weight={shownScreen === item.screen ? "fill" : "regular"}
+                />
+                <span>{item.label}</span>
+                {item.screen === "members" && store.invitations.length > 0 && (
+                  <span className="invitation-count">
+                    {store.invitations.length}
+                  </span>
+                )}
               </button>
             ))}
+          </nav>
         </div>
-        <nav className="main-nav" aria-label="メインメニュー">
-          {navItems.map((item) => (
-            <button
-              key={item.screen}
-              className={shownScreen === item.screen ? "active" : ""}
-              aria-current={shownScreen === item.screen ? "page" : undefined}
-              onClick={() => goTo(item.screen)}
-            >
-              <Icon
-                name={item.icon}
-                size={23}
-                weight={shownScreen === item.screen ? "fill" : "regular"}
-              />
-              <span>{item.label}</span>
-              {item.screen === "members" && store.invitations.length > 0 && (
-                <span className="invitation-count">
-                  {store.invitations.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
         <nav className="utility-nav" aria-label="ユーティリティ">
           <button
             onClick={() => {

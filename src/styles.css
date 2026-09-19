@@ -179,18 +179,66 @@ input[type="checkbox"]:checked::after {
   box-shadow: 0 2px 4px #696ce526;
   color: white;
 }
+/* The one scrolling region of the sidebar: the places a person can be, and
+   the screens inside the one they are in.
+
+   Both lists grow — an organization each time someone is added to one, a
+   screen whenever a context gains a capability — and together they pass the
+   bottom of a short window. Scrolling them as one keeps that a single
+   movement. Giving each its own scrollbar made each one shrink against the
+   other, so a list was cut off mid-entry while there was still room below
+   it, and an entry that exists but cannot be reached is worse than one that
+   is not there. */
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden auto;
+  /* Room for the focus ring on a button at the edge of the scroller. */
+  padding: 2px 2px 6px;
+  margin: 0 -2px;
+  /* A shadow at whichever edge has more behind it, so an entry half in view
+     at the fold reads as "there is more below" rather than as a list that
+     was cut. The first two layers scroll with the content and cover the
+     shadow at the ends, so a list that fits, and the end of one that does
+     not, carry no shadow at all. An overlay scrollbar cannot say this: it
+     appears only once the person has already moved. */
+  background-image:
+    linear-gradient(#f9fbfe 30%, rgba(249, 251, 254, 0)),
+    linear-gradient(rgba(249, 251, 254, 0), #f9fbfe 70%),
+    radial-gradient(
+      farthest-side at 50% 0,
+      rgba(19, 51, 87, 0.13),
+      rgba(19, 51, 87, 0)
+    ),
+    radial-gradient(
+      farthest-side at 50% 100%,
+      rgba(19, 51, 87, 0.13),
+      rgba(19, 51, 87, 0)
+    );
+  background-position:
+    0 0,
+    0 100%,
+    0 0,
+    0 100%;
+  background-size:
+    100% 26px,
+    100% 26px,
+    100% 9px,
+    100% 9px;
+  background-repeat: no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
 .main-nav {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-top: 31px;
-  /* The list grew past one screen. An entry that exists but cannot be
-     reached is worse than one that is not there, so the navigation scrolls
-     rather than silently cutting off whatever came last. */
-  overflow-y: auto;
-  min-height: 0;
-  /* Keep the last entry clear of the utility navigation below it. */
-  padding-bottom: 6px;
+  /* Enough to read as a separate list; the rest of the air went back to the
+     entries, which are what a short window runs out of room for. */
+  margin-top: 18px;
+  /* Natural height: the scroller above owns the overflow. */
+  flex: 0 0 auto;
 }
 .main-nav button {
   display: flex;
@@ -217,7 +265,10 @@ input[type="checkbox"]:checked::after {
   display: flex;
   flex-direction: column;
   border-top: 1px solid #dce5ef;
-  margin: 76px 7px 0;
+  /* Pinned below the scrolling navigation, so the gap above it is whatever
+     space is left rather than a fixed 76px taken out of the list's height. */
+  flex: 0 0 auto;
+  margin: 14px 7px 0;
   padding-top: 9px;
   gap: 4px;
 }
@@ -2829,9 +2880,6 @@ input[type="checkbox"]:checked::after {
   .workspace-switch button {
     font-size: 11px;
   }
-  .utility-nav {
-    margin-top: 65px;
-  }
   .hero-note {
     display: none;
   }
@@ -3016,7 +3064,7 @@ input[type="checkbox"]:checked::after {
     padding-left: 10px;
   }
   .main-nav {
-    margin-top: 27px;
+    margin-top: 16px;
   }
   .brand {
     font-size: 21px;
@@ -3184,9 +3232,6 @@ input[type="checkbox"]:checked::after {
   }
   .brand svg {
     width: 37px;
-  }
-  .utility-nav {
-    margin-top: 35px;
   }
   .workspace-label {
     font-size: 12px;
@@ -6088,15 +6133,10 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 0 0 14px;
-  /* A person can belong to any number of organizations, and the list grows
-     with them. It scrolls rather than pushing the navigation below it off the
-     bottom of the screen — an entry that exists but cannot be reached is
-     worse than one that is not there. */
-  overflow-y: auto;
-  min-height: 0;
-  flex: 0 1 auto;
-  max-height: 40vh;
+  margin: 0;
+  /* Every organization at its full height. The list scrolls with the
+     navigation below it, in `.sidebar-nav`, rather than against it. */
+  flex: 0 0 auto;
 }
 .context-switch button {
   display: flex;
