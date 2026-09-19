@@ -271,6 +271,7 @@ impl Mcp {
             "current",
             "cycle_id",
             "stale_days",
+            "depth",
         ] {
             if let Some(v) = args[key].as_str() {
                 q.insert(key.into(), v.into());
@@ -344,6 +345,9 @@ impl Mcp {
                     "confidence": args["confidence"],
                 }),
             ),
+            "pathbase_get_breakdown" => ("GET", format!("{base}/items/{id}/breakdown"), json!({})),
+            "pathbase_get_rationale" => ("GET", format!("{base}/items/{id}/ancestry"), json!({})),
+            "pathbase_get_breakdown_gaps" => ("GET", format!("{base}/breakdown/gaps"), json!({})),
             "pathbase_get_goal_timeline" => (
                 "GET",
                 format!(
@@ -484,6 +488,13 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
         // `cycle_id` selects a period other than the one today falls in, which
         // is how a caller looks at the last quarter or the next one.
         "pathbase_get_planning" => (&["workspace_id"], &["workspace_id", "cycle_id"]),
+        // `depth` and `limit` bound what is read, not how deep a plan may be.
+        "pathbase_get_breakdown" => (
+            &["workspace_id", "item_id"],
+            &["workspace_id", "item_id", "depth", "limit"],
+        ),
+        "pathbase_get_rationale" => (&["workspace_id", "item_id"], &["workspace_id", "item_id"]),
+        "pathbase_get_breakdown_gaps" => (&["workspace_id"], &["workspace_id"]),
         "pathbase_get_review_queue" => (
             &["workspace_id"],
             &["workspace_id", "cycle_id", "stale_days"],
@@ -648,6 +659,9 @@ fn tools() -> Vec<Tool> {
         read("pathbase_get_alignment", "Get one workspace's goal alignment: each goal's owner (organization, team or person), its period, what it is `part_of`, what it `contributes_to`, what rolls up into it, and how much work sits beneath it. `part_of` is structure and `contributes_to` is contribution — they are different questions, so do not merge them. A goal connected to nothing above it is reported as an orphan, which is normal for a top-level goal. This is one workspace's graph: goals in someone's personal workspace are not in it and cannot be reached from it."),
         read("pathbase_get_dashboard", "Get the goal dashboard. Four different things are reported and none of them substitutes for another: `action_completion` (what was planned and what happened; `rate` is null when nothing was planned), `metric_progress` (derived from observations by the method the goal names; null when it names none, and `metrics[].status` says which are unmeasured or stale), `self_assessment` (the person's own judgement), and `health` (somebody's stated view, with their name and the date). `suggested_health` is derived from listed signals and is a suggestion only — it is never the health. Report these separately. Do not average them, do not present completion as progress toward a goal, and do not treat a goal with no metric as 0%."),
         read("pathbase_get_review_queue", "Get what a goal review needs in front of it, as three separate lists: goals nobody has ever checked in on, goals whose last check-in is older than `stale_days` (default 14), and goals somebody has said are at risk or off track — plus the ones that moved recently. Silence and a warning are different things, so do not merge the first list into the others."),
+        read("pathbase_get_breakdown", "Get what sits under one goal: how it is meant to get done, one layer at a time. `depth` and `limit` bound what this call reads, not how deep a plan is allowed to be — a node with `has_more_children` is a handle to call again from, which is how a large map loads in pieces. `part_of` is structure and is what this walks; `contributes_to` and `depends_on` are listed on each node but never followed, because contribution is not containment. `truncated` says the response stopped early."),
+        read("pathbase_get_rationale", "Walk upward from anything to whatever sits above it, so an action can say why it exists. Ancestors come top first and each one carries the reason recorded on the link and the `child_id` that reason explains — these are what someone wrote, not an explanation composed now. Do not invent a rationale for a link that has none; an empty one means nobody said, which is worth reporting as it is. `top_level` true means nothing is above it, which is normal for a top goal."),
+        read("pathbase_get_breakdown_gaps", "Find where a plan has not been broken down far enough: a goal with nothing under it, a goal broken down only into more abstractions with no action anywhere beneath it, and work waiting on something archived or missing. These are questions for the person, not defects to repair — proposing how to close one is useful, closing it silently is not. `repaired` is always false."),
         read("pathbase_get_goal_timeline", "Get everything recorded about one goal in order: when it was created, check-ins and their corrections, observations on its metrics, records written about it, alignment changes, and whether it was carried over from an earlier period. With `as_of` (RFC 3339) it replays to that moment and reports what the goal said *then* — use it to answer what was believed at the time, not what is believed now."),
         read("pathbase_list_memory", "Read what this person's own Basepath remembers: facts they stated, preferences, decisions and why, learnings, current context, and episodes. `status` separates what they confirmed (`verified`) from what was only suggested (`proposed`) — do not treat a proposal as something they said. `current=true` returns what still stands: not superseded and inside its validity window; a preference from two jobs ago is not wrong, it is no longer current. Memory a person excluded from retrieval is never returned. This exists only in a personal workspace and has no presence in a shared one."),
         read("pathbase_memory_get", "Read one memory by id. A memory the person excluded from retrieval is not returned."),

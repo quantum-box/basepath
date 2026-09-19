@@ -39,6 +39,7 @@ import { CalendarView } from "./CalendarView";
 import { WeeklyReviewScreen } from "./WeeklyReview";
 import { PlanningScreen } from "./PlanningScreen";
 import { AlignmentScreen } from "./AlignmentScreen";
+import { BreakdownScreen } from "./BreakdownScreen";
 import { DashboardScreen } from "./DashboardScreen";
 import { ReviewScreen } from "./ReviewScreen";
 import { MemoryScreen } from "./MemoryScreen";
@@ -69,6 +70,7 @@ type ModalState =
 const navigation = [
   { label: "ホーム", icon: "home" },
   { label: "目標マップ", icon: "tree" },
+  { label: "分解", icon: "tree" },
   { label: "タイムライン", icon: "calendar" },
   { label: "今日の行動", icon: "tasks" },
   { label: "振り返り", icon: "book" },
@@ -85,6 +87,7 @@ type NavigationLabel = (typeof navigation)[number]["label"];
 const navigationRoutes: Record<NavigationLabel, string> = {
   ホーム: "home",
   目標マップ: "goals",
+  分解: "breakdown",
   タイムライン: "timeline",
   今日の行動: "today",
   振り返り: "reflection",
@@ -100,6 +103,7 @@ const navigationRoutes: Record<NavigationLabel, string> = {
 const navigationDescriptions: Record<NavigationLabel, string> = {
   ホーム: "目標・計画・行動・学びを、ひとつの場所で見渡せます。",
   目標マップ: "目標と取り組みのつながりを見ながら、次の一歩を整えます。",
+  分解: "大きな目標を、実行できるところまで何段階でも分解します。",
   タイムライン: "これからの予定と目標の進み方を、時間軸で確認します。",
   今日の行動: "今日やることに集中して、小さな前進を積み重ねます。",
   振り返り: "できたことや気づきを残し、次の行動につなげます。",
@@ -1833,6 +1837,8 @@ export function App() {
               navigate("目標マップ");
             }}
           />
+        ) : activeNav === "分解" ? (
+          <BreakdownScreen store={store} workspace={currentWorkspace} />
         ) : activeNav === "アラインメント" ? (
           <AlignmentScreen
             workspace={currentWorkspace}

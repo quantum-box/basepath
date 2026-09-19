@@ -96,7 +96,7 @@ discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）と`/.we
 
 配布パッケージは`plugin/<host>/`（manifest・接続先・アイコン）と`skills/`から`npm run build:plugin`で組み立てます。hostごとの差分は`scripts/build-plugin.mjs`の`LAYOUTS`の1行だけで、ワークフローにhost名が出てきたらbuildが失敗します。手順・接続導線・検証済み/未検証の切り分けは[docs/chatgpt-plugin.md](docs/chatgpt-plugin.md)と[docs/claude-connector.md](docs/claude-connector.md)を参照してください。claude.ai / Claude Desktopはカスタムコネクタ（URLのみ、インストール不要）で、会話内UIに対応します。Claude CodeはCLIなので会話内UIは約束しません。
 
-29個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
+32個のツール、項目のResource Template、3個のPromptを提供します。stdio と remote のどちらでも、MCP actor はAI agentとして扱われます。書き込みツールは提案を作り、設定画面の「AIからの変更案」で人が承認するまで反映しません。承認はAIが渡すフラグでは代用できません。rmcpのロック済みバージョンが提供するプロトコルを使用します。
 
 ## 検証
 

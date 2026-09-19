@@ -116,6 +116,30 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 
 指標のdirectionはincrease / decrease / threshold。指標の単位と観測の単位は一致が必須です。最新の有効な観測を評価し、観測がない場合は未計測です。実績の比率は100%超も残し、バーだけ0〜100%へ収めます。30日より古い観測は画面で更新が必要と表示します。
 
+## Goal Breakdown
+
+大きな目標を、実行できるところまで分解する構造。`part_of`は構造（親は1つ）、`contributes_to`は貢献（複数可）、`depends_on`は順序で、どれも別の質問です。
+
+| ルート | 内容 |
+| --- | --- |
+| `GET /v1/workspaces/{w}/items/{id}/breakdown?depth=&limit=` | その項目の下。`depth`は既定2（最大20）、`limit`は既定200（最大500） |
+| `GET /v1/workspaces/{w}/items/{id}/ancestry` | その項目の上。なぜ存在するのかを、記録された理由ごと |
+| `GET /v1/workspaces/{w}/breakdown/gaps` | 降りきっていない場所。**報告するだけで、埋めません** |
+| `POST /v1/workspaces/{w}/items/{id}/reparent` | 位置を変える。`parent_id`に`null`で「どこにも属さない」 |
+| `POST /v1/workspaces/{w}/items/{id}/children` | 兄弟の並び。`order`に子のidを並べて一度に指定 |
+
+**階層数は固定していません。** level列もtier enumもありません。10年計画の人と2週間計画の人の両方が正しく、どちらかを選ぶschemaはもう一方にとって間違いです。深さはedgeが決めます。`depth`と`limit`が縛るのは「一度に読む量」で、別の話です。
+
+**深い計画は少しずつ読めます。** `has_more_children`が真のnodeは、そのidをrootにして呼び直すための取っ手です。`truncated`は「途中で止めた」を明示します。黙って短い結果を返しません。
+
+**移動は移動です。** `reparent`はlinkのidを保ったまま向き先を変えます。下にあるものは親の親ではなくその項目に付いているので、一緒に動きます。自己参照・循環・他ワークスペースのparentは書き込む前に拒否し、失敗した移動は元の位置を1つも変えません。`parent_id: null`は外すだけで、消しません。
+
+**親をarchiveしても子は消えません。** 親を整理することは子についての判断ではありません。子は残り、何の一部だったかも残ります。
+
+**理由はlinkに載ります。** `ancestry`の各要素は上から順に並び、`rationale`とそれが説明する`child_id`を持ちます。理由が空なら「誰も書いていない」であって、こちらで作文はしません。
+
+**変更は記録されます。** `reparent`は`breakdown_change`のrecordを残し（`from` / `to` / `rationale`）、リクエスト自体は他の変更と同じくauditに入ります。
+
 ## Personal Memory
 
 **個人のワークスペースにだけ存在します。** 共有ワークスペースへ移動・継承・自動同期する機能はありません。個人目標が組織目標に貢献していても、組織側からPersonal Memoryへ辿る経路はありません。共有ワークスペースに置くこと自体が「共有する」という行為であり、製品が本人の代わりにその判断をしてはいけないからです。
