@@ -169,13 +169,10 @@ async fn start_server(
                     .map(String::from)
                     .unwrap_or(format!("{public}/mcp")),
             )
-            // Two names, because a real deployment is reached by two: the
-            // public one a client calls, and the origin a proxy forwards to.
-            // The `Host` the process sees is whatever the last hop addressed.
-            .env(
-                "PATHBASE_MCP_ALLOWED_HOSTS",
-                "127.0.0.1,pathbase-api.internal",
-            )
+            // `*` is the setting a proxied deployment needs: `Host` is
+            // whatever the last hop addressed, and a deployment behind hops it
+            // does not control cannot enumerate those names.
+            .env("PATHBASE_MCP_ALLOWED_HOSTS", "*")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -837,11 +834,16 @@ async fn consecutive_requests_may_reach_different_instances() {
         stream.status()
     );
 
-    // A request for a host this deployment does not serve is refused, so a
-    // DNS-rebinding attempt cannot reach the tools.
+    // Behind a proxy the Host check is off (`PATHBASE_MCP_ALLOWED_HOSTS=*`),
+    // because `Host` is whatever the last hop addressed and this process sits
+    // behind hops that rewrite it to names the deployment cannot enumerate.
+    //
+    // What still stops a DNS-rebinding attempt is the token: the endpoint is
+    // public, and a request without one gets a 401 whatever Host it claims.
+    // That is the same answer it would get by calling the URL directly, so
+    // rebinding buys an attacker nothing.
     let rebind = client
         .post(&second_url)
-        .bearer_auth(&token)
         .header("accept", "application/json, text/event-stream")
         .header("content-type", "application/json")
         .header("host", "evil.example")
@@ -849,22 +851,26 @@ async fn consecutive_requests_may_reach_different_instances() {
         .send()
         .await
         .unwrap();
-    assert!(rebind.status().is_client_error(), "{}", rebind.status());
+    assert_eq!(
+        rebind.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "an untokened request is refused whatever host it claims"
+    );
 
-    // The second configured host is accepted, which is what a proxied
-    // deployment depends on: the client calls the public name and the proxy
-    // forwards to the origin, so the `Host` that arrives is the origin's.
+    // A token works whatever `Host` arrives with it, which is what a proxied
+    // deployment depends on: each hop rewrites `Host` to a name the
+    // deployment does not choose, and the last one is what this process sees.
     //
-    // Without this the suite only proved that a *wrong* host is refused, and
-    // an allowlist naming solely the public name passed CI while refusing
-    // every real request in production — after authentication had already
-    // succeeded, so the connection looked approved and nothing worked.
+    // Without this the suite only proved that a *wrong* host is refused. An
+    // allowlist naming the public name passed CI while refusing every real
+    // request in production — after authentication had already succeeded, so
+    // the connection looked approved and nothing worked.
     let proxied = client
         .post(&second_url)
         .bearer_auth(&token)
         .header("accept", "application/json, text/event-stream")
         .header("content-type", "application/json")
-        .header("host", "pathbase-api.internal")
+        .header("host", "whatever-the-last-hop-addressed.internal")
         .json(&json!({"jsonrpc":"2.0","id":8,"method":"tools/list","params":{}}))
         .send()
         .await
