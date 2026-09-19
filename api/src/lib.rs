@@ -648,7 +648,7 @@ async fn field_endpoint(
     require_selected_field_tenant(selected_tenant, tenant)?;
     {
         let mut tx = state.service.db.begin_read().await?;
-        storage::authorize(&mut tx, &actor.id, w, true).await?;
+        storage::authorize(&mut tx, actor, w, true).await?;
     }
     match p[4] {
         "attach-task" => {

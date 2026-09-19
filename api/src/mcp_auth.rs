@@ -54,6 +54,13 @@ pub fn required_scope(tool: &str) -> &'static str {
 pub struct Connection {
     pub id: String,
     pub actor: String,
+    /// The tenant this delegation was granted in.
+    ///
+    /// A person authorizes an AI client while acting in one tenant, and that
+    /// is the tenant the resulting token acts in — the agent cannot reach the
+    /// same person's workspaces in another one. Using the same client in two
+    /// tenants is two connections, each approved and revoked on its own.
+    pub tenant: String,
     pub client_id: String,
     pub client_name: String,
     pub scopes: Vec<String>,
@@ -90,26 +97,53 @@ fn row_to_connection(row: &crate::db::Row) -> Result<Connection> {
         last_used_at: row.text(8)?,
         ui_read_at: row.text(9)?,
         version: row.int(10)?,
+        tenant: row.text(11)?,
     })
 }
 
 const SELECT: &str = "SELECT id,actor,client_id,client_name,scopes,status,created_at,updated_at,\
-                      last_used_at,ui_read_at,version FROM mcp_connections";
+                      last_used_at,ui_read_at,version,tenant FROM mcp_connections";
 
-pub async fn list_connections(tx: &mut Tx, actor: &str) -> Result<Vec<Connection>> {
+pub async fn list_connections(tx: &mut Tx, actor: &Actor) -> Result<Vec<Connection>> {
     let rows = tx
         .fetch_all(
             &format!(
-                "{SELECT} WHERE actor=? ORDER BY created_at DESC{}",
+                "{SELECT} WHERE actor=? AND tenant=? ORDER BY created_at DESC{}",
                 tx.lock_reads()
             ),
-            &params![actor],
+            &params![&actor.id, &actor.tenant],
         )
         .await?;
     rows.iter().map(row_to_connection).collect()
 }
 
-pub async fn get_connection(tx: &mut Tx, actor: &str, id: &str) -> Result<Connection> {
+/// The connection as the person sees it from the screen they are on.
+///
+/// Every route that approves, revokes or inspects a delegation goes through
+/// here, so scoping this one lookup to the acting tenant is what keeps a
+/// connection id from another tenant from being usable — including by the
+/// person who owns it.
+pub async fn get_connection(tx: &mut Tx, actor: &Actor, id: &str) -> Result<Connection> {
+    let row = tx
+        .fetch_optional(
+            &format!(
+                "{SELECT} WHERE id=? AND actor=? AND tenant=?{}",
+                tx.lock_reads()
+            ),
+            &params![id, &actor.id, &actor.tenant],
+        )
+        .await?
+        .ok_or_else(ApiError::missing)?;
+    row_to_connection(&row)
+}
+
+/// The connection a token was issued against, looked up without a tenant.
+///
+/// Only the token path may use this, and only because the connection row is
+/// where the tenant comes *from*: the bearer presents a token, and the
+/// delegation behind it decides which tenant the agent acts in. Nothing here
+/// is taken from the request.
+pub async fn connection_for_token(tx: &mut Tx, actor: &str, id: &str) -> Result<Connection> {
     let row = tx
         .fetch_optional(
             &format!("{SELECT} WHERE id=? AND actor=?{}", tx.lock_reads()),
@@ -120,11 +154,18 @@ pub async fn get_connection(tx: &mut Tx, actor: &str, id: &str) -> Result<Connec
     row_to_connection(&row)
 }
 
-async fn find_for_client(tx: &mut Tx, actor: &str, client_id: &str) -> Result<Option<Connection>> {
+async fn find_for_client(
+    tx: &mut Tx,
+    actor: &Actor,
+    client_id: &str,
+) -> Result<Option<Connection>> {
     let row = tx
         .fetch_optional(
-            &format!("{SELECT} WHERE actor=? AND client_id=?{}", tx.lock_reads()),
-            &params![actor, client_id],
+            &format!(
+                "{SELECT} WHERE actor=? AND tenant=? AND client_id=?{}",
+                tx.lock_reads()
+            ),
+            &params![&actor.id, &actor.tenant, client_id],
         )
         .await?;
     row.as_ref().map(row_to_connection).transpose()
@@ -136,7 +177,7 @@ async fn find_for_client(tx: &mut Tx, actor: &str, client_id: &str) -> Result<Op
 /// scopes. Nothing becomes readable until a person approves it in PathBase.
 pub async fn ensure_pending(
     db: &Db,
-    actor: &str,
+    actor: &Actor,
     client_id: &str,
     client_name: &str,
 ) -> Result<Connection> {
@@ -152,7 +193,8 @@ pub async fn ensure_pending(
     }
     let connection = Connection {
         id: new_id("mcpconn"),
-        actor: actor.into(),
+        actor: actor.id.clone(),
+        tenant: actor.tenant.clone(),
         client_id: client_id.into(),
         client_name: client_name.chars().take(120).collect(),
         scopes: vec![],
@@ -168,6 +210,7 @@ pub async fn ensure_pending(
         &[
             "id",
             "actor",
+            "tenant",
             "client_id",
             "client_name",
             "scopes",
@@ -183,6 +226,7 @@ pub async fn ensure_pending(
         &params![
             &connection.id,
             &connection.actor,
+            &connection.tenant,
             &connection.client_id,
             &connection.client_name,
             "",
@@ -205,7 +249,7 @@ pub async fn ensure_pending(
 /// Grants the scopes a person selected. Never widens beyond the grantable set.
 pub async fn approve(
     tx: &mut Tx,
-    actor: &str,
+    actor: &Actor,
     id: &str,
     scopes: &[String],
     expected_version: i64,
@@ -243,7 +287,7 @@ pub async fn approve(
     tx.execute(
         "UPDATE mcp_connections SET scopes=?,status='active',updated_at=?,version=version+1 \
          WHERE id=? AND actor=?",
-        &params![granted.join(" "), now(), id, actor],
+        &params![granted.join(" "), now(), id, &actor.id],
     )
     .await?;
     get_connection(tx, actor, id).await
@@ -262,7 +306,7 @@ pub async fn approve(
 /// version on screen to check because the screen is the authorization request.
 pub async fn grant_from_consent(
     tx: &mut Tx,
-    actor: &str,
+    actor: &Actor,
     id: &str,
     scopes: &[String],
 ) -> Result<Connection> {
@@ -282,23 +326,23 @@ pub async fn grant_from_consent(
     tx.execute(
         "UPDATE mcp_connections SET scopes=?,status='active',updated_at=?,version=version+1 \
          WHERE id=? AND actor=?",
-        &params![granted.join(" "), now(), id, actor],
+        &params![granted.join(" "), now(), id, &actor.id],
     )
     .await?;
     get_connection(tx, actor, id).await
 }
 
 /// Disconnects. A still-valid access token stops working immediately.
-pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Connection> {
+pub async fn revoke(tx: &mut Tx, actor: &Actor, id: &str) -> Result<Connection> {
     // Whatever this client was allowed to do without being asked again, it is
     // no longer allowed to do. In this transaction, so there is no moment
     // where the delegation is gone and a standing permission for it is not.
-    crate::auto_apply::revoke_for_connection(tx, actor, id).await?;
+    crate::auto_apply::revoke_for_connection(tx, &actor.id, id).await?;
     get_connection(tx, actor, id).await?;
     tx.execute(
         "UPDATE mcp_connections SET scopes='',status='revoked',updated_at=?,version=version+1 \
          WHERE id=? AND actor=?",
-        &params![now(), id, actor],
+        &params![now(), id, &actor.id],
     )
     .await?;
     // "Disconnected" has to mean the tokens are dead now, not when they would

@@ -452,6 +452,7 @@ async fn an_ai_proposes_a_period_and_a_person_approves_it() {
     let (_dir, service) = setup().await;
     let ai = Actor {
         id: "local-owner".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: Some("mcpconn_test".into()),
     };

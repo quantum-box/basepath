@@ -19,6 +19,15 @@ pub struct Service {
 #[derive(Clone, Debug)]
 pub struct Actor {
     pub id: String,
+    /// The tenant this request acts in, and the only one it can reach.
+    ///
+    /// A person belongs to several Tachyon tenants but acts in exactly one at
+    /// a time: the one they selected in this session, or the one the MCP
+    /// delegation was granted in. Every workspace belongs to a tenant, so
+    /// this field is what makes `authorize` a boundary rather than a role
+    /// check — see `storage::authorize`. Empty means "no tenant chosen", and
+    /// matches no workspace at all.
+    pub tenant: String,
     pub agent: bool,
     /// The MCP delegation this request arrived through, when it did.
     ///
@@ -27,18 +36,28 @@ pub struct Actor {
     /// whichever connection it came from.
     pub connection: Option<String>,
 }
+/// The tenant local preview acts in.
+///
+/// Local preview never authenticates against Tachyon, so it has no tenant of
+/// its own. It gets a reserved name rather than an empty one so its
+/// workspaces are ordinary tenant-scoped rows that the same `authorize` path
+/// covers, and so a production workspace can never be reached by a request
+/// that simply forgot to select a tenant.
+pub const LOCAL_TENANT: &str = "local-preview";
 impl Actor {
     pub fn local() -> Self {
         Self {
             id: "local-owner".into(),
+            tenant: LOCAL_TENANT.into(),
             agent: false,
             connection: None,
         }
     }
-    /// A person acting through the browser.
-    pub fn person(id: impl Into<String>) -> Self {
+    /// A person acting through the browser, in the tenant they selected.
+    pub fn person(id: impl Into<String>, tenant: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            tenant: tenant.into(),
             agent: false,
             connection: None,
         }
@@ -1956,11 +1975,30 @@ impl Service {
         Ok(Self { db })
     }
 
+    /// The person's own workspace *in the tenant they are acting in*.
+    ///
+    /// The id is derived from the tenant and the actor together, not from the
+    /// actor alone. Keying it on the actor alone is what used to make a
+    /// tenant switch a no-op: both tenants resolved to one id, so the same
+    /// workspace — and the same goals, records and history — came back under
+    /// whichever tenant the person had selected. The separator cannot appear
+    /// in either part, so no pair of (tenant, actor) values can collide.
     pub async fn provision_personal(&self, actor: &Actor) -> Result<()> {
-        let w = format!("personal-{:x}", Sha256::digest(actor.id.as_bytes()));
+        if actor.tenant.is_empty() {
+            return Err(ApiError::new(
+                428,
+                "TENANT_SELECTION_REQUIRED",
+                "利用するTachyonテナントを選択してください",
+            ));
+        }
+        let w = format!(
+            "personal-{:x}",
+            Sha256::digest(format!("{}\u{1f}{}", actor.tenant, actor.id).as_bytes())
+        );
         let workspace = Workspace {
             id: w.clone(),
             name: "個人".into(),
+            tenant_id: actor.tenant.clone(),
             scope: "個人".into(),
             timezone: "Asia/Tokyo".into(),
             role: "owner".into(),
@@ -1970,10 +2008,15 @@ impl Service {
         let mut tx = self.db.begin_write().await?;
         let sql = tx
             .dialect()
-            .insert_ignore("workspaces", &["id", "body", "seq"]);
+            .insert_ignore("workspaces", &["id", "body", "seq", "tenant_id"]);
         tx.execute(
             &sql,
-            &params![&w, serde_json::to_string(&workspace)?, sequence()],
+            &params![
+                &w,
+                serde_json::to_string(&workspace)?,
+                sequence(),
+                &actor.tenant
+            ],
         )
         .await?;
         let sql = tx
@@ -2062,7 +2105,7 @@ impl Service {
         if method == "GET" {
             let mut tx = self.db.begin_read().await?;
             if !w.is_empty() {
-                authorize(&mut tx, &actor.id, w, workspace_write).await?;
+                authorize(&mut tx, actor, w, workspace_write).await?;
             }
             if parts.get(3) == Some(&"snapshot") && !w.is_empty() {
                 // Derived reminders are written inside their own transaction so
@@ -2070,11 +2113,11 @@ impl Service {
                 drop(tx);
                 let mut write = self.db.begin_write().await?;
                 write.lock_workspace(w).await?;
-                authorize(&mut write, &actor.id, w, false).await?;
+                authorize(&mut write, actor, w, false).await?;
                 sync_due_notifications(&mut write, w, &actor.id).await?;
                 write.commit().await?;
                 tx = self.db.begin_read().await?;
-                authorize(&mut tx, &actor.id, w, workspace_write).await?;
+                authorize(&mut tx, actor, w, workspace_write).await?;
             }
             return dispatch(&mut tx, actor, method, path, query, &body).await;
         }
@@ -2107,7 +2150,7 @@ impl Service {
         tx.lock_workspace(w).await?;
         // Recheck inside the write transaction, including before an idempotent replay.
         if !w.is_empty() {
-            authorize(&mut tx, &actor.id, w, workspace_write).await?;
+            authorize(&mut tx, actor, w, workspace_write).await?;
         }
         crate::collaboration::authorize_route(&mut tx, actor, method, &parts).await?;
         let idempotency_actor = format!(
@@ -2214,13 +2257,13 @@ async fn dispatch_inner(
                 "agent": actor.agent,
             }));
         }
-        ("GET", ["v1", "workspaces"]) => return value(memberships(tx, &actor.id).await?),
+        ("GET", ["v1", "workspaces"]) => return value(memberships(tx, actor).await?),
         ("GET", ["v1", "templates"]) => return Ok(templates()),
         // MCP connections belong to the person, not to a workspace: they are
         // the record of which AI clients they let act on their behalf. An
         // agent can never manage its own delegation.
         ("GET", ["v1", "mcp", "connections"]) if !actor.agent => {
-            return value(crate::mcp_auth::list_connections(tx, &actor.id).await?);
+            return value(crate::mcp_auth::list_connections(tx, actor).await?);
         }
         ("POST", ["v1", "mcp", "connections", id, "approve"]) if !actor.agent => {
             only(body, &["scopes", "expected_version"])?;
@@ -2228,11 +2271,11 @@ async fn dispatch_inner(
             let expected = body["expected_version"].as_i64().ok_or_else(|| {
                 ApiError::new(428, "VERSION_REQUIRED", "expected_versionが必要です")
             })?;
-            return value(crate::mcp_auth::approve(tx, &actor.id, id, &scopes, expected).await?);
+            return value(crate::mcp_auth::approve(tx, actor, id, &scopes, expected).await?);
         }
         ("POST", ["v1", "mcp", "connections", id, "revoke"]) if !actor.agent => {
             only(body, &[])?;
-            return value(crate::mcp_auth::revoke(tx, &actor.id, id).await?);
+            return value(crate::mcp_auth::revoke(tx, actor, id).await?);
         }
         // Ranges the person decided in advance: which proposals from which AI
         // client they have already said yes to.
@@ -2246,7 +2289,7 @@ async fn dispatch_inner(
         // entirely and gets a 404 — not a 403, which would confirm the route
         // exists and that something is there to widen.
         ("GET", ["v1", "mcp", "auto-apply"]) if !actor.agent => {
-            return value(crate::auto_apply::list(tx, &actor.id).await?);
+            return value(crate::auto_apply::list(tx, actor).await?);
         }
         ("POST", ["v1", "mcp", "auto-apply"]) if !actor.agent => {
             only(
@@ -2267,7 +2310,7 @@ async fn dispatch_inner(
             return value(
                 crate::auto_apply::save(
                     tx,
-                    &actor.id,
+                    actor,
                     text(body, "workspace_id"),
                     text(body, "connection_id"),
                     flag("allow_create"),
@@ -2280,7 +2323,7 @@ async fn dispatch_inner(
         }
         ("POST", ["v1", "mcp", "auto-apply", id, "revoke"]) if !actor.agent => {
             only(body, &[])?;
-            return value(crate::auto_apply::revoke(tx, &actor.id, id).await?);
+            return value(crate::auto_apply::revoke(tx, actor, id).await?);
         }
         ("GET", ["v1", "settings"]) => {
             let raw = tx
@@ -2327,7 +2370,7 @@ async fn dispatch_inner(
     let notification_read = method == "PATCH" && col == "notifications" && suffix == "read";
     authorize(
         tx,
-        &actor.id,
+        actor,
         w,
         method != "GET" && !suggestion_preview && !notification_read && !breakdown_comparison,
     )
@@ -4138,6 +4181,7 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     tx.savepoint("preview_validation").await?;
     let human = Actor {
         id: actor.id.clone(),
+        tenant: actor.tenant.clone(),
         agent: false,
         connection: actor.connection.clone(),
     };
@@ -4317,6 +4361,7 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
     let ops: Vec<Operation> = serde_json::from_value(c["operations"].clone())?;
     let human = Actor {
         id: actor.id.clone(),
+        tenant: actor.tenant.clone(),
         agent: false,
         connection: actor.connection.clone(),
     };

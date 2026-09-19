@@ -75,6 +75,7 @@ macro_rules! tidb {
 fn actor(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     }

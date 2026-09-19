@@ -29,6 +29,7 @@ fn person() -> Actor {
 fn ai(connection: &str) -> Actor {
     Actor {
         id: person().id,
+        tenant: person().tenant,
         agent: true,
         connection: Some(connection.into()),
     }
@@ -49,12 +50,14 @@ async fn setup_with_scopes(scopes: &str) -> (tempfile::TempDir, Service) {
     for (id, name) in [(CONNECTION, "ChatGPT"), (OTHER_CONNECTION, "Claude")] {
         let mut tx = service.db.begin_write().await.unwrap();
         tx.execute(
-            "INSERT INTO mcp_connections(id,actor,client_id,client_name,scopes,status,\
+            "INSERT INTO mcp_connections(id,actor,tenant,client_id,client_name,scopes,status,\
              created_at,updated_at,last_used_at,ui_read_at,version) \
-             VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             &pathbase_api::params![
                 id,
                 person().id,
+                // A delegation belongs to a tenant as well as to a person.
+                person().tenant,
                 format!("client_{id}"),
                 name,
                 scopes,
@@ -589,7 +592,7 @@ async fn a_range_has_edges_it_cannot_be_saved_without() {
     assert!(set_range(&service, unknown).await.is_err());
 
     let mut tx = service.db.begin_write().await.unwrap();
-    pathbase_api::mcp_auth::revoke(&mut tx, &person().id, CONNECTION)
+    pathbase_api::mcp_auth::revoke(&mut tx, &person(), CONNECTION)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -846,12 +849,12 @@ async fn a_range_cannot_outlive_or_exceed_the_delegation_it_narrows() {
     assert_eq!(change["auto_apply_eligible"], json!(true));
 
     let mut tx = service.db.begin_write().await.unwrap();
-    let current = pathbase_api::mcp_auth::get_connection(&mut tx, &person().id, CONNECTION)
+    let current = pathbase_api::mcp_auth::get_connection(&mut tx, &person(), CONNECTION)
         .await
         .unwrap();
     pathbase_api::mcp_auth::approve(
         &mut tx,
-        &person().id,
+        &person(),
         CONNECTION,
         &["pathbase.read".to_string(), "pathbase.propose".to_string()],
         current.version,
@@ -885,7 +888,7 @@ async fn disconnecting_takes_the_range_with_it_and_reconnecting_does_not_revive_
     set_range(&service, range_for(CONNECTION)).await.unwrap();
 
     let mut tx = service.db.begin_write().await.unwrap();
-    pathbase_api::mcp_auth::revoke(&mut tx, &person().id, CONNECTION)
+    pathbase_api::mcp_auth::revoke(&mut tx, &person(), CONNECTION)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -894,7 +897,7 @@ async fn disconnecting_takes_the_range_with_it_and_reconnecting_does_not_revive_
     let mut tx = service.db.begin_write().await.unwrap();
     pathbase_api::mcp_auth::grant_from_consent(
         &mut tx,
-        &person().id,
+        &person(),
         CONNECTION,
         &[
             "pathbase.read".to_string(),

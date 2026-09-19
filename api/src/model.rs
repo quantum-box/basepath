@@ -425,6 +425,12 @@ pub struct Operation {
 pub struct Workspace {
     pub id: String,
     pub name: String,
+    /// The tenant that owns this workspace, and the only one that can reach
+    /// it. Stored in its own column as well as here: the column is what
+    /// `authorize` and the workspace listing filter on, and is read back over
+    /// this field so the two can never be seen to disagree.
+    #[serde(default)]
+    pub tenant_id: String,
     pub scope: String,
     pub timezone: String,
     pub role: String,

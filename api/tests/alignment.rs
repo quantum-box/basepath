@@ -28,6 +28,7 @@ async fn setup() -> (tempfile::TempDir, Service) {
 fn person(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     }

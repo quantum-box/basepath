@@ -364,8 +364,13 @@ async fn field_references_and_observations_are_idempotent_and_preserve_missing_v
     let service = Service::open(&dir.path().join("db").to_string_lossy())
         .await
         .unwrap();
+    // The same tenant the session above selected. The workspace this test
+    // sets up has to be reachable from the HTTP requests it then makes, and
+    // since tenant isolation those are two halves of one fact rather than
+    // two independent identities.
     let actor = pathbase_api::service::Actor {
         id: "us_verified".into(),
+        tenant: "tn_allowed".into(),
         agent: false,
         connection: None,
     };

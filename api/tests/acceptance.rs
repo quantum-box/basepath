@@ -154,6 +154,7 @@ async fn start(fixture: &Fixture, canonical: Option<&str>) -> (Server, String, S
 fn person(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     }

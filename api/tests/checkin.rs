@@ -19,6 +19,7 @@ async fn setup() -> (tempfile::TempDir, Service, String, Actor) {
     service.initialize(false).await.unwrap();
     let who = Actor {
         id: "us_alice".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -491,6 +492,7 @@ async fn an_ai_drafts_a_check_in_and_a_person_approves_the_words() {
 
     let ai = Actor {
         id: "us_alice".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: Some("mcpconn_test".into()),
     };

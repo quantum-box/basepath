@@ -20,6 +20,7 @@ async fn expire_invitation(service: &Service, id: &str) {
 fn actor(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     }
@@ -219,6 +220,7 @@ async fn invitation_membership_revocation_and_restart_keep_personal_data_private
             s.handle(
                 &Actor {
                     id: "us_guest".into(),
+                    tenant: pathbase_api::service::LOCAL_TENANT.into(),
                     agent,
                     connection: None,
                 },
@@ -422,6 +424,7 @@ async fn invitations_are_targeted_expiring_revocable_and_not_agent_controlled() 
     );
     let ai = Actor {
         id: "us_owner".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: None,
     };

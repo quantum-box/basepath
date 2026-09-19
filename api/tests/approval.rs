@@ -19,6 +19,7 @@ use std::collections::HashMap;
 fn agent(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: Some("mcpconn_test".into()),
     }
@@ -256,7 +257,7 @@ async fn approval_belongs_to_the_person_the_content_and_the_workspace() {
 
     // Someone else does not get the "already applied" answer: that answer is
     // for the person whose approval it was.
-    let other = Actor::person("someone-else");
+    let other = Actor::person("someone-else", pathbase_api::service::LOCAL_TENANT);
     assert!(call(
         &service,
         &other,
