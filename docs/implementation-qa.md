@@ -8,7 +8,7 @@ Automated checks:
 - Four unchanged Sites worker/package tests.
 - 14 application tests: restart persistence, concurrent edits, concurrent cycle creation, idempotency, graph rules, workspace isolation/viewer access, completion/outcome separation, habit occurrences, measurement corrections and units, template atomicity, change approval/stale previews, and atomic export/import.
 - Seven OIDC/Tachyon/Field tests using local mocks: PKCE/state/nonce/audience/expiry, canonical identity, refresh serialization, callback/authZ separation, logout, tenant isolation and 401/403 distinction, task deduplication, observation retries and missing values, HTTP errors and auth mode boundaries.
-- One real child-process MCP stdio test: initialization, 13 tools, resources, prompts, proposal-only behavior, rejected unapproved apply and successful human-approved apply.
+- One real child-process MCP stdio test: initialization, 29 tools including the retrieval contract, resources, prompts, proposal-only behavior, rejected unapproved apply and successful human-approved apply.
 - One real child-process remote MCP test: Bearer authentication, Streamable HTTP initialization and session reuse, repeated calls, input and workspace-boundary errors, rejected unapproved apply and successful human-approved apply.
 - Rust clippy with warnings denied and native Tauri cargo check.
 

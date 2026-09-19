@@ -3122,6 +3122,45 @@ async fn dispatch_inner(
                 "superseded_ids": superseded.into_iter().collect::<Vec<_>>(),
             }))
         }
+        // --- Retrieval -------------------------------------------------
+        //
+        // `context_kind` is required and picks the index *before* anything is
+        // read. There is no path here that searches both and filters after:
+        // a boundary enforced by a filter is one bug away from being wrong.
+        ("GET", "context", "", "") => {
+            let kind = query.get("context_kind").map(String::as_str).ok_or_else(|| {
+                ApiError::invalid(
+                    "context_kindにpersonalまたはorganizationを指定してください。省略時に両方を検索することはありません",
+                )
+            })?;
+            match kind {
+                "personal" => {
+                    personal_only(tx, w).await?;
+                    crate::retrieval::assemble_context(tx, actor, w, "personal", query).await
+                }
+                "organization" => {
+                    // No fallback in either direction. An organization context
+                    // that found nothing stays empty; it does not go looking
+                    // in someone's personal memory.
+                    if personal_only(tx, w).await.is_ok() {
+                        return Err(ApiError::invalid(
+                            "このワークスペースは個人用です。context_kind=personalを指定してください",
+                        ));
+                    }
+                    crate::retrieval::assemble_context(tx, actor, w, "organization", query).await
+                }
+                _ => Err(ApiError::invalid(
+                    "context_kindはpersonalまたはorganizationです",
+                )),
+            }
+        }
+        ("GET", "memories", "search", "") => {
+            // The personal index. The organization one is reached through
+            // `/context?context_kind=organization`, which is a different
+            // function over a different source.
+            personal_only(tx, w).await?;
+            crate::retrieval::search_personal(tx, w, query).await
+        }
         ("GET", "memories", "duplicates", "") => {
             personal_only(tx, w).await?;
             let memories: Vec<Memory> = list(tx, w, "memories").await?;
@@ -3208,6 +3247,38 @@ async fn dispatch_inner(
                 .filter(|group| group["id"] == json!(memory.id))
                 .collect::<Vec<_>>());
             Ok(result)
+        }
+        ("POST", "memories", id, "corrections") if !id.is_empty() => {
+            personal_only(tx, w).await?;
+            only(
+                body,
+                &[
+                    "kind",
+                    "title",
+                    "body",
+                    "source",
+                    "evidence_ids",
+                    "observed_at",
+                    "valid_from",
+                    "valid_to",
+                    "confidence",
+                    "item_ids",
+                    "topics",
+                    "people",
+                ],
+            )?;
+            let previous: Memory = get(tx, w, "memories", id).await?;
+            let mut proposal = body.clone();
+            proposal["supersedes_id"] = json!(id);
+            // A correction inherits the kind unless it is saying the thing was
+            // the wrong kind of thing all along.
+            if proposal["kind"].as_str().is_none_or(|kind| kind.is_empty()) {
+                proposal["kind"] = json!(previous.kind);
+            }
+            let memory = memory_from(tx, actor, w, &proposal, "proposed").await?;
+            validate_memory(&memory)?;
+            put(tx, w, "memories", &memory.id, &memory).await?;
+            value(memory)
         }
         ("POST", "memories", id, "verify") if !id.is_empty() && !actor.agent => {
             personal_only(tx, w).await?;
@@ -3761,8 +3832,11 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
         // writes a verified memory: approving a change set means agreeing to
         // the words, and a memory the person has confirmed is a different
         // claim from one an AI suggested.
-        let memory_proposal =
-            p.len() == 5 && p[3] == "memories" && p[4] == "proposals" && op.method == "POST";
+        let memory_proposal = op.method == "POST"
+            && p[3] == "memories"
+            && ((p.len() == 5 && p[4] == "proposals")
+                // A correction is a proposal that names what it replaces.
+                || (p.len() == 6 && p[5] == "corrections"));
         if p.len() < 4
             || p[0] != "v1"
             || p[1] != "workspaces"
@@ -3850,7 +3924,8 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     // `actions` operate on an item; a weekly review draft is addressed by its
     // week rather than by a row id; everything else names its own collection.
     let checkin = collection == "items" && parts.get(5) == Some(&"checkins");
-    let memory = collection == "memories" && parts.get(4) == Some(&"proposals");
+    let memory = collection == "memories"
+        && (parts.get(4) == Some(&"proposals") || parts.get(5) == Some(&"corrections"));
     let (target_collection, target_id) = match collection {
         "actions" => ("items", parts.get(4).copied().unwrap_or("")),
         "weekly-reviews" => ("weekly_reviews", ""),
@@ -3865,6 +3940,13 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     // words next to the proposed ones instead of an unexplained creation.
     let before: Option<Value> = if collection == "weekly-reviews" {
         latest_weekly_review(tx, w, text(&op.body, "week_start")).await?
+    } else if memory {
+        // What this correction would replace, so the person sees their own
+        // words next to the proposed ones.
+        match parts.get(4).copied().filter(|id| *id != "proposals") {
+            Some(id) => get::<Value>(tx, w, "memories", id).await.ok(),
+            None => None,
+        }
     } else if checkin {
         // What this would supersede: the person sees their own last words
         // next to the proposed ones.

@@ -5721,6 +5721,7 @@ button:disabled {
 }
 .memory-intro,
 .memory-form,
+.memory-retrieval,
 .memory-duplicates,
 .memory-list {
   padding: 22px;
@@ -5794,12 +5795,14 @@ button:disabled {
   margin-inline-start: auto;
 }
 .memory-list ul,
+.memory-retrieval ul,
 .memory-duplicates ul {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 .memory-list li,
+.memory-retrieval li,
 .memory-duplicates li {
   display: flex;
   flex-direction: column;
@@ -5807,8 +5810,39 @@ button:disabled {
   padding: 14px 0;
 }
 .memory-list li + li,
+.memory-retrieval li + li,
 .memory-duplicates li + li {
   border-top: 1px solid #edf0f5;
+}
+.memory-retrieval-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 12px 0;
+}
+.memory-retrieval-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+}
+.memory-retrieval-form input {
+  border: 1px solid #dfe4ec;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+/* A result that is no longer the current answer is still shown — it was true
+   once — but it does not read like the answer. */
+.memory-retrieval li[data-current="false"] {
+  opacity: 0.72;
+}
+.memory-why,
+.memory-stale {
+  font-size: 11px;
+  color: var(--muted);
 }
 .memory-list li[data-inactive="true"] {
   opacity: 0.72;

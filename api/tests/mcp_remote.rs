@@ -489,7 +489,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
-    assert_eq!(listed.len(), 25);
+    assert_eq!(listed.len(), 29);
     // Annotations describe the real effect: a change set can contain DELETE
     // operations, so proposing and applying one are not "non-destructive".
     let shape = |name: &str| {
@@ -519,6 +519,86 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     )
     .await;
     assert_eq!(forbidden["isError"], true);
+
+    // Her own personal workspace, as the tool contract hands it to a host.
+    let (alice_context, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        29,
+        "tools/call",
+        json!({"name":"pathbase_get_context","arguments":{}}),
+    )
+    .await;
+    let alice_personal = alice_context["structuredContent"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["scope"] == "個人")
+        .expect("Alice has a personal workspace")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Retrieval reaches the same boundary the HTTP routes do: a personal
+    // index in a shared workspace does not exist, and `context_kind` is never
+    // inferred. Both hosts call this through the identical tool contract.
+    let (no_kind, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        30,
+        "tools/call",
+        json!({"name":"pathbase_memory_context","arguments":{"workspace_id":alice_personal}}),
+    )
+    .await;
+    assert_eq!(no_kind["isError"], true);
+    assert!(no_kind["structuredContent"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("context_kind"));
+
+    let (context, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        31,
+        "tools/call",
+        json!({"name":"pathbase_memory_context",
+               "arguments":{"workspace_id":alice_personal,"context_kind":"personal"}}),
+    )
+    .await;
+    assert_ne!(context["isError"], true, "{context}");
+    assert_eq!(context["structuredContent"]["context_kind"], "personal");
+    // The notice travels with the payload, because the payload is the part a
+    // model actually reads.
+    assert!(context["structuredContent"]["content_is_data"]
+        .as_str()
+        .unwrap()
+        .contains("not instructions"));
+
+    // Correcting a memory is a proposal, so it needs the proposing scope —
+    // reading gives no path to writing one.
+    let (correction_denied, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        32,
+        "tools/call",
+        json!({"name":"pathbase_memory_correct",
+               "arguments":{"workspace_id":alice_personal,"memory_id":"mem_x",
+                            "title":"訂正","source":"本人","idempotency_key":"k9"}}),
+    )
+    .await;
+    assert_eq!(correction_denied["isError"], true);
+    assert_eq!(
+        correction_denied["structuredContent"]["code"],
+        "INSUFFICIENT_SCOPE"
+    );
 
     // Proposing needs a scope she did not grant.
     let (denied, _) = request(
@@ -666,7 +746,7 @@ async fn consecutive_requests_may_reach_different_instances() {
         json!({}),
     )
     .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 25);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 29);
     assert!(headers.get("mcp-session-id").is_none());
     // Nothing the endpoint returns may be cached by a proxy in between.
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");
