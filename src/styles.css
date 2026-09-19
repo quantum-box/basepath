@@ -5907,3 +5907,154 @@ button:disabled {
     margin-inline-start: 0;
   }
 }
+
+/* --- Breakdown ---------------------------------------------------------
+   A tree with no fixed number of levels, so nothing here encodes one: the
+   indent comes from nesting, not from a per-level rule. */
+.breakdown-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.breakdown-intro,
+.breakdown-tree,
+.breakdown-why,
+.breakdown-gaps {
+  padding: 22px;
+}
+.breakdown-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.breakdown-intro p,
+.breakdown-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.breakdown-root-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.breakdown-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 18px;
+}
+@media (max-width: 900px) {
+  .breakdown-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.breakdown-tree ul,
+.breakdown-gaps ul,
+.breakdown-links ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.breakdown-tree li ul {
+  /* The only indent rule. Depth is whatever the plan says it is. */
+  padding-inline-start: 18px;
+  border-inline-start: 1px solid #edf0f5;
+  margin-inline-start: 9px;
+}
+.breakdown-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 5px 0;
+}
+.breakdown-row[data-selected="true"] {
+  background: #f5f8ff;
+  border-radius: 8px;
+}
+.breakdown-toggle {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #dfe4ec;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.breakdown-toggle.is-leaf {
+  border-color: transparent;
+  background: none;
+  cursor: default;
+}
+.breakdown-title {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.breakdown-kind,
+.breakdown-count,
+.breakdown-contributes,
+.breakdown-depends,
+.breakdown-gap-label {
+  border: 1px solid #e6eaf1;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.breakdown-rationale,
+.breakdown-more,
+.breakdown-selected {
+  margin: 0 0 4px 28px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.breakdown-chain {
+  margin: 8px 0;
+  padding-inline-start: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.breakdown-chain small,
+.breakdown-links small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.breakdown-links h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+}
+.breakdown-move {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.breakdown-move label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.breakdown-gaps li {
+  padding: 10px 0;
+}
+.breakdown-gaps li + li {
+  border-top: 1px solid #edf0f5;
+}
+.breakdown-gaps small {
+  color: var(--muted);
+  font-size: 11px;
+}

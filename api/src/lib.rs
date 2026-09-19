@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod breakdown;
 pub mod collaboration;
 pub mod db;
 pub mod field;

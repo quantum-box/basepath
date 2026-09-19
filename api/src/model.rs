@@ -311,6 +311,17 @@ pub struct Relation {
     pub relation_type: String,
     #[serde(default)]
     pub rationale: String,
+    /// Where a `part_of` child sits among its siblings.
+    ///
+    /// On the edge rather than the item, because order is a fact about one
+    /// parent's list. The same item contributing to two goals does not have
+    /// one position, and giving it one would make reordering under either
+    /// parent silently reorder the other.
+    ///
+    /// Optional: an unplaced child sorts last, so newly added work does not
+    /// appear at the top of a plan someone has already arranged.
+    #[serde(default)]
+    pub position: Option<i64>,
     /// When the link was made.
     ///
     /// Optional because relations recorded before this field existed have no

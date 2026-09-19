@@ -2386,6 +2386,7 @@ async fn dispatch_inner(
             )?;
             Ok(result)
         }
+        ("GET", "breakdown", "gaps", "") => crate::breakdown::gaps(tx, w).await,
         ("GET", "graph", "", "") => {
             let limit = query
                 .get("limit")
@@ -2680,6 +2681,7 @@ async fn dispatch_inner(
                     target_id: parent.into(),
                     relation_type: "part_of".into(),
                     rationale: String::new(),
+                    position: None,
                     created_at: Some(now()),
                     version: 1,
                 };
@@ -2776,6 +2778,101 @@ async fn dispatch_inner(
             }
             put(tx, w, "items", id, &item).await?;
             value(item)
+        }
+        // Moving a branch, not copying or recreating it. The children come
+        // along because they were never attached to the parent's parent —
+        // they are attached to this item, and that has not changed.
+        ("POST", "items", id, "reparent") if !id.is_empty() => {
+            only(body, &["expected_version", "parent_id", "rationale"])?;
+            let item: Item = get(tx, w, "items", id).await?;
+            guard_personal_goal(tx, actor, w, &item).await?;
+            version(body, item.version)?;
+            let relations: Vec<Relation> = list(tx, w, "relations").await?;
+            let existing = relations
+                .iter()
+                .find(|r| r.relation_type == "part_of" && r.source_id == item.id)
+                .cloned();
+            let from = existing.as_ref().map(|r| r.target_id.clone());
+            // `null` detaches: an item can stop being part of something
+            // without becoming part of something else, and without being
+            // deleted for the privilege.
+            let to = body["parent_id"].as_str().map(str::to_owned);
+            if to == from {
+                return Err(ApiError::invalid("すでにその位置にあります"));
+            }
+            if let Some(parent) = &to {
+                // The same link, pointing somewhere else — not a new one. It
+                // keeps its id so the structural parent stays single by
+                // construction rather than by a delete landing first, and so
+                // the history refers to one link that moved.
+                let relation = Relation {
+                    id: existing
+                        .as_ref()
+                        .map(|old| old.id.clone())
+                        .unwrap_or_else(|| new_id("rel")),
+                    workspace_id: w.into(),
+                    source_id: item.id.clone(),
+                    target_id: parent.clone(),
+                    relation_type: "part_of".into(),
+                    rationale: text(body, "rationale").into(),
+                    // Where it sat under the old parent means nothing under
+                    // the new one, so it joins the end of that list.
+                    position: None,
+                    created_at: existing
+                        .as_ref()
+                        .and_then(|old| old.created_at.clone())
+                        .or_else(|| Some(now())),
+                    version: existing.as_ref().map(|old| old.version + 1).unwrap_or(1),
+                };
+                // Self-reference, cycles, and a parent in another workspace
+                // are all refused here, before anything is written: a move
+                // that fails must leave the item where it was.
+                validate_relation(tx, &relation).await?;
+                put(tx, w, "relations", &relation.id, &relation).await?;
+            } else if let Some(old) = &existing {
+                remove(tx, w, "relations", &old.id).await?;
+            }
+            // The structure's history, in the same place as every other
+            // change to this item, so a timeline can say when it moved.
+            let record = json!({"id":new_id("record"),"workspace_id":w,"item_ids":[id],
+                "record_type":"breakdown_change",
+                "body":json!({"from":from,"to":to,"rationale":text(body,"rationale")}).to_string(),
+                "happened_at":now(),"created_at":now(),"author":actor.id});
+            put(tx, w, "records", text(&record, "id"), &record).await?;
+            crate::breakdown::ancestry(tx, w, id).await
+        }
+        // Sibling order, written as one list rather than one nudge at a time:
+        // a partial reorder is a different arrangement from the one the
+        // person dragged into place.
+        ("POST", "items", id, "children") if !id.is_empty() => {
+            only(body, &["order"])?;
+            let _: Item = get(tx, w, "items", id).await?;
+            let wanted: Vec<&str> = body["order"]
+                .as_array()
+                .ok_or_else(|| ApiError::invalid("orderに子の並びを配列で指定してください"))?
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            let relations: Vec<Relation> = list(tx, w, "relations").await?;
+            let mut children: Vec<Relation> = relations
+                .into_iter()
+                .filter(|r| r.relation_type == "part_of" && r.target_id == id)
+                .collect();
+            for child in &wanted {
+                if !children.iter().any(|r| &r.source_id == child) {
+                    return Err(ApiError::invalid(&format!(
+                        "{child} はこの項目の子ではありません"
+                    )));
+                }
+            }
+            for (index, child) in wanted.iter().enumerate() {
+                if let Some(relation) = children.iter_mut().find(|r| &r.source_id == child) {
+                    relation.position = Some(index as i64);
+                    relation.version += 1;
+                    put(tx, w, "relations", &relation.id.clone(), relation).await?;
+                }
+            }
+            crate::breakdown::subtree(tx, w, id, &HashMap::new()).await
         }
         ("PATCH", "notifications", id, "read") if !id.is_empty() => {
             only(body, &["read"])?;
@@ -2883,7 +2980,10 @@ async fn dispatch_inner(
             Ok(json!({"item":item,"record":rec,"outcome_updated":false}))
         }
         ("POST", "relations", "", "") => {
-            only(body, &["source_id", "target_id", "type", "rationale"])?;
+            only(
+                body,
+                &["source_id", "target_id", "type", "rationale", "position"],
+            )?;
             let r = Relation {
                 id: new_id("rel"),
                 workspace_id: w.into(),
@@ -2891,6 +2991,7 @@ async fn dispatch_inner(
                 target_id: title(body, "target_id", 200)?,
                 relation_type: title(body, "type", 40)?,
                 rationale: text(body, "rationale").into(),
+                position: body["position"].as_i64(),
                 created_at: Some(now()),
                 version: 1,
             };
@@ -3390,6 +3491,18 @@ async fn dispatch_inner(
             Ok(json!({"items":checkins,"standing_id":standing}))
         }
         ("GET", "items", id, "timeline") if !id.is_empty() => item_timeline(tx, w, id, query).await,
+        // --- Breakdown ---------------------------------------------------
+        //
+        // Downward and upward are separate routes because they answer
+        // separate questions: "what does this get done by" and "why is this
+        // being done". One endpoint returning both would be read as one
+        // answer, and they are not.
+        ("GET", "items", id, "breakdown") if !id.is_empty() => {
+            crate::breakdown::subtree(tx, w, id, query).await
+        }
+        ("GET", "items", id, "ancestry") if !id.is_empty() => {
+            crate::breakdown::ancestry(tx, w, id).await
+        }
         ("POST", "cycles", "", "") => {
             only(
                 body,
