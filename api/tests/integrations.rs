@@ -48,8 +48,21 @@ async fn mock(
             assert_eq!(headers.get("x-amz-target").unwrap(),"AWSCognitoIdentityProviderService.InitiateAuth");
             assert_eq!(headers.get("content-type").unwrap(),"application/x-amz-json-1.1");
             let request=serde_json::from_str::<Value>(&body).unwrap();
-            assert_eq!(request["AuthFlow"],"USER_PASSWORD_AUTH");
             assert_eq!(request["ClientId"],"cognito-test-client");
+            // Renewal is the same endpoint with a different flow. A refresh
+            // token this pool did not issue is refused, like the real one.
+            if request["AuthFlow"]=="REFRESH_TOKEN_AUTH" {
+                if request["AuthParameters"]["REFRESH_TOKEN"]!="test-refresh-token" {
+                    return (StatusCode::BAD_REQUEST,Json(json!({"__type":"com.amazon.coral.service#NotAuthorizedException"}))).into_response();
+                }
+                let mut header=jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);header.kid=Some("test-key".into());
+                let claims=json!({"sub":"upstream-subject","iss":format!("{}/pool",s.base),"exp":*s.expires.lock().unwrap(),"token_use":"access","client_id":"cognito-test-client"});
+                let key=jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/oidc-test-key.pem")).unwrap();
+                let renewed=jsonwebtoken::encode(&header,&claims,&key).unwrap();
+                *s.cognito_token.lock().unwrap()=renewed.clone();
+                return Json(json!({"AuthenticationResult":{"AccessToken":renewed,"ExpiresIn":*s.token_lifetime.lock().unwrap(),"TokenType":"Bearer"}})).into_response();
+            }
+            assert_eq!(request["AuthFlow"],"USER_PASSWORD_AUTH");
             if request["AuthParameters"]["PASSWORD"]!="test-password" {
                 return (StatusCode::BAD_REQUEST,Json(json!({"__type":"com.amazon.coral.service#NotAuthorizedException"}))).into_response();
             }
@@ -58,7 +71,7 @@ async fn mock(
             let key=jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/oidc-test-key.pem")).unwrap();
             let access_token=jsonwebtoken::encode(&header,&claims,&key).unwrap();
             *s.cognito_token.lock().unwrap()=access_token.clone();
-            Json(json!({"AuthenticationResult":{"AccessToken":access_token,"ExpiresIn":3600,"TokenType":"Bearer"}})).into_response()
+            Json(json!({"AuthenticationResult":{"AccessToken":access_token,"ExpiresIn":*s.token_lifetime.lock().unwrap(),"TokenType":"Bearer","RefreshToken":"test-refresh-token"}})).into_response()
         },
         "/oauth2/login"=> {
             assert_eq!(method, Method::POST);
@@ -617,7 +630,7 @@ async fn direct_login_uses_tachyon_pkce_without_hosted_ui() {
     h.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
     let session = a.session(&h).await.unwrap();
     assert_eq!(session.identity.id, "us_verified");
-    assert!(a.logout(&h).unwrap().contains("Max-Age=0"));
+    assert!(a.logout(&h).await.unwrap().contains("Max-Age=0"));
     server.abort();
 }
 #[tokio::test]
@@ -944,4 +957,80 @@ async fn local_http_contract_auth_json_paging_and_errors() {
         .await
         .unwrap();
     assert_eq!(openapi.status(), 200);
+}
+
+/// A session outlives the access token inside it.
+///
+/// This is the whole point of keeping sessions in the database. Before it, the
+/// cookie *was* the session and died with its token — about an hour — because
+/// a refresh token had nowhere safe to live. Someone planning a quarter got
+/// signed out mid-sentence.
+#[tokio::test]
+async fn a_session_is_renewed_instead_of_ending_with_its_access_token() {
+    let (s, _h) = upstream().await;
+    let dir = tempfile::tempdir().unwrap();
+    let service = pathbase_api::service::Service::open(
+        &dir.path().join("sessions.sqlite3").to_string_lossy(),
+    )
+    .await
+    .unwrap();
+    // A token that is already inside the renewal window when it is issued, so
+    // the very next request has to renew it.
+    *s.token_lifetime.lock().unwrap() = 90;
+    let auth = TachyonAuth::new(AuthConfig {
+        issuer: s.base.clone(),
+        client_id: "pathbase-test".into(),
+        client_secret: None,
+        redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+        public_url: "http://localhost:1420".into(),
+        tachyon_api_url: s.base.clone(),
+        cognito_client_id: Some("cognito-test-client".into()),
+        cognito_issuer: Some(format!("{}/pool", s.base)),
+    })
+    .await
+    .unwrap()
+    .with_database(service.db.clone());
+
+    let cookie = auth
+        .direct_login("test-user", "test-password")
+        .await
+        .unwrap();
+    // The cookie names a row rather than carrying the session, so a refresh
+    // token is never handed to the browser.
+    assert!(cookie.contains("pathbase_session=s1."), "{cookie}");
+    assert!(!cookie.contains("test-refresh-token"), "{cookie}");
+
+    let value = cookie
+        .split(';')
+        .next()
+        .unwrap()
+        .trim_start_matches("pathbase_session=")
+        .to_owned();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        format!("pathbase_session={value}").parse().unwrap(),
+    );
+
+    // The token is within the renewal window, so this request renews it. The
+    // old behaviour was to refuse and send the person back to sign in.
+    let before = s.calls.lock().unwrap().len();
+    let session = auth.session(&headers).await.unwrap();
+    assert_eq!(session.identity.id, "us_verified");
+    assert!(
+        s.calls.lock().unwrap().len() > before,
+        "the upstream was never asked to renew"
+    );
+
+    // And the cookie is unchanged: the id still points at the same row, now
+    // holding a fresh token.
+    assert!(auth.session(&headers).await.is_ok());
+
+    // Signing out ends it for that cookie everywhere, not just in this
+    // browser — which is the thing a sealed cookie could not do.
+    auth.logout(&headers).await.unwrap();
+    assert_eq!(
+        auth.session(&headers).await.err().map(|error| error.status),
+        Some(401)
+    );
 }
