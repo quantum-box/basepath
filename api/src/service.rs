@@ -2191,10 +2191,28 @@ async fn dispatch_inner(
         return crate::collaboration::dispatch(tx, actor, method, &p, body).await;
     }
     match (method, p.as_slice()) {
+        // Who is asking, said truthfully.
+        //
+        // The sample identity belongs to local preview and to nothing else.
+        // Returning it for a real person — which is what happened to every
+        // MCP request, because those carry no browser session — tells an AI
+        // it is connected to a test account. That is worse than unhelpful: it
+        // makes correct data look suspect, and it would hide a genuine
+        // mix-up. `local-owner` is the only actor local preview ever has, so
+        // it is the only one that may claim to be local preview.
         ("GET", ["v1", "me"]) => {
-            return Ok(
-                json!({"id":actor.id,"name":"やまだ はるか","mode":"local-preview","agent":actor.agent}),
-            )
+            let local = actor.id == Actor::local().id;
+            return Ok(json!({
+                "id": actor.id,
+                // No display name is stored here. "あなた" is what the
+                // browser falls back to when the upstream has none, and a
+                // neutral word beats a borrowed one.
+                "name": if local { "やまだ はるか" } else { "あなた" },
+                "mode": if local { "local-preview" } else { "tachyon" },
+                // Said separately, because "an AI acting for you" and "you"
+                // are different answers to "who is this".
+                "agent": actor.agent,
+            }));
         }
         ("GET", ["v1", "workspaces"]) => return value(memberships(tx, &actor.id).await?),
         ("GET", ["v1", "templates"]) => return Ok(templates()),

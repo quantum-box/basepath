@@ -534,6 +534,21 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         json!({"name":"pathbase_get_context","arguments":{}}),
     )
     .await;
+    // Who the host is told it is connected to.
+    //
+    // This must be the person who consented, not the sample identity local
+    // preview uses. An MCP request carries no browser session, and reporting
+    // the sample one for want of a session told an AI it was on a test
+    // account — which makes correct data look suspect and would hide a real
+    // mix-up.
+    let me = &alice_context["structuredContent"]["me"];
+    assert_eq!(me["id"], "us_alice");
+    assert_ne!(me["name"], "やまだ はるか", "{me}");
+    assert_ne!(me["mode"], "local-preview", "{me}");
+    // And it says an AI is asking, which is a different fact from who it is
+    // asking for.
+    assert_eq!(me["agent"], true);
+
     let alice_personal = alice_context["structuredContent"]["workspaces"]
         .as_array()
         .unwrap()

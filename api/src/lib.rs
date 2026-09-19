@@ -383,7 +383,23 @@ async fn endpoint(
         (Actor::local(), None)
     };
     if path == "/v1/me" && method == Method::GET {
-        return Ok(Json(if let Some(s)=&session{json!({"id":s.identity.id,"name":s.identity.name.as_deref().unwrap_or("あなた"),"email":s.identity.email,"mode":"tachyon"})}else{json!({"id":actor.id,"name":"やまだ はるか","mode":"local-preview"})}).into_response());
+        // The sample identity is local preview's, and only local preview's.
+        // A deployment with authentication configured never has it to give,
+        // so it reports the actor it actually resolved rather than borrowing
+        // a name from a mode it is not running in.
+        let body = match &session {
+            Some(s) => json!({
+                "id": s.identity.id,
+                "name": s.identity.name.as_deref().unwrap_or("あなた"),
+                "email": s.identity.email,
+                "mode": "tachyon",
+            }),
+            None if state.auth.is_some() => {
+                json!({"id": actor.id, "name": "あなた", "mode": "tachyon"})
+            }
+            None => json!({"id": actor.id, "name": "やまだ はるか", "mode": "local-preview"}),
+        };
+        return Ok(Json(body).into_response());
     }
     if path == "/v1/tenants" && method == Method::GET {
         let session = session.as_ref().ok_or_else(|| {
