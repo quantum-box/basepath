@@ -36,6 +36,27 @@ pub const GUARDED: [&str; 7] = [
     "baseline",
 ];
 
+/// Which guarded keys an operation body mentions at all — set *or* cleared.
+///
+/// Separate from [`guarded_values`], and the difference is the question each
+/// one answers. `guarded_values` asks "does this state a commitment that needs
+/// a source?"; clearing a date states nothing, so it needs no basis. This asks
+/// "does this touch a commitment?", which clearing very much does — a deadline
+/// somebody removes is as consequential as one they set. A range granted for
+/// adding work must not quietly carry either.
+pub fn guarded_keys(body: &Value) -> Vec<&'static str> {
+    GUARDED
+        .into_iter()
+        .filter(|key| {
+            body.get(key).is_some()
+                || body
+                    .get("fields")
+                    .and_then(|fields| fields.get(key))
+                    .is_some()
+        })
+        .collect()
+}
+
 /// Which of the guarded values this operation body would set.
 pub fn guarded_values(body: &Value) -> Vec<&'static str> {
     let mut found = Vec::new();

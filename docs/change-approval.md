@@ -100,14 +100,30 @@ So the app may now show a trigger, and the trigger proves nothing. The range
 does. The server re-reads it on every apply, which is why revoking takes effect
 on the next call rather than the next session.
 
+### Coverage is decided by effect, not by method
+
+The HTTP method is the caller's word for what an operation does, and it is
+routinely wrong. `POST /actions/{id}/complete` creates nothing: it moves an
+existing action to done and bumps its version. Reading `POST` as "an addition"
+meant a range granted for adding work rewrote what the person had written.
+
+So a range is matched against the **recorded diff** — the rows captured while
+the operations actually ran inside the rolled-back savepoint, which are the
+same rows the person reads. A range covers what the diff says, or it covers
+nothing. A change set whose descriptions do not line up one-to-one with its
+operations is not covered at all.
+
 ### What a range cannot reach
 
 | | |
 | --- | --- |
 | A deletion | Never. There is no column for it. A proposal containing one falls outside every range that can be expressed |
-| `due_date` / `start_date` / `scheduled_date` / `assignee_id` / `self_assessment` / `target` / `baseline` | Only if the person turned that on for that one range, as a separate decision. These read afterwards as things they decided |
+| An archive | Never. The row survives, so the recorded effect is `updated`, but the item leaves every view the person looks at. Read off the before/after pair, so a second route that archives is covered by this too |
+| `due_date` / `start_date` / `scheduled_date` / `assignee_id` / `self_assessment` / `target` / `baseline` | Only if the person turned that on for that one range, as a separate decision. Presence of the key, not a non-null value: `{"due_date": null}` states no commitment while removing one, and removing a deadline is as consequential as setting it |
 | Another workspace, or another AI client | Never. Both are part of the key, and the proposal must have arrived on the connection now applying it |
 | Part of a proposal | Never. A range covers every operation or none: applying the covered half leaves a plan nobody described |
+| More than the delegation holds | Never. The connection must still be active and still hold `pathbase.apply`. A range cannot outlive the permission it narrows, or exceed it |
+| A reconnection | Never. Disconnecting a client revokes its ranges in the same transaction. The delegation row is reused when that client connects again, so without this a permission the person removed would come back when they re-consented to something else |
 | Forever | Never. Every range expires, at most 90 days out |
 | An AI connection reading or writing one | Never. `GET` is a 404 — not a 403, which would confirm there is something to widen — and a write gets the same refusal every agent write gets, so the answer carries no information either way |
 
@@ -165,6 +181,11 @@ test:
 | Apply what this person's approval already applied | the change set, `already_applied: true`, nothing written |
 | Apply with no range, or one that does not cover every operation | `403 APPROVAL_REQUIRED` |
 | Apply a deletion under the widest range that can be saved | `403 APPROVAL_REQUIRED` |
+| Apply an archive under the widest range that can be saved | `403 APPROVAL_REQUIRED` |
+| Apply a command-style `POST` that rewrites existing state, under an additions-only range | `403 APPROVAL_REQUIRED` |
+| Apply an operation that clears a committing value, without `allow_guarded` | `403 APPROVAL_REQUIRED` |
+| Save a range over a connection that cannot apply | `422` |
+| Apply under a range whose connection was disconnected and reconnected | `403 APPROVAL_REQUIRED` |
 | Apply a proposal that arrived on another connection, under this one's range | `403 APPROVAL_REQUIRED` |
 | Apply under a range revoked or expired since the proposal | `403 APPROVAL_REQUIRED` |
 | `auto_applied` / `auto_apply_rule` / `auto_apply_eligible` in a proposal body | `422` |

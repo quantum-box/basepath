@@ -314,7 +314,10 @@ function BasepathApp() {
       // with it.
       setChanges((current) =>
         mergeChanges(
-          current,
+          // Whatever is on screen from another workspace goes: this list is
+          // the current workspace's, and a proposal it does not contain is
+          // either finished here or was never here at all.
+          current.filter((change) => change.workspaceId === workspace.id),
           changeSetsFrom(listed).filter(
             (change) =>
               change.status === "pending" || change.status === "approved",
@@ -502,6 +505,22 @@ function BasepathApp() {
    * Basepath applies, so the apply path is only for proposals approved back
    * when it did not.
    */
+  /**
+   * Where this proposal is approved.
+   *
+   * The server puts the absolute URL on the change set itself, which is what
+   * makes this work for a connection that may propose but not read: reading
+   * `basepath_url` needs `pathbase.read`, and gating the link on it would hide
+   * the way out from exactly the people who cannot find it any other way.
+   * Composing one locally is the fallback, not the source.
+   */
+  const hrefFor = useCallback(
+    (change: ChangeSet) =>
+      change.approvalUrl ||
+      (basepathUrl ? approvalUrl(basepathUrl, change) : ""),
+    [basepathUrl],
+  );
+
   const actOnChange = useCallback(
     async (change: ChangeSet, intent: "reject" | "apply" | "auto") => {
       const host = hostFor();
@@ -537,7 +556,7 @@ function BasepathApp() {
           // A refusal has to end somewhere the person can go. The most common
           // one here is "this is outside the range", and the answer to that is
           // the approval screen, not an apology.
-          const href = basepathUrl ? approvalUrl(basepathUrl, change) : "";
+          const href = hrefFor(change);
           setChangeNotice(
             failure.code === "APPROVAL_REQUIRED" && href
               ? `反映されていません。この変更案は事前に決めた範囲の外なので、Basepathで確認して承認してください: ${href}`
@@ -551,13 +570,13 @@ function BasepathApp() {
         await refresh();
       }
     },
-    [hostFor, changeBusy, refresh, basepathUrl],
+    [hostFor, changeBusy, refresh, hrefFor],
   );
 
   const openApproval = useCallback(
     async (change: ChangeSet) => {
-      if (!app || !basepathUrl) return;
-      const url = approvalUrl(basepathUrl, change);
+      const url = hrefFor(change);
+      if (!app || !url) return;
       if (app.getHostCapabilities()?.openLinks) {
         await app.openLink({ url });
         return;
@@ -566,7 +585,7 @@ function BasepathApp() {
         `このホストはリンクを開けません。${url} を開いてください。`,
       );
     },
-    [app, basepathUrl],
+    [app, hrefFor],
   );
 
   if (error) {
@@ -613,6 +632,11 @@ function BasepathApp() {
           onSelectWorkspace={(id) => {
             setNotice(null);
             setLimit(undefined);
+            // A proposal belongs to the plan it would change. Carrying one
+            // across is how somebody approves the right diff in the wrong
+            // place.
+            setChanges([]);
+            setChangeNotice(null);
             setWorkspaceId(id);
           }}
           onPropose={(request) => void propose(request)}
@@ -650,14 +674,20 @@ function BasepathApp() {
         <ChangeReview
           key={change.id}
           change={change}
-          workspaceName={view.workspace?.name}
+          // Only when it is this workspace's. A proposal carried over from
+          // another one would otherwise be shown under the current
+          // workspace's name while its buttons still acted on the original —
+          // the person reading the wrong plan and being sure they are not.
+          workspaceName={
+            change.workspaceId === view.workspace?.id
+              ? view.workspace?.name
+              : undefined
+          }
           busy={changeBusy}
           notice={changeNotice}
-          approveHref={
-            basepathUrl ? approvalUrl(basepathUrl, change) : undefined
-          }
+          approveHref={hrefFor(change) || undefined}
           onOpenApproval={
-            basepathUrl ? () => void openApproval(change) : undefined
+            hrefFor(change) ? () => void openApproval(change) : undefined
           }
           onReject={() => void actOnChange(change, "reject")}
           onApply={

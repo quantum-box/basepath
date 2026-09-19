@@ -329,9 +329,11 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 
 - `GET /v1/mcp/auto-apply`：本人の範囲一覧。
 - `POST /v1/mcp/auto-apply`：`workspace_id`、`connection_id`、`allow_create`、`allow_update`、`allow_guarded`、`days`（1〜90）。同じ(本人, ワークスペース, 接続)の組は置き換えです。追加も更新も許可しない範囲、有効な接続でないもの、参加していないワークスペースは422 / 404。
-- `POST /v1/mcp/auto-apply/{id}/revoke`：空オブジェクト。次の呼び出しから効きます。
+判定はHTTPメソッドではなく、SAVEPOINT内で記録した差分の`effect`で行います。`POST /actions/{id}/complete`のような命令型POSTは既存の状態を書き換えるので`updated`です。
 
-範囲に**入らない**もの：削除（列自体が無い）、`due_date` / `start_date` / `scheduled_date` / `assignee_id` / `self_assessment` / `target` / `baseline`を設定する操作（`allow_guarded`で明示しない限り）、別のワークスペース、別の接続、提案が届いた接続以外からの適用、1件でも範囲外の操作を含む変更案、期限切れ・解除済みの範囲。
+範囲に**入らない**もの：削除、アーカイブ（`archived_at`がnullから非nullになる操作）、`due_date` / `start_date` / `scheduled_date` / `assignee_id` / `self_assessment` / `target` / `baseline`を**含む**操作（nullで消す場合も含む。`allow_guarded`で明示しない限り）、別のワークスペース、別の接続、提案が届いた接続以外からの適用、1件でも範囲外の操作を含む変更案、期限切れ・解除済みの範囲、`pathbase.apply`を持たない接続、解除後に再接続した接続（解除時に範囲も同じトランザクションで解除されます）。
+
+- `POST /v1/mcp/auto-apply/{id}/revoke`：空オブジェクト。次の呼び出しから効きます。
 
 変更案を読むと`auto_apply_eligible`（この案をその場で反映できるか）が付きます。自動反映されたものは`auto_applied`と`auto_apply_rule`を持ち、`approved_by`はnullのままです——「本人が1件ずつ承認した」と「事前承認の範囲で自動反映した」を後から区別するためです。
 

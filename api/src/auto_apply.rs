@@ -46,9 +46,9 @@
 //! calling apply and seeing what happened, and publishing it is what stops the
 //! conversation from showing a button that cannot work. Knowing that one
 //! proposal is covered does not reveal the range's edges.
-use crate::copilot::guarded_values;
+use crate::copilot::guarded_keys;
 use crate::db::Tx;
-use crate::model::{ApiError, Operation, Result};
+use crate::model::{ApiError, Result};
 use crate::params;
 use crate::service::{new_id, now, Actor};
 use serde::Serialize;
@@ -91,34 +91,87 @@ impl Rule {
     /// Every operation, not most of them: a proposal is approved or it is not,
     /// and applying the part of it that happens to be in range would leave the
     /// person with half a plan nobody described to them.
+    ///
+    /// Coverage is decided from what each operation **did**, not from its HTTP
+    /// method. The method is the caller's word for it and is routinely wrong:
+    /// `POST /actions/{id}/complete` creates nothing — it rewrites an existing
+    /// action's state and version — so a range granted for adding work would
+    /// have carried it. The effects here were recorded while the operations
+    /// actually ran, inside the savepoint that was then rolled back, which
+    /// makes them the same rows the person reads in the diff. A range covers
+    /// what the diff says, or it covers nothing.
     pub fn covers(&self, changeset: &Value) -> bool {
         if !self.active() {
             return false;
         }
-        let Ok(operations) =
-            serde_json::from_value::<Vec<Operation>>(changeset["operations"].clone())
-        else {
+        let (Some(operations), Some(changes)) = (
+            changeset["operations"].as_array(),
+            changeset["changes"].as_array(),
+        ) else {
             return false;
         };
-        if operations.is_empty() {
+        // One description per operation, in order. Anything else means this is
+        // not a change set this code understands, and an unreadable proposal
+        // is not a covered one.
+        if operations.is_empty() || operations.len() != changes.len() {
             return false;
         }
-        operations.iter().all(|op| self.covers_operation(op))
+        operations
+            .iter()
+            .zip(changes)
+            .all(|(op, change)| self.covers_operation(op, change))
     }
 
-    fn covers_operation(&self, op: &Operation) -> bool {
+    fn covers_operation(&self, op: &Value, change: &Value) -> bool {
         // A value that reads afterwards as something the person decided needs
-        // the person, unless they said otherwise about this exact range.
-        if !self.allow_guarded && !guarded_values(&op.body).is_empty() {
+        // the person, unless they said otherwise about this exact range. Keys
+        // rather than values: clearing a deadline is as consequential as
+        // setting one, and `{"due_date": null}` states no commitment while
+        // removing one.
+        if !self.allow_guarded && !guarded_keys(&op["body"]).is_empty() {
             return false;
         }
-        match op.method.as_str() {
-            "POST" => self.allow_create,
-            "PATCH" => self.allow_update,
-            // Deleting is never in range. Not "not by default" — there is no
-            // setting that would make this arm return true.
-            _ => false,
+        match effect_of(change) {
+            Effect::Created => self.allow_create,
+            Effect::Updated => self.allow_update,
+            // Never in range. Not "not by default" — there is no setting that
+            // makes either of these arms return true.
+            Effect::Removed => false,
+            // A change the server could not describe is one the person was not
+            // shown, and agreeing in advance to an unread row is not something
+            // this range can express.
+            Effect::Unknown => false,
         }
+    }
+}
+
+/// What one operation turned out to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Effect {
+    Created,
+    Updated,
+    /// Gone from the person's plan — deleted outright, or archived.
+    Removed,
+    Unknown,
+}
+
+/// Reads the effect off a recorded diff row.
+///
+/// Archiving is the case worth naming. The row survives, so the recorded
+/// effect is `updated`, but the item leaves every view the person looks at —
+/// and the settings screen promises, in those words, that removing something
+/// is never automatic. Reading it off the before/after pair rather than off
+/// the request body means a second route that archives is covered by this too.
+fn effect_of(change: &Value) -> Effect {
+    let archived = |side: &Value| !side["archived_at"].is_null();
+    if !archived(&change["before"]) && archived(&change["after"]) {
+        return Effect::Removed;
+    }
+    match change["effect"].as_str() {
+        Some("created") => Effect::Created,
+        Some("updated") => Effect::Updated,
+        Some("deleted") => Effect::Removed,
+        _ => Effect::Unknown,
     }
 }
 
@@ -180,12 +233,30 @@ async fn find(
 /// special case to remember: there is nothing for a range to do on Basepath's
 /// own origin, where the person approves directly.
 pub async fn in_force(tx: &mut Tx, actor: &Actor, workspace_id: &str) -> Result<Option<Rule>> {
-    let Some(connection) = actor.connection.as_deref().filter(|id| !id.is_empty()) else {
+    let Some(connection_id) = actor.connection.as_deref().filter(|id| !id.is_empty()) else {
         return Ok(None);
     };
-    Ok(find(tx, &actor.id, workspace_id, connection)
+    let Some(rule) = find(tx, &actor.id, workspace_id, connection_id)
         .await?
-        .filter(Rule::active))
+        .filter(Rule::active)
+    else {
+        return Ok(None);
+    };
+    // The delegation has to still be granted, and still include applying.
+    //
+    // A range says what this AI client may do without being asked again; it
+    // cannot outlive the permission it narrows, or exceed it. Without this, a
+    // connection holding only `pathbase.read` would be told its proposal is
+    // eligible, the conversation would offer a button, and the scope check
+    // would refuse the call — "押したけど何が起きたか分からない", which is the
+    // thing this whole change exists to stop.
+    let Ok(connection) = crate::mcp_auth::get_connection(tx, &actor.id, connection_id).await else {
+        return Ok(None);
+    };
+    if !connection.allows(crate::mcp_auth::SCOPE_APPLY) {
+        return Ok(None);
+    }
+    Ok(Some(rule))
 }
 
 /// Whether a change set may be applied on this request under a standing range.
@@ -244,6 +315,13 @@ pub async fn save(
     if connection.status != "active" {
         return Err(ApiError::invalid(
             "この接続は有効ではありません。先に接続を許可してください",
+        ));
+    }
+    // A range over a client that cannot apply is a setting that does nothing
+    // and reads as though it does.
+    if !connection.allows(crate::mcp_auth::SCOPE_APPLY) {
+        return Err(ApiError::invalid(
+            "この接続には「承認済みの変更案を適用する」が許可されていません。先にその権限を許可してください",
         ));
     }
     crate::storage::authorize(tx, actor, workspace_id, true).await?;
@@ -349,4 +427,24 @@ pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Rule> {
     )
     .await?;
     Ok(rule)
+}
+
+/// Turns off every range belonging to one delegation.
+///
+/// Called when the person disconnects that AI client, in the same transaction,
+/// because otherwise the range outlives the connection it describes: the row
+/// for a delegation is reused when the same client reconnects, consent makes
+/// it active again, and a standing permission the person believed they had
+/// removed would come back without anyone granting it a second time.
+///
+/// Disconnecting means disconnecting. Reconnecting asks for consent again, and
+/// a range is a separate decision they can make again too.
+pub async fn revoke_for_connection(tx: &mut Tx, actor: &str, connection_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE auto_apply_rules SET revoked_at=?,updated_at=?,version=version+1 \
+         WHERE actor=? AND connection_id=? AND (revoked_at IS NULL OR revoked_at='')",
+        &params![now(), now(), actor, connection_id],
+    )
+    .await?;
+    Ok(())
 }

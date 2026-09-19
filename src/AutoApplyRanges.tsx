@@ -85,17 +85,18 @@ export function AutoApplyRanges({
     (connection) => connection.status === "active",
   );
 
+  /** Every range still in force for one connection, newest first. */
+  function liveFor(connection: McpConnection): AutoApplyRule[] {
+    return (rules ?? [])
+      .filter((rule) => rule.connection_id === connection.id && live(rule))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
   function draftFor(connection: McpConnection): Draft {
-    const existing = (rules ?? []).find(
-      (rule) => rule.connection_id === connection.id && live(rule),
-    );
     return (
       drafts[connection.id] ?? {
         ...DEFAULT_DRAFT,
-        workspace_id: existing?.workspace_id ?? store.workspaces[0]?.id ?? "",
-        allow_create: existing?.allow_create ?? DEFAULT_DRAFT.allow_create,
-        allow_update: existing?.allow_update ?? DEFAULT_DRAFT.allow_update,
-        allow_guarded: existing?.allow_guarded ?? DEFAULT_DRAFT.allow_guarded,
+        workspace_id: store.workspaces[0]?.id ?? "",
       }
     );
   }
@@ -129,6 +130,12 @@ export function AutoApplyRanges({
     });
   }
 
+  function workspaceName(id: string) {
+    return (
+      store.workspaces.find((workspace) => workspace.id === id)?.name ?? id
+    );
+  }
+
   return (
     <section className="auto-apply">
       <header>
@@ -156,36 +163,62 @@ export function AutoApplyRanges({
       <ul>
         {active.map((connection) => {
           const draft = draftFor(connection);
-          const current = (rules ?? []).find(
-            (rule) => rule.connection_id === connection.id && live(rule),
-          );
+          const current = liveFor(connection);
           return (
             <li key={connection.id} data-connection={connection.id}>
               <div className="auto-apply-head">
                 <strong>{connection.client_name}</strong>
-                {current ? (
-                  <small>
-                    {store.workspaces.find(
-                      (workspace) => workspace.id === current.workspace_id,
-                    )?.name ?? current.workspace_id}
-                    ・{current.allow_create ? "追加" : ""}
-                    {current.allow_update ? "・更新" : ""}
-                    {current.allow_guarded ? "・期限や担当も含む" : ""}・
-                    {when(current.expires_at)}まで
-                  </small>
-                ) : (
+                {current.length === 0 && (
                   <small>設定なし。すべて1件ずつ承認します。</small>
                 )}
               </div>
 
+              {/* Every range in force, each one removable on its own.
+                  Ranges are keyed by workspace, so one connection can hold
+                  several — and a permission the screen does not show is one
+                  nobody can take back. */}
+              {current.length > 0 && (
+                <ul className="auto-apply-current">
+                  {current.map((rule) => (
+                    <li key={rule.id}>
+                      <div>
+                        <strong>{workspaceName(rule.workspace_id)}</strong>
+                        <small>
+                          {[
+                            rule.allow_create ? "追加" : null,
+                            rule.allow_update ? "更新" : null,
+                            rule.allow_guarded ? "期限や担当も含む" : null,
+                          ]
+                            .filter(Boolean)
+                            .join("・")}
+                          ・{when(rule.expires_at)}まで
+                        </small>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={store.pending}
+                        onClick={() => void revoke(rule)}
+                      >
+                        この範囲を解除
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
               <fieldset>
-                <legend>範囲</legend>
+                <legend>
+                  {current.length > 0 ? "範囲を追加・変更する" : "範囲"}
+                </legend>
                 <label>
                   <span>ワークスペース</span>
                   {/* One workspace, chosen explicitly. A personal plan and a
                       shared one are different plans with different
                       consequences, and "everywhere" would cross that boundary
-                      for the sake of one fewer click. */}
+                      for the sake of one fewer click. Saving for a workspace
+                      that already has a range replaces it; another workspace
+                      becomes a second range, listed above. */}
                   <select
                     value={draft.workspace_id}
                     onChange={(event) =>
@@ -225,7 +258,7 @@ export function AutoApplyRanges({
                   <span>
                     更新も自動で反映する
                     <small>
-                      すでにあるものの書き換え。あなたが書いた文言が置き換わることがあります。
+                      すでにあるものの書き換え。行動の完了もここに入ります。あなたが書いた文言が置き換わることがあります。
                     </small>
                   </span>
                 </label>
@@ -240,7 +273,7 @@ export function AutoApplyRanges({
                   <span>
                     期限・担当・目標値なども含める
                     <small>
-                      これらの値は、あとから「あなたが決めた」と読まれます。必要がなければ外したままにしてください。
+                      これらの値は、あとから「あなたが決めた」と読まれます。設定するときも、消すときも同じです。必要がなければ外したままにしてください。
                     </small>
                   </span>
                 </label>
@@ -271,18 +304,12 @@ export function AutoApplyRanges({
                   }
                   onClick={() => void save(connection)}
                 >
-                  {current ? "この範囲に更新" : "この範囲で許可する"}
+                  {current.some(
+                    (rule) => rule.workspace_id === draft.workspace_id,
+                  )
+                    ? "このワークスペースの範囲を更新"
+                    : "この範囲で許可する"}
                 </button>
-                {current && (
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={store.pending}
-                    onClick={() => void revoke(current)}
-                  >
-                    設定を解除
-                  </button>
-                )}
               </div>
             </li>
           );

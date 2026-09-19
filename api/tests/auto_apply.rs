@@ -35,6 +35,10 @@ fn ai(connection: &str) -> Actor {
 }
 
 async fn setup() -> (tempfile::TempDir, Service) {
+    setup_with_scopes("pathbase.read pathbase.propose pathbase.apply").await
+}
+
+async fn setup_with_scopes(scopes: &str) -> (tempfile::TempDir, Service) {
     let dir = tempfile::tempdir().unwrap();
     let service = Service::open(&dir.path().join("range.sqlite3").to_string_lossy())
         .await
@@ -53,7 +57,7 @@ async fn setup() -> (tempfile::TempDir, Service) {
                 person().id,
                 format!("client_{id}"),
                 name,
-                "pathbase.read pathbase.propose pathbase.apply",
+                scopes,
                 "active",
                 "2026-09-19T00:00:00Z",
                 "2026-09-19T00:00:00Z",
@@ -682,4 +686,237 @@ async fn the_person_approving_in_basepath_is_unchanged_by_any_of_this() {
     let again = apply(&service, &ai(CONNECTION), &change).await.unwrap();
     assert_eq!(again["already_applied"], json!(true));
     assert!(again["results"].as_array().unwrap().is_empty());
+}
+
+// --- what the range must not quietly carry --------------------------------
+
+#[tokio::test]
+async fn a_post_that_rewrites_existing_state_is_an_update_not_an_addition() {
+    // `POST /actions/{id}/complete` creates nothing: it moves an action to
+    // done and bumps its version. Classifying by HTTP method called that an
+    // addition, so a range granted for adding work rewrote the person's plan.
+    let (_dir, service) = setup().await;
+    set_range(&service, range_for(CONNECTION)).await.unwrap();
+    let action = new_item(&service, "action", "本人が予定した行動").await;
+
+    let change = propose(
+        &service,
+        &ai(CONNECTION),
+        json!([{
+            "method": "POST",
+            "path": format!("/v1/workspaces/personal/actions/{}/complete", action["id"].as_str().unwrap()),
+            "body": {"expected_version": action["version"], "local_date": "2026-09-19"},
+        }]),
+    )
+    .await;
+    // The diff already said so; the range now reads the same thing.
+    assert_eq!(change["changes"][0]["effect"], "updated");
+    assert_eq!(change["auto_apply_eligible"], json!(false));
+    assert_eq!(
+        apply(&service, &ai(CONNECTION), &change)
+            .await
+            .unwrap_err()
+            .code,
+        "APPROVAL_REQUIRED"
+    );
+
+    // With updates allowed, the same proposal goes through — the rule is
+    // "what did it do", not "which verb did it use".
+    let mut wider = range_for(CONNECTION);
+    wider["allow_update"] = json!(true);
+    set_range(&service, wider).await.unwrap();
+    let change = propose(
+        &service,
+        &ai(CONNECTION),
+        json!([{
+            "method": "POST",
+            "path": format!("/v1/workspaces/personal/actions/{}/complete", action["id"].as_str().unwrap()),
+            "body": {"expected_version": action["version"], "local_date": "2026-09-19"},
+        }]),
+    )
+    .await;
+    assert_eq!(
+        apply(&service, &ai(CONNECTION), &change).await.unwrap()["auto_applied"],
+        json!(true)
+    );
+}
+
+#[tokio::test]
+async fn archiving_is_a_removal_however_it_is_spelled() {
+    // The settings screen promises, in those words, that removing something is
+    // never automatic. An archive leaves the row behind, so the recorded
+    // effect is "updated" — but the item is gone from every view the person
+    // looks at, and a promise that only covers hard deletes is not the promise
+    // that was made.
+    let (_dir, service) = setup().await;
+    let mut wide = range_for(CONNECTION);
+    wide["allow_update"] = json!(true);
+    wide["allow_guarded"] = json!(true);
+    set_range(&service, wide).await.unwrap();
+
+    let goal = new_item(&service, "outcome", "消えてほしくない目標").await;
+    let change = propose(
+        &service,
+        &ai(CONNECTION),
+        json!([{
+            "method": "PATCH",
+            "path": format!("/v1/workspaces/personal/items/{}", goal["id"].as_str().unwrap()),
+            "body": {"archived_at": "2026-09-19T00:00:00Z", "expected_version": goal["version"]},
+        }]),
+    )
+    .await;
+    assert_eq!(change["auto_apply_eligible"], json!(false));
+    assert_eq!(
+        apply(&service, &ai(CONNECTION), &change)
+            .await
+            .unwrap_err()
+            .code,
+        "APPROVAL_REQUIRED"
+    );
+    let still_there = call(
+        &service,
+        &person(),
+        "GET",
+        &format!(
+            "/v1/workspaces/personal/items/{}",
+            goal["id"].as_str().unwrap()
+        ),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert!(still_there["archived_at"].is_null());
+}
+
+#[tokio::test]
+async fn clearing_a_commitment_is_as_guarded_as_setting_one() {
+    // `{"due_date": null}` sets no date, so it needs no basis — but it removes
+    // one the person committed to, and a range they granted for ordinary edits
+    // must not carry it.
+    let (_dir, service) = setup().await;
+    let mut updates = range_for(CONNECTION);
+    updates["allow_update"] = json!(true);
+    set_range(&service, updates).await.unwrap();
+
+    let goal = call(
+        &service,
+        &person(),
+        "POST",
+        "/v1/workspaces/personal/items",
+        json!({"kind": "outcome", "title": "期限のある目標", "due_date": "2026-12-31"}),
+    )
+    .await
+    .unwrap();
+
+    let change = propose(
+        &service,
+        &ai(CONNECTION),
+        json!([{
+            "method": "PATCH",
+            "path": format!("/v1/workspaces/personal/items/{}", goal["id"].as_str().unwrap()),
+            "body": {"due_date": null, "expected_version": goal["version"]},
+        }]),
+    )
+    .await;
+    assert_eq!(change["auto_apply_eligible"], json!(false));
+    assert_eq!(
+        apply(&service, &ai(CONNECTION), &change)
+            .await
+            .unwrap_err()
+            .code,
+        "APPROVAL_REQUIRED"
+    );
+}
+
+#[tokio::test]
+async fn a_range_cannot_outlive_or_exceed_the_delegation_it_narrows() {
+    // Without apply, the range would still have reported the proposal as
+    // eligible, the conversation would have offered a button, and the scope
+    // check would have refused the call it made.
+    let (_dir, service) = setup_with_scopes("pathbase.read pathbase.propose").await;
+    assert!(
+        set_range(&service, range_for(CONNECTION)).await.is_err(),
+        "a range over a client that cannot apply does nothing and reads as though it does"
+    );
+
+    // Granted properly, then the permission is narrowed afterwards.
+    let (_dir, service) = setup().await;
+    set_range(&service, range_for(CONNECTION)).await.unwrap();
+    let change = propose(&service, &ai(CONNECTION), add_action("権限を狭めた後")).await;
+    assert_eq!(change["auto_apply_eligible"], json!(true));
+
+    let mut tx = service.db.begin_write().await.unwrap();
+    let current = pathbase_api::mcp_auth::get_connection(&mut tx, &person().id, CONNECTION)
+        .await
+        .unwrap();
+    pathbase_api::mcp_auth::approve(
+        &mut tx,
+        &person().id,
+        CONNECTION,
+        &["pathbase.read".to_string(), "pathbase.propose".to_string()],
+        current.version,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let reread = call(
+        &service,
+        &person(),
+        "GET",
+        &format!(
+            "/v1/workspaces/personal/changesets/{}",
+            change["id"].as_str().unwrap()
+        ),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reread["status"], "pending");
+}
+
+#[tokio::test]
+async fn disconnecting_takes_the_range_with_it_and_reconnecting_does_not_revive_it() {
+    // The delegation row is reused when the same client reconnects, and
+    // consent makes it active again. Without revoking the range alongside it,
+    // a standing permission the person believed they had removed would come
+    // back without them granting it a second time.
+    let (_dir, service) = setup().await;
+    set_range(&service, range_for(CONNECTION)).await.unwrap();
+
+    let mut tx = service.db.begin_write().await.unwrap();
+    pathbase_api::mcp_auth::revoke(&mut tx, &person().id, CONNECTION)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // Reconnect: consent grants the scopes again on the same row.
+    let mut tx = service.db.begin_write().await.unwrap();
+    pathbase_api::mcp_auth::grant_from_consent(
+        &mut tx,
+        &person().id,
+        CONNECTION,
+        &[
+            "pathbase.read".to_string(),
+            "pathbase.propose".to_string(),
+            "pathbase.apply".to_string(),
+        ],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let change = propose(&service, &ai(CONNECTION), add_action("再接続後")).await;
+    assert_eq!(
+        change["auto_apply_eligible"],
+        json!(false),
+        "a disconnected range must not come back with the connection"
+    );
+    assert_eq!(
+        apply(&service, &ai(CONNECTION), &change)
+            .await
+            .unwrap_err()
+            .code,
+        "APPROVAL_REQUIRED"
+    );
 }

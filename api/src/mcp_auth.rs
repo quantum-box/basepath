@@ -290,6 +290,10 @@ pub async fn grant_from_consent(
 
 /// Disconnects. A still-valid access token stops working immediately.
 pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Connection> {
+    // Whatever this client was allowed to do without being asked again, it is
+    // no longer allowed to do. In this transaction, so there is no moment
+    // where the delegation is gone and a standing permission for it is not.
+    crate::auto_apply::revoke_for_connection(tx, actor, id).await?;
     get_connection(tx, actor, id).await?;
     tx.execute(
         "UPDATE mcp_connections SET scopes='',status='revoked',updated_at=?,version=version+1 \

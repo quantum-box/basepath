@@ -1008,3 +1008,76 @@ test("a refused reflection says the plan did not change, and where to go", async
       .first(),
   ).toBeVisible();
 });
+
+test("a proposal still leads somewhere when the connection cannot read context", async ({
+  page,
+}) => {
+  // A connection may hold propose without read. `basepath_url` comes from
+  // pathbase_get_context, which read scope gates — so gating the link on it
+  // hid the way out from exactly the people who could not find it otherwise.
+  const app = await openHarness(page, {
+    fixtures: {
+      ...QUIET,
+      pathbase_get_context: {
+        workspaces: [
+          {
+            id: "personal",
+            name: "個人",
+            scope: "個人",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+        ],
+        // No basepath_url: this is what a propose-only connection sees.
+      },
+    },
+  });
+  await page.evaluate((change) => window.__pushToolResult(change), proposal());
+
+  const review = app.getByRole("region", { name: "変更案" });
+  await expect(
+    review.getByRole("button", { name: "Basepathで承認する" }),
+  ).toBeVisible();
+  await expect(
+    review.getByText("https://basepath.example/changes/personal/change_live"),
+  ).toBeVisible();
+});
+
+test("switching workspace does not carry a proposal to the wrong plan", async ({
+  page,
+}) => {
+  // The buttons act on the proposal's own workspace. Showing it under another
+  // workspace's name is how somebody approves the right diff in the wrong
+  // place.
+  const app = await openHarness(page, {
+    fixtures: {
+      ...QUIET,
+      pathbase_get_context: {
+        workspaces: [
+          {
+            id: "personal",
+            name: "個人",
+            scope: "個人",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+          {
+            id: "team",
+            name: "チーム",
+            scope: "チーム",
+            timezone: "Asia/Tokyo",
+            role: "owner",
+          },
+        ],
+        basepath_url: "https://basepath.example",
+      },
+    },
+  });
+  await page.evaluate((change) => window.__pushToolResult(change), proposal());
+  const review = app.getByRole("region", { name: "変更案" });
+  await expect(review).toBeVisible();
+
+  await app.getByLabel("ワークスペース").selectOption("team");
+  await expect(app.getByRole("heading", { name: "チーム" })).toBeVisible();
+  await expect(app.getByRole("region", { name: "変更案" })).toBeHidden();
+});

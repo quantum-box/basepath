@@ -562,10 +562,21 @@ fn with_change_links(value: &mut Value) {
             // and a model given the wrong one sends the person somewhere they
             // did not need to go — or tells them to press a button that is not
             // there.
-            value["where_to_approve"] = json!(if value["auto_apply_eligible"] == json!(true) {
-                "This falls inside a range the person set in Basepath in advance. Show them the diff, say it is inside a range they set — not that you have permission — and reflect it with pathbase_apply_changes. If that is refused, nothing was written: show them this URL."
-            } else {
-                "Show the person this diff and this URL. Approving happens in Basepath, on their own session; approving there also applies it."
+            //
+            // Status first. A change set that is already in the plan, or that
+            // was withdrawn, is history: telling the model to get it approved
+            // would send the person to a screen with nothing to decide, and
+            // an auto-applied one reaches here with no eligibility flag at all
+            // because that flag is never stored.
+            value["where_to_approve"] = json!(match value["status"].as_str() {
+                Some("applied") =>
+                    "Already in the person's plan. Report what changed; there is nothing left to approve. The URL is where they can reread the diff.",
+                Some("rejected") =>
+                    "Withdrawn. Nothing was written and nothing can be. Propose again if they still want this.",
+                _ if value["auto_apply_eligible"] == json!(true) =>
+                    "This falls inside a range the person set in Basepath in advance. Show them the diff, say it is inside a range they set — not that you have permission — and reflect it with pathbase_apply_changes. If that is refused, nothing was written: show them this URL.",
+                _ =>
+                    "Show the person this diff and this URL. Approving happens in Basepath, on their own session; approving there also applies it.",
             });
             return;
         }
@@ -1035,7 +1046,17 @@ impl ServerHandler for Mcp {
             // MCP Apps?" has ever had an answer that came from a host rather
             // than from documentation. Best-effort: rendering must not fail
             // because the note did.
-            if let Some(identity) = context.extensions.get::<McpIdentity>() {
+            //
+            // The identity is inside the HTTP request's own extensions, not
+            // the outer ones — the same place `authorize` reads it from. A
+            // lookup in the outer map compiles, always misses on the hosted
+            // endpoint, and leaves `ui_read_at` empty exactly where it is
+            // supposed to be answering the question.
+            if let Some(identity) = context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .and_then(|parts| parts.extensions.get::<McpIdentity>())
+            {
                 mcp_auth::note_ui_read(&self.service.db, &identity.connection.id).await;
             }
             return Ok(serde_json::from_value(json!({"contents":[{

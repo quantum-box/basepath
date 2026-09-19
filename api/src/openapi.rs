@@ -44,6 +44,10 @@ pub fn document() -> Value {
         // them before anything is read.
         ("/v1/mcp/connections", vec!["get"]),
         ("/v1/mcp/auto-apply", vec!["get", "post"]),
+        // Listed because it is the only way to take a standing permission
+        // back. A contract that publishes how to grant one and not how to
+        // remove it is describing a different product.
+        ("/v1/mcp/auto-apply/{id}/revoke", vec!["post"]),
         ("/v1/integrations/field/tenants", vec!["get"]),
         ("/v1/integrations/field/tasks", vec!["get"]),
         ("/v1/integrations/field/metrics", vec!["get"]),
