@@ -424,11 +424,13 @@ function BasepathApp() {
   );
 
   /**
-   * Withdrawing a proposal, or applying one the person already approved.
+   * Withdrawing a proposal, or applying one left approved but unapplied.
    *
    * Approving is deliberately not here: a click in this app reaches the server
    * as an ordinary tool call, which the server cannot tell apart from the
-   * model's, so it is not evidence of the person's intent.
+   * model's, so it is not evidence of the person's intent. Approving in
+   * Basepath applies, so the apply path is only for proposals approved back
+   * when it did not.
    */
   const actOnChange = useCallback(
     async (change: ChangeSet, intent: "reject" | "apply") => {

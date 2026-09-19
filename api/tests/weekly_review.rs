@@ -267,7 +267,7 @@ async fn a_proposal_can_never_finalize_a_week() {
 }
 
 #[tokio::test]
-async fn a_proposal_written_against_an_older_draft_is_refused_on_apply() {
+async fn a_proposal_written_against_an_older_draft_is_refused_on_approval() {
     let (_dir, service) = setup().await;
     let person = Actor::local();
     let ai = agent("local-owner");
@@ -311,21 +311,14 @@ async fn a_proposal_written_against_an_older_draft_is_refused_on_apply() {
     .await
     .unwrap();
 
-    call(
+    // Approving is what writes, so the refusal lands there — while the person
+    // is still in front of the screen to read it.
+    let refused = call(
         &service,
         &person,
         "POST",
         &format!("/v1/workspaces/personal/changesets/{id}/approve"),
         json!({"hash":change["hash"]}),
-    )
-    .await
-    .unwrap();
-    let refused = call(
-        &service,
-        &person,
-        "POST",
-        &format!("/v1/workspaces/personal/changesets/{id}/apply"),
-        json!({}),
     )
     .await
     .unwrap_err();

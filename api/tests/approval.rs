@@ -213,7 +213,17 @@ async fn approval_belongs_to_the_person_the_content_and_the_workspace() {
     .unwrap_err();
     assert_eq!(stale.code, "CHANGESET_SUPERSEDED");
 
-    // Approving the shown content works, and records who and when.
+    // Nobody may apply what has not been approved — the guarantee the two
+    // steps exist for, and the one an AI connection runs into.
+    let unapproved = call(&service, &ai, "POST", &format!("{path}/apply"), json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(unapproved.code, "APPROVAL_REQUIRED");
+
+    // Approving the shown content works, records who and when — and writes it.
+    // A person looking at the diff has decided; a second button between that
+    // decision and their plan is a button they forget, and the proposal
+    // expires having done nothing.
     let approved = call(
         &service,
         &person,
@@ -225,22 +235,12 @@ async fn approval_belongs_to_the_person_the_content_and_the_workspace() {
     .unwrap();
     assert_eq!(approved["approved_by"], "local-owner");
     assert!(approved["approved_at"].is_string());
-
-    // Someone else cannot apply what this person approved.
-    let other = Actor::person("someone-else");
-    let refused = call(
-        &service,
-        &other,
-        "POST",
-        &format!("{path}/apply"),
-        json!({}),
-    )
-    .await
-    .unwrap_err();
-    assert!(
-        refused.status == 403 || refused.status == 404,
-        "{refused:?}"
-    );
+    assert_eq!(approved["status"], "applied");
+    assert!(approved["applied_at"].is_string());
+    assert_eq!(approved["applied_by"], "local-owner");
+    // Approved in the browser, so the record says so rather than naming the
+    // connection the proposal happened to arrive on.
+    assert!(approved["applied_by_connection"].is_null());
 
     // A change-set id from another workspace is not found in this one.
     let team = call(
@@ -254,28 +254,28 @@ async fn approval_belongs_to_the_person_the_content_and_the_workspace() {
     .unwrap_err();
     assert_eq!(team.status, 404);
 
-    // The approver — including through their AI connection, which is the same
-    // person — may apply, exactly once.
-    let applied = call(&service, &ai, "POST", &format!("{path}/apply"), json!({}))
+    // Someone else does not get the "already applied" answer: that answer is
+    // for the person whose approval it was.
+    let other = Actor::person("someone-else");
+    assert!(call(
+        &service,
+        &other,
+        "POST",
+        &format!("{path}/apply"),
+        json!({})
+    )
+    .await
+    .is_err());
+
+    // The approver's own connection asking again is asking for something that
+    // is already true, and is told so instead of being refused. A model that
+    // relayed "承認しました" would otherwise report a failure for a change that
+    // is in the plan.
+    let again = call(&service, &ai, "POST", &format!("{path}/apply"), json!({}))
         .await
         .unwrap();
-    assert_eq!(applied["changeset"]["status"], "applied");
-    assert_eq!(applied["changeset"]["applied_by"], "local-owner");
-    assert_eq!(
-        applied["changeset"]["applied_by_connection"],
-        "mcpconn_test"
-    );
-
-    // A second apply is refused. Which refusal comes first depends on what
-    // moved: applying changed the plan, so the staleness check fires before
-    // the approval check. Either way it does not happen twice.
-    let twice = call(&service, &ai, "POST", &format!("{path}/apply"), json!({}))
-        .await
-        .unwrap_err();
-    assert!(
-        ["VERSION_CONFLICT", "APPROVAL_REQUIRED"].contains(&twice.code.as_str()),
-        "a change set applies once: {twice:?}"
-    );
+    assert_eq!(again["already_applied"], true);
+    assert_eq!(again["changeset"]["applied_at"], approved["applied_at"]);
 
     let items = call(
         &service,
@@ -299,16 +299,6 @@ async fn a_rejected_or_stale_proposal_can_never_be_applied() {
     let change = propose(&service, &ai, "personal", "却下される案").await;
     let id = change["id"].as_str().unwrap().to_owned();
     let path = format!("/v1/workspaces/personal/changesets/{id}");
-    call(
-        &service,
-        &person,
-        "POST",
-        &format!("{path}/approve"),
-        json!({}),
-    )
-    .await
-    .unwrap();
-    // Rejecting after approval invalidates the approval.
     let rejected = call(&service, &ai, "POST", &format!("{path}/reject"), json!({}))
         .await
         .unwrap();
@@ -341,16 +331,9 @@ async fn a_rejected_or_stale_proposal_can_never_be_applied() {
         "/v1/workspaces/personal/changesets/{}",
         second["id"].as_str().unwrap()
     );
-    call(
-        &service,
-        &person,
-        "POST",
-        &format!("{second_path}/approve"),
-        json!({}),
-    )
-    .await
-    .unwrap();
-    // Someone edits the plan after the approval.
+    // Someone edits the plan after the proposal was written, so the diff the
+    // person is looking at is no longer the diff that would be applied.
+    // Approving now writes, so this is caught at approval rather than later.
     call(
         &service,
         &person,
@@ -364,7 +347,7 @@ async fn a_rejected_or_stale_proposal_can_never_be_applied() {
         &service,
         &person,
         "POST",
-        &format!("{second_path}/apply"),
+        &format!("{second_path}/approve"),
         json!({}),
     )
     .await
@@ -421,9 +404,6 @@ async fn an_applied_change_set_is_all_or_nothing_and_leaves_a_trail() {
     )
     .await
     .unwrap();
-    call(&service, &ai, "POST", &format!("{path}/apply"), json!({}))
-        .await
-        .unwrap();
 
     let audit = call(
         &service,
@@ -446,14 +426,95 @@ async fn an_applied_change_set_is_all_or_nothing_and_leaves_a_trail() {
             .unwrap_or_else(|| panic!("no audit entry for {needle}"))
             .clone()
     };
-    // Proposed by the AI connection, approved in the browser, applied through
-    // the connection again — each one distinguishable.
+    // Proposed by the AI connection, approved in the browser — two acts by two
+    // different parties, and the trail keeps them apart. The write is the
+    // person's: it happened in the approval, in their session, not on the
+    // connection the proposal arrived on.
     assert_eq!(find("changesets/preview")["origin"], "mcp");
     assert_eq!(find("changesets/preview")["connection"], "mcpconn_test");
     assert_eq!(find("/approve")["origin"], "ui");
     assert!(find("/approve")["connection"].is_null());
-    assert_eq!(find("/apply")["origin"], "mcp");
-    assert_eq!(find("/apply")["connection"], "mcpconn_test");
+    let items = call(
+        &service,
+        &person,
+        "GET",
+        "/v1/workspaces/personal/items",
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(items["items"].as_array().unwrap().len(), 1);
+}
+
+/// The failure this file exists to prevent, in the form it actually took.
+///
+/// A person approved a proposal in Basepath and left, believing they were
+/// done. Nothing had been written: the approval was one step and the writing
+/// was another, and the second one needed a click nobody had a reason to make.
+/// Half an hour later the proposal expired and the goal had never existed.
+#[tokio::test]
+async fn an_approval_is_never_left_sitting_there_unwritten() {
+    let (_dir, service) = setup().await;
+    let ai = agent("local-owner");
+    let person = Actor::local();
+    let change = propose(&service, &ai, "personal", "承認したら反映される案").await;
+    let path = format!(
+        "/v1/workspaces/personal/changesets/{}",
+        change["id"].as_str().unwrap()
+    );
+
+    let approved = call(
+        &service,
+        &person,
+        "POST",
+        &format!("{path}/approve"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+
+    // Not "approved, waiting". There is no such state to walk away from.
+    assert_eq!(approved["status"], "applied");
+    assert_ne!(
+        approved["status"], "approved",
+        "an approval that has not been written is one that can expire unnoticed"
+    );
+
+    let items = call(
+        &service,
+        &person,
+        "GET",
+        "/v1/workspaces/personal/items",
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let titles: Vec<&str> = items["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["title"].as_str())
+        .collect();
+    assert_eq!(titles, vec!["承認したら反映される案"]);
+
+    // And nothing remains that the person is expected to come back and finish.
+    let listed = call(
+        &service,
+        &person,
+        "GET",
+        "/v1/workspaces/personal/changesets",
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["status"] != "approved"),
+        "{listed}"
+    );
 }
 
 #[tokio::test]
@@ -466,23 +527,14 @@ async fn a_resent_or_double_clicked_approval_does_not_apply_twice() {
         "/v1/workspaces/personal/changesets/{}",
         change["id"].as_str().unwrap()
     );
-    call(
-        &service,
-        &person,
-        "POST",
-        &format!("{path}/approve"),
-        json!({}),
-    )
-    .await
-    .unwrap();
-
-    // The same request twice, with the same idempotency key, is one apply.
+    // The same approval twice, with the same idempotency key, writes once.
+    // Approving is now the write, so this is where a double click lands.
     let key = uuid::Uuid::new_v4().to_string();
     let first = service
         .handle(
-            &ai,
+            &person,
             "POST",
-            &format!("{path}/apply"),
+            &format!("{path}/approve"),
             &HashMap::new(),
             json!({}),
             Some(&key),
@@ -491,9 +543,9 @@ async fn a_resent_or_double_clicked_approval_does_not_apply_twice() {
         .unwrap();
     let replay = service
         .handle(
-            &ai,
+            &person,
             "POST",
-            &format!("{path}/apply"),
+            &format!("{path}/approve"),
             &HashMap::new(),
             json!({}),
             Some(&key),
@@ -501,6 +553,24 @@ async fn a_resent_or_double_clicked_approval_does_not_apply_twice() {
         .await
         .unwrap();
     assert_eq!(first, replay);
+
+    // A second click that lost the key is a fresh request, and is refused
+    // rather than writing again.
+    let without_key = call(
+        &service,
+        &person,
+        "POST",
+        &format!("{path}/approve"),
+        json!({}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(without_key.status, 409);
+    // The model asking afterwards is told it is already done, not refused.
+    let asked = call(&service, &ai, "POST", &format!("{path}/apply"), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(asked["already_applied"], true);
 
     let items = call(
         &service,

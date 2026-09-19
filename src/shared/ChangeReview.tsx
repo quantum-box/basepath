@@ -32,7 +32,10 @@ function effectLabel(effect: ChangeRow["effect"]) {
 function statusLabel(change: ChangeSet) {
   switch (change.status) {
     case "approved":
-      return "承認済み・適用待ち";
+      // Approving applies. Anything still sitting here was approved back when
+      // that was not true, and it is not in the plan — which is what the
+      // person needs told, rather than a word that sounds finished.
+      return "承認済み・未反映";
     case "applied":
       return "適用済み";
     case "rejected":
@@ -88,10 +91,16 @@ function Row({ row }: { row: ChangeRow }) {
 export type ChangeReviewProps = {
   change: ChangeSet;
   workspaceName?: string;
-  /** Present only where a real session can back an approval. */
+  /**
+   * Present only where a real session can back an approval. Approving here
+   * also applies: the person is looking at the diff and has decided.
+   */
   onApprove?: () => void;
   onReject?: () => void;
-  /** Applying is allowed wherever the approver is; the server still checks. */
+  /**
+   * For a proposal approved back when approving did not apply. Allowed
+   * wherever the approver is; the server still checks.
+   */
   onApply?: () => void;
   /** Where to go to approve, when approval is not possible here. */
   approveHref?: string;
@@ -179,7 +188,7 @@ export function ChangeReview({
       <div className="change-actions">
         {onApprove && change.status === "pending" && !expired && (
           <button type="button" disabled={busy} onClick={onApprove}>
-            この内容で承認する
+            この内容で承認して反映する
           </button>
         )}
         {!onApprove && change.status === "pending" && !expired && (

@@ -35,7 +35,8 @@ The rules every skill inherits, and repeats only where it changes behaviour:
    person or from a record. An unmeasured value stays unmeasured; it never
    becomes 0 and never becomes an estimate.
 4. **Propose, never apply.** `pathbase_preview_changes` creates a change set.
-   The person approves it in Basepath, on Basepath's own origin. Only then may
-   `pathbase_apply_changes` run, and only for what they approved.
+   The person approves it in Basepath, on Basepath's own origin, and that
+   approval is what puts it into their plan. There is nothing for you to do
+   afterwards.
 5. **Say which is which.** Keep observation, inference and question apart in
    anything written back into the plan.

@@ -112,10 +112,11 @@ not, because it reads afterwards as something someone wrote down.
 agreeing to the thinking as much as to the rows.
 
 Then tell the person, in their language, what the change set would do and that
-it is waiting for them in Basepath. It is **not applied**. Do not call
-`pathbase_apply_changes` unless they say they approved it there — an approval
-they type in the conversation is not the approval the server needs, and saying
-otherwise is worse than not offering.
+it is waiting for them in Basepath. It is **not applied**, and approving it
+there is what applies it — so once they say they have, it is already in their
+plan and there is nothing further to call. An approval they type in the
+conversation is not the approval the server needs, and saying otherwise is
+worse than not offering.
 
 If they want something changed, build a new proposal. Do not describe an edit
 they cannot see as a diff.
