@@ -7,9 +7,13 @@ pub async fn seed(tx: &mut Tx, demo: bool) -> Result<()> {
         ("team", "チーム（ローカル）", "チーム"),
         ("organization", "組織（ローカル）", "組織"),
     ] {
+        // Local preview's own tenant. The seeded workspaces are tenant-scoped
+        // rows like any other, so local preview exercises the same
+        // `authorize` path production does rather than a bypass of it.
         let ws = Workspace {
             id: id.into(),
             name: name.into(),
+            tenant_id: crate::service::LOCAL_TENANT.into(),
             scope: scope.into(),
             timezone: "Asia/Tokyo".into(),
             role: "owner".into(),
@@ -17,8 +21,13 @@ pub async fn seed(tx: &mut Tx, demo: bool) -> Result<()> {
             version: 1,
         };
         tx.execute(
-            "INSERT INTO workspaces(id,body,seq) VALUES(?,?,?)",
-            &params![id, serde_json::to_string(&ws)?, sequence()],
+            "INSERT INTO workspaces(id,body,seq,tenant_id) VALUES(?,?,?,?)",
+            &params![
+                id,
+                serde_json::to_string(&ws)?,
+                sequence(),
+                crate::service::LOCAL_TENANT
+            ],
         )
         .await?;
         tx.execute(

@@ -4,11 +4,14 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 
 ## 共通規則
 
-- 本番はTachyon認証済みの`pathbase_session` Cookieを使います。Cookieは`PATHBASE_SESSION_KEYS`で認証付き暗号化され、サーバー再起動や同じ鍵を持つ別インスタンスへのルーティングでも有効です。`POST /auth/login`は同一オリジンのPathBaseログインフォームから資格情報を受け取り、Tachyonの`POST /oauth2/login`とサーバー間のAuthorization Code + PKCE交換でセッションを確立します。共有Tachyonプラットフォームのユーザーであれば所属オペレーターテナントを問わず認証でき、正規ユーザーと所属テナントはTachyonの`GET /v1/me`から取得します。ログイン後は`GET /v1/tenants`の一覧から利用テナントを`POST /v1/tenant-selection`で明示的に選ぶ必要があり、それまではワークスペースAPIが428 `TENANT_SELECTION_REQUIRED`を返します。アクセス範囲は選択後もPathBaseワークスペースのメンバーシップで判定します。Cognito Hosted UIと独自のパスワード保存は使いません。本番HTTPサーバーはTachyonの既定OAuth2エンドポイントを使って外部通信前にlistenを開始し、`--preflight`はセッション鍵、OIDC Discovery、各認証境界を検証します。`POST /auth/logout`でCookieを消去し、`GET /auth/status`と`GET /health`は公開の設定状況・ヘルス情報です。
+- 本番はTachyon認証済みの`pathbase_session` Cookieを使います。Cookieは`PATHBASE_SESSION_KEYS`で認証付き暗号化され、サーバー再起動や同じ鍵を持つ別インスタンスへのルーティングでも有効です。`POST /auth/login`は同一オリジンのPathBaseログインフォームから資格情報を受け取り、Tachyonの`POST /oauth2/login`とサーバー間のAuthorization Code + PKCE交換でセッションを確立します。共有Tachyonプラットフォームのユーザーであれば所属オペレーターテナントを問わず認証でき、正規ユーザーと所属テナントはTachyonの`GET /v1/me`から取得します。ログイン後は`GET /v1/tenants`の一覧から利用テナントを`POST /v1/tenant-selection`で明示的に選ぶ必要があり、それまではワークスペースAPIが428 `TENANT_SELECTION_REQUIRED`を返します。選択したテナントはそのセッションが到達できる唯一のデータ境界です。Cognito Hosted UIと独自のパスワード保存は使いません。本番HTTPサーバーはTachyonの既定OAuth2エンドポイントを使って外部通信前にlistenを開始し、`--preflight`はセッション鍵、OIDC Discovery、各認証境界を検証します。`POST /auth/logout`でCookieを消去し、`GET /auth/status`と`GET /health`は公開の設定状況・ヘルス情報です。
 - 変更には`Idempotency-Key`を指定します。同じ操作者・領域・キー・入力は同じ結果を返し、異なる入力は409。成功結果はDB内に保持し、履歴削除ポリシーはまだ設けていません。AI提案元と人の承認元でキーの名前空間を分けます。
 - ブラウザの変更には`X-PathBase-Request: 1`が必要です。設定した公開オリジン以外からのリクエストは拒否します。CORSは許可しません。ローカル確認モードだけは開発プロキシ内のBearer資格情報でアクセスします。
 - 更新は`expected_version`が必要です。競合は409 `VERSION_CONFLICT`、未指定は428。入力を保持して最新の内容を取得し、人が差分を確認してから再送してください。
-- APIは操作ごとにワークスペースのowner/editor/viewerを確認します。未認証は401、読み取りのみの人の更新は403、別領域や存在しない項目は同じ404です。
+- ワークスペースはいずれか一つのテナントに属し、移動しません。APIは操作ごとに「選択中テナントのワークスペースか」を先に確認し、そのうえでowner/editor/viewerを確認します。未認証は401、読み取りのみの人の更新は403、別テナント・別領域・存在しない項目はすべて同じ404です（403にすると存在自体を認めることになるため）。
+- 同じ人でもテナントが違えば別のデータです。個人ワークスペースは（テナント, ユーザー）から導出するため、テナントを切り替えると別の個人ワークスペースになります。`GET /v1/workspaces`と`GET /v1/invitations`は選択中テナントの分だけを返し、メンバーシップはテナントをまたぎません。
+- 招待は発行時点では相手のテナント所属を確認できない（PathBaseが知っているのは招待する側の所属だけ）ため、境界は受諾時に効きます。受諾者が対象ワークスペースのテナントで操作している場合にのみメンバーになり、それ以外では404です。
+- MCPの委任（接続）はテナント単位です。人が承認した時点のテナントがその接続の活動範囲になり、同じAIクライアントを別テナントで使う場合は別の接続として承認し直します。
 - Fieldのタスク・指標は、セッションで選択中のTachyonテナントと同じ`tenant_id`だけを受け付けます。Field側で別テナントの権限を持っていても、クライアント入力だけで現在のテナント境界を切り替えることはできません。
 - エラーは`{status,code,message,details}`。本文上限8MB。書き込みは一つのDBトランザクション（本番はTiDB、明示local-previewはSQLite）で検証・変更・再送結果・監査を保存します。書き込みトランザクションは対象ワークスペースを排他ロックしてから読み取るため、複数インスタンスから更新しても`expected_version`・循環禁止・最後のオーナー・changesetの原子性が保たれます。
 

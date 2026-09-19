@@ -513,6 +513,12 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         include_str!("../migrations/sqlite/0007_auto_apply.sql"),
         include_str!("../migrations/mysql/0007_auto_apply.sql"),
     ),
+    (
+        8,
+        "tenant isolation",
+        include_str!("../migrations/sqlite/0008_tenant_isolation.sql"),
+        include_str!("../migrations/mysql/0008_tenant_isolation.sql"),
+    ),
 ];
 
 /// The schema version this build expects. Readiness compares against it, so a

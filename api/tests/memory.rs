@@ -24,6 +24,7 @@ async fn setup() -> (tempfile::TempDir, Service, String, Actor) {
     service.initialize(false).await.unwrap();
     let who = Actor {
         id: "us_alice".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -79,6 +80,7 @@ async fn query(
 fn agent(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: Some("mcpconn_test".into()),
     }
@@ -730,6 +732,7 @@ async fn another_person_cannot_reach_someone_elses_memory() {
 
     let bob = Actor {
         id: "us_bob".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };

@@ -183,6 +183,7 @@ async fn weekly_review_rejects_non_monday_boundary_and_unauthorized_access() {
     );
     let outsider = Actor {
         id: "outsider".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -396,6 +397,7 @@ async fn workspace_isolation_and_viewer_denial() {
     );
     let actor = Actor {
         id: "outsider".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -572,6 +574,7 @@ async fn onboarding_rejects_viewers_and_non_empty_workspace_conflicts() {
     let body = json!({"title":"目標","purpose":"","due_date":null,"initiative_title":"","action_title":"","metric":null});
     let viewer = Actor {
         id: "viewer".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -609,6 +612,7 @@ async fn proposals_require_human_approval_and_reject_stale_base() {
     let i = item(&s, "outcome").await;
     let agent = Actor {
         id: "local-owner".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: None,
     };
@@ -687,6 +691,7 @@ async fn approved_preview_is_atomic_and_agent_cannot_replay_approval() {
     assert_eq!(approved["status"], "applied");
     let agent = Actor {
         id: "local-owner".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: None,
     };

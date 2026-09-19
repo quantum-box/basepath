@@ -276,10 +276,13 @@ impl Mcp {
         Self::for_actor(service, "local-owner")
     }
     pub fn for_actor(service: Service, actor_id: impl Into<String>) -> Self {
+        // Local stdio MCP only ever acts in local preview's own tenant; the
+        // hosted endpoint takes its tenant from the delegation instead.
         Self {
             service,
             actor: Some(Actor {
                 id: actor_id.into(),
+                tenant: crate::service::LOCAL_TENANT.into(),
                 agent: true,
                 connection: None,
             }),

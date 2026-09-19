@@ -27,6 +27,7 @@ async fn setup() -> (tempfile::TempDir, Service, String, String, Actor) {
     service.initialize(false).await.unwrap();
     let who = Actor {
         id: "us_alice".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -94,6 +95,7 @@ async fn query(
 fn agent(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: Some("mcpconn_test".into()),
     }

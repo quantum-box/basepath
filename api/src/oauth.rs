@@ -662,15 +662,14 @@ pub async fn decide(
     // earlier connection.
     service.provision_personal(actor).await?;
     let existing =
-        mcp_auth::ensure_pending(&service.db, &actor.id, &pending.client_id, &client_name).await?;
+        mcp_auth::ensure_pending(&service.db, actor, &pending.client_id, &client_name).await?;
 
     // Everything that must not happen twice happens here, in one transaction,
     // against a request that is re-read under the same lock.
     let mut tx = service.db.begin_write().await?;
     let pending = live_request(&mut tx, handle).await?;
     consume(&mut tx, &pending.id).await?;
-    let connection =
-        mcp_auth::grant_from_consent(&mut tx, &actor.id, &existing.id, &scopes).await?;
+    let connection = mcp_auth::grant_from_consent(&mut tx, actor, &existing.id, &scopes).await?;
     let code = secret(CODE_PREFIX);
     insert_grant(
         &mut tx,
@@ -926,7 +925,7 @@ async fn refresh(db: &Db, form: &Value) -> OAuthResult<Value> {
 }
 
 async fn connection_of(tx: &mut Tx, grant: &Grant) -> Result<mcp_auth::Connection> {
-    mcp_auth::get_connection(tx, &grant.actor, &grant.connection_id).await
+    mcp_auth::connection_for_token(tx, &grant.actor, &grant.connection_id).await
 }
 
 /// RFC 7009 token revocation. Always answers 200, as the specification says:
@@ -1003,9 +1002,20 @@ pub async fn verify_access_token(
     )
     .await?;
     tx.commit().await?;
+    // The tenant comes from the delegation, not from the token and not from
+    // the request: this is the tenant the person was acting in when they
+    // authorized this client, and the only one the agent can reach.
+    if connection.tenant.is_empty() {
+        return Err(ApiError::new(
+            403,
+            "TENANT_SELECTION_REQUIRED",
+            "この接続はテナントに紐づいていません。接続し直してください",
+        ));
+    }
     Ok((
         Actor {
             id: grant.actor.clone(),
+            tenant: connection.tenant.clone(),
             agent: true,
             connection: Some(connection.id.clone()),
         },

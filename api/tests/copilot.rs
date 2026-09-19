@@ -43,6 +43,7 @@ async fn setup() -> (tempfile::TempDir, Service, String, Actor) {
 fn person(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     }
@@ -51,6 +52,7 @@ fn person(id: &str) -> Actor {
 fn agent(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: Some("mcpconn_test".into()),
     }

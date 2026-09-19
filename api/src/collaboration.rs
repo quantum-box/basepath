@@ -9,15 +9,23 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 async fn workspace(tx: &mut Tx, w: &str) -> Result<Workspace> {
-    let sql = format!("SELECT body FROM workspaces WHERE id=?{}", tx.lock_reads());
+    let sql = format!(
+        "SELECT body,tenant_id FROM workspaces WHERE id=?{}",
+        tx.lock_reads()
+    );
     let row = tx
         .fetch_optional(&sql, &params![w])
         .await?
         .ok_or_else(ApiError::missing)?;
-    Ok(serde_json::from_str(&row.text(0)?)?)
+    // The column is the tenant of record; the copy in the body is only what
+    // the API hands back. Reading it back from the column keeps a rewritten
+    // body from being able to move a workspace between tenants.
+    let mut workspace: Workspace = serde_json::from_str(&row.text(0)?)?;
+    workspace.tenant_id = row.text(1)?;
+    Ok(workspace)
 }
 async fn owner(tx: &mut Tx, actor: &Actor, w: &str) -> Result<()> {
-    authorize(tx, &actor.id, w, false).await?;
+    authorize(tx, actor, w, false).await?;
     if actor.agent || role(tx, w, &actor.id).await?.as_deref() != Some("owner") {
         return Err(ApiError::new(
             403,
@@ -96,6 +104,21 @@ pub(crate) async fn authorize_route(
             if actor.agent || i.target_actor != actor.id {
                 return Err(ApiError::missing());
             }
+            // Where the tenant boundary is actually enforced for sharing.
+            //
+            // Issuing an invitation cannot check the target's tenants:
+            // PathBase knows which Tachyon tenants *this* person belongs to,
+            // not which ones somebody else does. Accepting can, because the
+            // person accepting is the one making the request — so an
+            // invitation only ever becomes membership when its recipient is
+            // acting in the workspace's own tenant. An invitation addressed
+            // across a tenant boundary is simply never redeemable.
+            if crate::storage::workspace_tenant(tx, &i.workspace_id)
+                .await?
+                .is_none_or(|tenant| tenant.is_empty() || tenant != actor.tenant)
+            {
+                return Err(ApiError::missing());
+            }
             if matches!(i.status.as_str(), "revoked" | "expired")
                 || (p[3] == "accept" && i.status == "declined")
             {
@@ -107,7 +130,7 @@ pub(crate) async fn authorize_route(
             }
             // Replaying a previously accepted invitation cannot restore revoked access.
             if i.status == "accepted" {
-                authorize(tx, &actor.id, &i.workspace_id, false).await?;
+                authorize(tx, actor, &i.workspace_id, false).await?;
             }
         }
         _ => {}
@@ -138,7 +161,7 @@ pub(crate) async fn authorize_replay(
 }
 
 async fn management(tx: &mut Tx, actor: &Actor, w: &str) -> Result<Value> {
-    authorize(tx, &actor.id, w, false).await?;
+    authorize(tx, actor, w, false).await?;
     let mut ws = workspace(tx, w).await?;
     ws.role = role(tx, w, &actor.id)
         .await?
@@ -271,9 +294,21 @@ pub(crate) async fn dispatch(
             {
                 return Err(ApiError::invalid("領域とタイムゾーンを確認してください"));
             }
+            if actor.tenant.is_empty() {
+                return Err(ApiError::new(
+                    428,
+                    "TENANT_SELECTION_REQUIRED",
+                    "利用するTachyonテナントを選択してください",
+                ));
+            }
+            // A workspace is created *into* the tenant its creator is acting
+            // in, and never moves. That is the whole of how a workspace
+            // acquires a tenant: there is no later step that could assign a
+            // different one, and no request that can name one.
             let ws = Workspace {
                 id: new_id("workspace"),
                 name: title(b, "name", 100)?,
+                tenant_id: actor.tenant.clone(),
                 scope: scope.into(),
                 timezone: timezone.into(),
                 role: "owner".into(),
@@ -281,8 +316,13 @@ pub(crate) async fn dispatch(
                 version: 1,
             };
             tx.execute(
-                "INSERT INTO workspaces(id,body,seq) VALUES(?,?,?)",
-                &params![&ws.id, serde_json::to_string(&ws)?, sequence()],
+                "INSERT INTO workspaces(id,body,seq,tenant_id) VALUES(?,?,?,?)",
+                &params![
+                    &ws.id,
+                    serde_json::to_string(&ws)?,
+                    sequence(),
+                    &ws.tenant_id
+                ],
             )
             .await?;
             tx.execute(
@@ -297,9 +337,9 @@ pub(crate) async fn dispatch(
                 .fetch_all(
                     &format!(
                         "{INVITATION_SELECT} WHERE i.target_actor=? AND i.status='pending' \
-                         AND i.expires_at>? ORDER BY i.created_at DESC"
+                         AND w.tenant_id=? AND i.expires_at>? ORDER BY i.created_at DESC"
                     ),
-                    &params![&actor.id, now()],
+                    &params![&actor.id, &actor.tenant, now()],
                 )
                 .await?;
             value(
@@ -368,7 +408,7 @@ pub(crate) async fn dispatch(
         }
         ("GET", ["v1", "workspaces", w, "members"]) => management(tx, actor, w).await,
         (_, ["v1", "workspaces", w, ..]) => {
-            authorize(tx, &actor.id, w, false).await?;
+            authorize(tx, actor, w, false).await?;
             let mut ws = workspace(tx, w).await?;
             shared(&ws)?;
             version(b, ws.version)?;

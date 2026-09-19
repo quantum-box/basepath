@@ -49,6 +49,7 @@ async fn call(
         .handle(
             &Actor {
                 id: actor.into(),
+                tenant: pathbase_api::service::LOCAL_TENANT.into(),
                 agent: false,
                 connection: None,
             },

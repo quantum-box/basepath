@@ -196,14 +196,27 @@ const SELECT: &str = "SELECT id,actor,workspace_id,connection_id,allow_create,al
                       allow_guarded,expires_at,created_at,updated_at,revoked_at,version \
                       FROM auto_apply_rules";
 
-pub async fn list(tx: &mut Tx, actor: &str) -> Result<Vec<Rule>> {
+/// The same columns, reachable only from the tenant the rule's workspace is in.
+///
+/// A range names a workspace, and a workspace belongs to one tenant, so the
+/// join is what keeps this screen from listing ranges over workspaces the
+/// person cannot currently open — or naming them at all.
+const SELECT_IN_TENANT: &str =
+    "SELECT r.id,r.actor,r.workspace_id,r.connection_id,r.allow_create,r.allow_update,\
+     r.allow_guarded,r.expires_at,r.created_at,r.updated_at,r.revoked_at,r.version \
+     FROM auto_apply_rules r JOIN workspaces w ON w.id=r.workspace_id AND w.tenant_id=?";
+
+pub async fn list(tx: &mut Tx, actor: &Actor) -> Result<Vec<Rule>> {
+    if actor.tenant.is_empty() {
+        return Ok(vec![]);
+    }
     let rows = tx
         .fetch_all(
             &format!(
-                "{SELECT} WHERE actor=? ORDER BY created_at DESC{}",
+                "{SELECT_IN_TENANT} WHERE r.actor=? ORDER BY r.created_at DESC{}",
                 tx.lock_reads()
             ),
-            &params![actor],
+            &params![&actor.tenant, &actor.id],
         )
         .await?;
     rows.iter().map(row_to_rule).collect()
@@ -250,7 +263,7 @@ pub async fn in_force(tx: &mut Tx, actor: &Actor, workspace_id: &str) -> Result<
     // eligible, the conversation would offer a button, and the scope check
     // would refuse the call — "押したけど何が起きたか分からない", which is the
     // thing this whole change exists to stop.
-    let Ok(connection) = crate::mcp_auth::get_connection(tx, &actor.id, connection_id).await else {
+    let Ok(connection) = crate::mcp_auth::get_connection(tx, actor, connection_id).await else {
         return Ok(None);
     };
     if !connection.allows(crate::mcp_auth::SCOPE_APPLY) {
@@ -288,7 +301,7 @@ pub async fn covering(
 #[allow(clippy::too_many_arguments)]
 pub async fn save(
     tx: &mut Tx,
-    actor: &str,
+    actor: &Actor,
     workspace_id: &str,
     connection_id: &str,
     allow_create: bool,
@@ -327,13 +340,13 @@ pub async fn save(
     crate::storage::authorize(tx, actor, workspace_id, true).await?;
     let stamp = now();
     let expires_at = (chrono::Utc::now() + chrono::Duration::days(days)).to_rfc3339();
-    let existing = find(tx, actor, workspace_id, connection_id).await?;
+    let existing = find(tx, &actor.id, workspace_id, connection_id).await?;
     let rule = Rule {
         id: existing
             .as_ref()
             .map(|rule| rule.id.clone())
             .unwrap_or_else(|| new_id("autoapply")),
-        actor: actor.to_owned(),
+        actor: actor.id.clone(),
         workspace_id: workspace_id.to_owned(),
         connection_id: connection_id.to_owned(),
         allow_create,
@@ -403,11 +416,14 @@ pub async fn save(
 /// The row stays so that a change set applied under it can still say which
 /// range it was applied under. An audit trail that loses its reason when
 /// somebody changes their mind is not an audit trail.
-pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Rule> {
+pub async fn revoke(tx: &mut Tx, actor: &Actor, id: &str) -> Result<Rule> {
     let row = tx
         .fetch_optional(
-            &format!("{SELECT} WHERE id=? AND actor=?{}", tx.lock_reads()),
-            &params![id, actor],
+            &format!(
+                "{SELECT_IN_TENANT} WHERE r.id=? AND r.actor=?{}",
+                tx.lock_reads()
+            ),
+            &params![&actor.tenant, id, &actor.id],
         )
         .await?
         .ok_or_else(ApiError::missing)?;
@@ -422,7 +438,7 @@ pub async fn revoke(tx: &mut Tx, actor: &str, id: &str) -> Result<Rule> {
             &rule.updated_at,
             rule.version,
             id,
-            actor
+            &actor.id
         ],
     )
     .await?;

@@ -1262,9 +1262,17 @@ impl TachyonAuth {
         }
         Ok(self.cookie_header("pathbase_session", "", 0))
     }
+    /// Who this session is, and which tenant it is acting in.
+    ///
+    /// The tenant comes from the session's own stored selection, revalidated
+    /// against Tachyon membership in [`Self::session`] — never from the
+    /// request. A session that has not selected one yet gets an empty tenant,
+    /// which reaches no workspace; the `TENANT_SELECTION_REQUIRED` gate turns
+    /// that into a clear answer before any workspace route runs.
     pub fn actor(session: &Session) -> Actor {
         Actor {
             id: session.identity.id.clone(),
+            tenant: session.selected_tenant.clone().unwrap_or_default(),
             agent: false,
             connection: None,
         }

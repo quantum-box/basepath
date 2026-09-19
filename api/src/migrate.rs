@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 /// `schema_migrations` and `database_identity` describe the database itself,
 /// not its contents, and are therefore never copied.
 const TABLES: &[(&str, &[&str])] = &[
-    ("workspaces", &["id", "body", "seq"]),
+    ("workspaces", &["id", "body", "seq", "tenant_id"]),
     ("memberships", &["workspace_id", "actor", "role"]),
     (
         "documents",
@@ -237,6 +237,28 @@ pub async fn validate_integrity(db: &Db) -> Result<Vec<Check>> {
         Check::fail(
             "workspace_has_owner",
             format!("workspaces without an owner: {ownerless:?}"),
+        )
+    });
+
+    // Every workspace belongs to a tenant. A copy that dropped the column
+    // would not expose anything — an empty tenant matches no actor — but it
+    // would make every workspace unreachable, and that is worth catching in
+    // the report rather than after the cutover.
+    let tenantless: Vec<String> = tx
+        .fetch_all("SELECT id FROM workspaces WHERE tenant_id=''", &[])
+        .await?
+        .iter()
+        .map(|row| row.text(0))
+        .collect::<Result<_>>()?;
+    checks.push(if tenantless.is_empty() {
+        Check::pass(
+            "workspace_has_tenant",
+            format!("{} workspace(s) each belong to a tenant", workspaces.len()),
+        )
+    } else {
+        Check::fail(
+            "workspace_has_tenant",
+            format!("workspaces without a tenant: {tenantless:?}"),
         )
     });
 

@@ -84,6 +84,7 @@ fn authorization_query(
 fn person(id: &str) -> Actor {
     Actor {
         id: id.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     }

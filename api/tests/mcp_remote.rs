@@ -326,6 +326,7 @@ async fn connect(
         service,
         &Actor {
             id: actor.into(),
+            tenant: pathbase_api::service::LOCAL_TENANT.into(),
             agent: false,
             connection: None,
         },
@@ -370,6 +371,7 @@ async fn connect(
 async fn connection_of(service: &Service, actor: &str) -> Value {
     let who = Actor {
         id: actor.into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -635,6 +637,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     // --- disconnecting takes effect immediately --------------------------
     let who = Actor {
         id: "us_alice".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -702,6 +705,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     // --- an agent cannot manage its own delegation -----------------------
     let agent = Actor {
         id: "us_bob".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: true,
         connection: None,
     };

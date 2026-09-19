@@ -5,6 +5,7 @@
 use crate::db::Tx;
 use crate::model::*;
 use crate::params;
+use crate::service::Actor;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,20 +111,43 @@ pub async fn remove(tx: &mut Tx, w: &str, col: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn memberships(tx: &mut Tx, actor: &str) -> Result<Vec<Workspace>> {
+/// The workspaces this actor may see *in the tenant they are acting in*.
+///
+/// A membership alone is not enough. The same person is a member of
+/// workspaces across several tenants, and showing them one list would be the
+/// tenant boundary leaking into the first screen they land on.
+pub async fn memberships(tx: &mut Tx, actor: &Actor) -> Result<Vec<Workspace>> {
+    if actor.tenant.is_empty() {
+        return Ok(vec![]);
+    }
     let sql = format!(
-        "SELECT w.body,m.role FROM workspaces w JOIN memberships m ON w.id=m.workspace_id \
-         WHERE m.actor=? ORDER BY w.seq{}",
+        "SELECT w.body,m.role,w.tenant_id FROM workspaces w JOIN memberships m ON w.id=m.workspace_id \
+         WHERE m.actor=? AND w.tenant_id=? ORDER BY w.seq{}",
         tx.lock_reads()
     );
-    let rows = tx.fetch_all(&sql, &params![actor]).await?;
+    let rows = tx
+        .fetch_all(&sql, &params![&actor.id, &actor.tenant])
+        .await?;
     rows.iter()
         .map(|row| {
             let mut workspace: Workspace = serde_json::from_str(&row.text(0)?)?;
             workspace.role = row.text(1)?;
+            workspace.tenant_id = row.text(2)?;
             Ok(workspace)
         })
         .collect()
+}
+
+/// The tenant a workspace belongs to, or `None` if there is no such workspace.
+pub async fn workspace_tenant(tx: &mut Tx, w: &str) -> Result<Option<String>> {
+    let sql = format!(
+        "SELECT tenant_id FROM workspaces WHERE id=?{}",
+        tx.lock_reads()
+    );
+    tx.fetch_optional(&sql, &params![w])
+        .await?
+        .map(|row| row.text(0))
+        .transpose()
 }
 
 pub async fn role(tx: &mut Tx, w: &str, actor: &str) -> Result<Option<String>> {
@@ -137,8 +161,20 @@ pub async fn role(tx: &mut Tx, w: &str, actor: &str) -> Result<Option<String>> {
         .transpose()
 }
 
-pub async fn authorize(tx: &mut Tx, actor: &str, w: &str, write: bool) -> Result<()> {
-    match role(tx, w, actor).await?.as_deref() {
+/// The one gate every workspace-scoped request passes through.
+///
+/// Order matters. The tenant is checked *before* the role, and a workspace in
+/// another tenant is reported as missing rather than forbidden: "you may not
+/// open this" would confirm that it exists, which is exactly the fact the
+/// boundary is there to withhold. A membership carried across a tenant switch
+/// stops meaning anything here, which is what makes selecting a tenant a
+/// change of what the person can reach rather than a change of label.
+pub async fn authorize(tx: &mut Tx, actor: &Actor, w: &str, write: bool) -> Result<()> {
+    match workspace_tenant(tx, w).await? {
+        Some(tenant) if !tenant.is_empty() && tenant == actor.tenant => {}
+        _ => return Err(ApiError::missing()),
+    }
+    match role(tx, w, &actor.id).await?.as_deref() {
         Some("owner" | "editor") => Ok(()),
         Some("viewer") if !write => Ok(()),
         Some("viewer") => Err(ApiError::new(

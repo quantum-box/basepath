@@ -25,6 +25,7 @@ async fn setup() -> (tempfile::TempDir, Service, String, Actor) {
     service.initialize(false).await.unwrap();
     let owner = Actor {
         id: "us_alice".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };
@@ -673,6 +674,7 @@ async fn a_workspace_you_are_not_in_reveals_nothing_not_even_a_count() {
 
     let stranger = Actor {
         id: "us_stranger".into(),
+        tenant: pathbase_api::service::LOCAL_TENANT.into(),
         agent: false,
         connection: None,
     };

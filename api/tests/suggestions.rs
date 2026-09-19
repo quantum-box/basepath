@@ -132,6 +132,7 @@ async fn permissions_and_stale_goal_version_are_enforced() {
             &service,
             &Actor {
                 id: "outsider".into(),
+                tenant: pathbase_api::service::LOCAL_TENANT.into(),
                 agent: false,
                 connection: None
             },
