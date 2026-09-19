@@ -197,3 +197,45 @@ test("no MCP shared secret survives anywhere", async () => {
     assert.doesNotMatch(source, /PATHBASE_MCP_ACTOR_ID/);
   }
 });
+
+test("the MCP host allowlist covers every name the process is reached by", async () => {
+  // The check stops DNS rebinding by comparing the `Host` header against a
+  // list. The header is whatever the *last hop* addressed: a client calls the
+  // public name, the Worker proxies to the API origin, and that origin is the
+  // host the process actually sees.
+  //
+  // Listing only the public name refuses every real request — and it does so
+  // after authentication has already succeeded, so the connection reads as
+  // approved, the token looks used, and nothing works. This asserts the two
+  // ends of that proxy agree, because nothing else in the suite does: the
+  // integration test sets the allowlist to its own loopback host and so never
+  // exercises the shape where the two differ.
+  const declared = await apps();
+  const originHost = new URL(
+    declared["pathbase-v2"].envVars.find(
+      (variable) => variable.name === "PATHBASE_API_ORIGIN",
+    ).value,
+  ).host;
+
+  for (const environment of ["production", "preview"]) {
+    const vars = declared["pathbase-api"].environments[environment].envVars;
+    const allowed = vars
+      .find((variable) => variable.name === "PATHBASE_MCP_ALLOWED_HOSTS")
+      .value.split(",")
+      .map((host) => host.trim());
+    const publicHost = new URL(
+      vars.find((variable) => variable.name === "PATHBASE_MCP_RESOURCE").value,
+    ).host;
+
+    assert.ok(
+      allowed.includes(originHost),
+      `${environment}: the Worker proxies to ${originHost}, which must be allowed`,
+    );
+    // The public name stays too: it is what a client that reaches the process
+    // directly would send, and dropping it would break that path instead.
+    assert.ok(
+      allowed.includes(publicHost),
+      `${environment}: ${publicHost} is the name clients call`,
+    );
+  }
+});
