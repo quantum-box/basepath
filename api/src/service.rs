@@ -2046,12 +2046,18 @@ impl Service {
         };
         let suggestion_preview =
             parts.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
+        // A POST because the proposal is a list too long for a query string,
+        // not because it writes: it compares and returns, and changes nothing.
+        let breakdown_comparison = method == "POST"
+            && parts.get(3) == Some(&"items")
+            && parts.get(5) == Some(&"breakdown-comparison");
         let notification_read = method == "PATCH"
             && parts.get(3) == Some(&"notifications")
             && parts.get(5) == Some(&"read");
         let workspace_write = method != "GET"
             && parts.as_slice() != ["v1", "workspaces", w, "leave"]
             && !notification_read
+            && !breakdown_comparison
             && !suggestion_preview;
         if method == "GET" {
             let mut tx = self.db.begin_read().await?;
@@ -2077,9 +2083,11 @@ impl Service {
             .ok_or_else(|| {
                 ApiError::new(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Keyが必要です")
             })?;
-        // An agent may propose, withdraw a proposal, and apply one the person
-        // already approved. It may not approve, and it may not write directly.
+        // An agent may propose, withdraw a proposal, apply one the person
+        // already approved, and compare a proposed breakdown against what is
+        // already there. It may not approve, and it may not write directly.
         if actor.agent
+            && !breakdown_comparison
             && !(parts.get(3) == Some(&"changesets")
                 && (parts.get(4) == Some(&"preview")
                     || parts.get(5) == Some(&"apply")
@@ -2248,16 +2256,19 @@ async fn dispatch_inner(
     let suffix = p.get(5).copied().unwrap_or("");
     let suggestion_preview =
         p.as_slice() == ["v1", "workspaces", w, "ai", "suggestions", "preview"];
+    let breakdown_comparison =
+        method == "POST" && col == "items" && suffix == "breakdown-comparison";
     let notification_read = method == "PATCH" && col == "notifications" && suffix == "read";
     authorize(
         tx,
         &actor.id,
         w,
-        method != "GET" && !suggestion_preview && !notification_read,
+        method != "GET" && !suggestion_preview && !notification_read && !breakdown_comparison,
     )
     .await?;
     if actor.agent
         && method != "GET"
+        && !breakdown_comparison
         && !(col == "changesets" && (id == "preview" || suffix == "apply" || suffix == "reject"))
     {
         return Err(ApiError::new(
@@ -2387,6 +2398,16 @@ async fn dispatch_inner(
             Ok(result)
         }
         ("GET", "breakdown", "gaps", "") => crate::breakdown::gaps(tx, w).await,
+        // What to read — and what to ask — before proposing a breakdown.
+        ("GET", "items", id, "breakdown-brief") if !id.is_empty() => {
+            crate::copilot::brief(tx, actor, w, id).await
+        }
+        // A proposed set of children next to the ones already there. Reading
+        // only: nothing here writes, and nothing is removed.
+        ("POST", "items", id, "breakdown-comparison") if !id.is_empty() => {
+            only(body, &["children"])?;
+            crate::copilot::compare(tx, w, id, &body["children"]).await
+        }
         ("GET", "graph", "", "") => {
             let limit = query
                 .get("limit")
@@ -3924,7 +3945,7 @@ async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(parts)))
 }
 async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value> {
-    only(b, &["operations", "title"])?;
+    only(b, &["operations", "title", "assumptions"])?;
     let ops: Vec<Operation> = serde_json::from_value(b["operations"].clone())?;
     if ops.is_empty() || ops.len() > 100 {
         return Err(ApiError::invalid("変更は1〜100操作にしてください"));
@@ -3975,6 +3996,26 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
                 "同じワークスペースの計画操作だけ提案できます",
             ));
         }
+        // A date, a number, an owner or a target is read later as something
+        // the person decided. An AI may still propose one — sometimes the
+        // person said it out loud — but it has to say where the value came
+        // from, and that sentence travels with the change for them to check.
+        //
+        // The rule is only for agents: a person setting their own due date is
+        // not making a claim that needs a source.
+        // A planning period's dates are the period, not a guess about when
+        // something will be done: "this quarter, 7/1 to 9/30" is one fact, and
+        // the route already refuses a quarter that does not start on one. So
+        // the rule below is about goals and actions, not about cycles.
+        if actor.agent && p[3] != "cycles" {
+            let guarded = crate::copilot::guarded_values(&op.body);
+            if !guarded.is_empty() && op.basis.as_deref().map(str::trim).is_none_or(str::is_empty) {
+                return Err(ApiError::invalid(&format!(
+                    "{} を含む提案には basis（この値がどこから来たか）が必要です。書けない値は提案から外し、本人に尋ねてください",
+                    guarded.join(" / ")
+                )));
+            }
+        }
     }
     // Validate the complete batch without changing the live plan, and record
     // what each operation would do while the effect is observable.
@@ -4001,7 +4042,22 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     }
     tx.rollback_to_savepoint("preview_validation").await?;
     validation?;
-    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"changes":changes,"status":"pending","actor":actor.id,"proposed_by_connection":actor.connection,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
+    // What the AI assumed, in its own words, kept next to the diff. A person
+    // approving a breakdown is agreeing to the reasoning as much as the rows.
+    let assumptions: Vec<String> = b["assumptions"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .take(20)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"changes":changes,"assumptions":assumptions,"status":"pending","actor":actor.id,"proposed_by_connection":actor.connection,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
     put(tx, w, "changesets", text(&c, "id"), &c).await?;
     Ok(c)
 }
@@ -4125,6 +4181,10 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         "effect": effect,
         "before": before,
         "after": after,
+        // Which committing values this operation sets, and where they came
+        // from, next to the diff rather than buried in the operation list.
+        "guarded_values": crate::copilot::guarded_values(&op.body),
+        "basis": op.basis,
     }))
 }
 async fn validate_preview(tx: &mut Tx, w: &str, c: &Value) -> Result<()> {

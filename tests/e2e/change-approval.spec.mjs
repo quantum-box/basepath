@@ -141,3 +141,56 @@ test("an unknown change id says so instead of showing an empty approval", async 
   ).toBeVisible();
   await expect(page.getByRole("region", { name: "変更案" })).toBeHidden();
 });
+
+test("a committing value is shown with where it came from, next to the diff", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await ownWorkspace(request, "E2E提案の根拠");
+  const response = await request.post(
+    `/api/v1/workspaces/${workspaceId}/changesets/preview`,
+    {
+      headers: {
+        "idempotency-key": `e2e-basis-${Date.now()}`,
+        "content-type": "application/json",
+      },
+      data: {
+        title: "E2E: 根拠つきの分解案",
+        assumptions: ["E2E前提: 英語圏から先に着手する想定で並べています"],
+        operations: [
+          {
+            method: "POST",
+            path: `/v1/workspaces/${workspaceId}/items`,
+            body: {
+              kind: "initiative",
+              title: "E2E: 期限つきの取り組み",
+              due_date: "2027-03-31",
+            },
+            basis: "E2E根拠: 本人が「2027年度の期初までに」と話していたため",
+          },
+        ],
+      },
+    },
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const change = await response.json();
+
+  await page.goto(`/changes/${workspaceId}/${change.id}`);
+  const review = page.getByRole("region", { name: "変更案" });
+  // The date is not just one row in a table of fields: it is named, with the
+  // sentence saying where it came from, because after approval it reads as
+  // something the person decided.
+  await expect(review.getByText("due_date", { exact: false })).toBeVisible();
+  await expect(
+    review.getByText("本人が「2027年度の期初までに」と話していたため", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  // And the reasoning behind the whole proposal, since approving it is
+  // agreeing to that too.
+  await expect(
+    review.getByText("英語圏から先に着手する想定で並べています", {
+      exact: false,
+    }),
+  ).toBeVisible();
+});

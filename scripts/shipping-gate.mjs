@@ -113,6 +113,7 @@ const SUITES = [
   { file: "api/tests/memory.rs", pattern: /#\[tokio::test\]/g, least: 11 },
   { file: "api/tests/retrieval.rs", pattern: /#\[tokio::test\]/g, least: 12 },
   { file: "api/tests/breakdown.rs", pattern: /#\[tokio::test\]/g, least: 13 },
+  { file: "api/tests/copilot.rs", pattern: /#\[tokio::test\]/g, least: 11 },
   { file: "api/tests/tidb.rs", pattern: /#\[tokio::test\]/g, least: 9 },
   {
     file: "api/tests/collaboration.rs",
@@ -129,7 +130,7 @@ const SUITES = [
   {
     file: "tests/e2e/change-approval.spec.mjs",
     pattern: /^test\(/gm,
-    least: 3,
+    least: 4,
   },
   { file: "tests/e2e/mcp-app.spec.mjs", pattern: /^test\(/gm, least: 23 },
   { file: "tests/e2e/workspace.spec.mjs", pattern: /^test\(/gm, least: 11 },

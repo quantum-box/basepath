@@ -6058,3 +6058,24 @@ button:disabled {
   color: var(--muted);
   font-size: 11px;
 }
+
+/* A committing value in a proposal, called out with its source. */
+.change-basis {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.change-assumptions {
+  margin: 12px 0;
+}
+.change-assumptions h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+.change-assumptions ul {
+  margin: 0;
+  padding-inline-start: 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
