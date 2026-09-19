@@ -60,6 +60,13 @@ impl IntoResponse for ApiError {
 /// It is enabled by `PATHBASE_MCP_ENABLED`. There is no shared-secret mode: an
 /// MCP client presents a token Basepath issued after the person consented, or
 /// it gets nothing.
+/// True when the deployment has explicitly asked for no Host restriction.
+fn unrestricted_hosts() -> bool {
+    std::env::var("PATHBASE_MCP_ALLOWED_HOSTS")
+        .map(|value| value.split(',').any(|host| host.trim() == "*"))
+        .unwrap_or(false)
+}
+
 pub fn remote_mcp_router(service: service::Service) -> Result<Option<Router<HttpState>>, ApiError> {
     let Some(resource) = mcp_auth::ResourceConfig::from_env()? else {
         return Ok(None);
@@ -82,11 +89,36 @@ pub fn remote_mcp_router(service: service::Service) -> Result<Option<Router<Http
                 .into_iter()
                 .collect()
         });
-    if allowed_hosts.is_empty() {
+    // `*` turns the Host check off, and is the correct setting behind a proxy.
+    //
+    // The check defends against DNS rebinding, which is a *browser* attack: a
+    // page the attacker controls makes the victim's browser call a host that
+    // resolves somewhere it should not. The defence is to compare `Host`
+    // against the names this deployment serves.
+    //
+    // Behind proxies that is unanswerable. `Host` is whatever the last hop
+    // addressed, and this process sits behind a Worker and an API gateway,
+    // each of which rewrites it to a name the deployment does not choose and
+    // cannot enumerate. Listing the public name refuses every real request —
+    // and does it *after* authentication has succeeded, so the connection
+    // reads as approved while nothing works.
+    //
+    // Turning it off is safe here because the endpoint is public and every
+    // request carries a token this server issued after the person consented.
+    // A rebinding attacker reaches a 401, which is what they would reach by
+    // calling the URL directly. Browser-borne requests are still constrained
+    // by `PATHBASE_MCP_ALLOWED_ORIGINS`, which is the check that actually
+    // applies to them.
+    let allowed_hosts = if allowed_hosts.iter().any(|host| host == "*") {
+        Vec::new()
+    } else {
+        allowed_hosts
+    };
+    if allowed_hosts.is_empty() && !unrestricted_hosts() {
         return Err(ApiError::new(
             500,
             "AUTH_CONFIGURATION",
-            "PATHBASE_MCP_ALLOWED_HOSTSを設定してください",
+            "PATHBASE_MCP_ALLOWED_HOSTSを設定してください（プロキシ配下では * ）",
         ));
     }
     // Browser origins that may reach the endpoint. Empty disables the check,
