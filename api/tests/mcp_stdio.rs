@@ -75,7 +75,37 @@ async fn stdio_negotiates_and_requires_human_approval_before_writing() {
     assert!(initialized["capabilities"]["tools"].is_object());
     client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
     let tools = client.request(2, "tools/list", json!({}));
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 25);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 29);
+    // The same retrieval contract the hosted transport serves: same names,
+    // and `context_kind` required in the schema rather than inferred. A host
+    // that reads the schema and a host that does not both get one answer.
+    let schema = |name: &str| {
+        tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing tool {name}"))["inputSchema"]
+            .clone()
+    };
+    assert_eq!(
+        schema("pathbase_memory_context")["required"],
+        json!(["workspace_id", "context_kind"])
+    );
+    assert_eq!(
+        schema("pathbase_memory_search")["required"],
+        json!(["workspace_id"])
+    );
+    let retrieved = client.request(
+        20,
+        "tools/call",
+        json!({"name":"pathbase_memory_context",
+               "arguments":{"workspace_id":"personal","context_kind":"personal"}}),
+    );
+    assert_eq!(retrieved["isError"], false);
+    assert_eq!(retrieved["structuredContent"]["context_kind"], "personal");
+    assert_eq!(retrieved["structuredContent"]["semantic"], "unavailable");
+
     let resources = client.request(3, "resources/templates/list", json!({}));
     assert_eq!(resources["resourceTemplates"].as_array().unwrap().len(), 1);
     let prompts = client.request(4, "prompts/list", json!({}));

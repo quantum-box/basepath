@@ -9,6 +9,7 @@ pub mod model;
 pub mod oauth;
 pub mod openapi;
 pub mod preflight;
+pub mod retrieval;
 mod seed;
 pub mod service;
 pub mod skills;

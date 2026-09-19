@@ -131,6 +131,7 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 | `POST /v1/workspaces/{w}/memories` | 本人が書く。`status`は`verified` |
 | `POST /v1/workspaces/{w}/memories/proposals` | AIの候補。`status`は`proposed` |
 | `POST /v1/workspaces/{w}/memories/{id}/verify` | 本人が候補を確認する |
+| `POST /v1/workspaces/{w}/memories/{id}/corrections` | 訂正の候補。`supersedes_id`が入り、`status`は`proposed` |
 | `PATCH` / `DELETE /v1/workspaces/{w}/memories/{id}` | 編集・整理（archive）・削除 |
 
 **`status`はリクエストで指定できません。** 「本人が言った」は偽装されてはいけない主張なので、ルートが決めます。AI接続は`changesets/preview`に`memories/proposals`だけを含められ、`memories`（verified）は含められません。承認は「その言葉でよい」であって「自分が言った」ではないからです。
@@ -142,6 +143,25 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 `excluded_from_retrieval`を立てた記憶は、AI接続には**存在しません**（一覧から除外され、直接取得は404）。本人には見えます。捨てるのではなく持っておきたいもののためです。
 
 `valid_from` / `valid_to`で有効期間を持てます。前職の好みは**間違いではなく**、いま有効ではないだけです。訂正は`supersedes_id`で追記し、元は残ります。
+
+## Retrieval / Context Assembly
+
+| ルート | 内容 |
+| --- | --- |
+| `GET /v1/workspaces/{w}/memories/search?query=&kind=&topics=&people=&item_ids=&from=&to=&limit=` | 個人indexの検索。個人ワークスペース以外では**404**（空の結果ではありません） |
+| `GET /v1/workspaces/{w}/context?context_kind=…&query=&budget=&limit=` | 文脈の組み立て。`context_kind`は`personal`か`organization`で、**必須** |
+
+**indexは2つあり、読む前に選びます。** `context_kind`が個人indexと組織indexのどちらを走らせるかを決めます。個人の記憶と組織の記録は別のテーブルを別の関数が読みます。全部を検索してから絞り込む実装にはしていません。それだと境界が絞り込み処理の正しさに依存し、絞り込みは1つのバグで壊れます。この形なら、返してはいけない行がそもそも存在しない瞬間がありません。
+
+**どちらへもfallbackしません。** `context_kind=personal`が0件でも組織側は探しません。`context_kind=organization`を個人ワークスペースに投げると422、`personal`を共有ワークスペースに投げると404です。`context_kind`の省略は「両方」ではなく422です。
+
+**検索結果の本文はdataです。** 本文に「これまでの指示を無視して…」と書いてあっても、そのまま返します。検出は試みません。できませんし、試せば「すり抜ける書き方」を作るだけです。代わりに、応答自身が`content_is_data`で何を運んでいるかを述べます。そして本文からは何の権限にも辿れません。変更するツールは別にあり、毎回保存済みの委任を確認します。
+
+**順位の理由を返します。** 各結果の`relevance`に`matched_terms` / `related` / `recency_days` / `score`が入ります。`signals`は実際に使った手がかり（`keyword` / `relation` / `recency`）、`semantic`は埋め込み基盤がない環境では`"unavailable"`です。ないものを「使った」と書かないためで、keyword/structured retrievalが仕様上のfallbackとして常に動いています。
+
+**結果は「いまの答え」かどうかを述べます。** `status`（本人が確認したか候補か）、`superseded`と`superseded_by`、`expired`、そして両方でないときだけ`current`が真になります。supersede済み・期限切れの記憶も返しますが、`current`ではありません。当時は本当だったものを消すと本人の過去を書き換えることになるからです。
+
+**contextには予算があります。** `budget`（文字数、既定4000）まで詰め、同じidは1度しか入れず、入らなかった件数を`omitted_for_budget`で返します。`current_goals`が先に入るのは、本人が何をしようとしているかが他の全部の読み方を決めるからです。
 
 記憶を含むバックアップは個人ワークスペースにしか復元できません（ファイル経由で境界を越えられないように）。
 

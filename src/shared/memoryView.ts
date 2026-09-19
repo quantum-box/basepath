@@ -196,3 +196,92 @@ export function countsByKind(list: MemoryList): Record<MemoryKind, number> {
   for (const memory of list.memories) counts[memory.kind] += 1;
   return counts;
 }
+
+/**
+ * What an AI would actually retrieve, and why.
+ *
+ * The screen shows this for one reason: a person cannot decide what to exclude
+ * from retrieval without seeing what retrieval returns. A list of memories
+ * answers "what does it hold"; only this answers "what would it hand over".
+ */
+export type RetrievalHit = {
+  id: string;
+  kind: MemoryKind;
+  title: string;
+  body: string;
+  status: MemoryStatus;
+  /** True only when nothing supersedes it and it has not expired. */
+  current: boolean;
+  superseded: boolean;
+  expired: boolean;
+  /** Which signals matched, never a bare number. */
+  matchedTerms: number;
+  related: string[];
+  recencyDays: number;
+  score: number;
+};
+
+export type Retrieval = {
+  /** Which index ran. Never "both". */
+  contextKind: "personal" | "organization";
+  /** The signals that produced the ranking. */
+  signals: string[];
+  /** "unavailable" where a deployment has no embedding service. */
+  semantic: string;
+  hits: RetrievalHit[];
+  totalMatched: number;
+};
+
+export function retrievalFrom(value: unknown): Retrieval | null {
+  const source = value as Unknown | undefined;
+  if (!source || !Array.isArray(source.results)) return null;
+  return {
+    contextKind:
+      source.context_kind === "organization" ? "organization" : "personal",
+    signals: asStrings(source.signals),
+    semantic: asString(source.semantic, "unavailable"),
+    totalMatched: asNumber(source.total_matched) ?? 0,
+    hits: (source.results as Unknown[]).map((entry) => {
+      const relevance = (entry.relevance ?? {}) as Unknown;
+      const kind = asString(entry.kind);
+      return {
+        id: asString(entry.id),
+        kind: (KINDS.includes(kind as MemoryKind)
+          ? kind
+          : "context") as MemoryKind,
+        title: asString(entry.title),
+        body: asString(entry.body),
+        status: (asString(entry.status) === "verified"
+          ? "verified"
+          : "proposed") as MemoryStatus,
+        // Absent means not current: the safe direction to guess in is the one
+        // that does not present a stale memory as the answer.
+        current: entry.current === true,
+        superseded: entry.superseded === true,
+        expired: entry.expired === true,
+        matchedTerms: asNumber(relevance.matched_terms) ?? 0,
+        related: asStrings(relevance.related),
+        recencyDays: asNumber(relevance.recency_days) ?? 0,
+        score: asNumber(relevance.score) ?? 0,
+      };
+    }),
+  };
+}
+
+/** Plain words for why a result came back, so the ranking is inspectable. */
+export function whyMatched(hit: RetrievalHit): string {
+  const reasons: string[] = [];
+  if (hit.matchedTerms > 0) reasons.push("語句が一致");
+  if (hit.related.length > 0) reasons.push(`関連: ${hit.related.join("・")}`);
+  reasons.push(
+    hit.recencyDays <= 1 ? "最近の記録" : `${hit.recencyDays}日前の記録`,
+  );
+  return reasons.join(" / ");
+}
+
+/** Why this result is not the current answer, or null when it is. */
+export function staleReason(hit: RetrievalHit): string | null {
+  if (hit.superseded) return "これより新しい記憶に置き換わっています";
+  if (hit.expired) return "有効な期間を過ぎています";
+  return null;
+}

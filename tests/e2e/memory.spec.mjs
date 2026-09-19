@@ -191,3 +191,63 @@ test("a shared workspace has no memory, and says so plainly", async ({
   ).toBeVisible();
   await expect(page.locator(".memory-form")).toBeHidden();
 });
+
+test("the screen shows what an AI would actually retrieve, and why", async ({
+  page,
+  request,
+}) => {
+  const personal = await personalWorkspaceId(request);
+  await post(request, `/v1/workspaces/${personal}/memories`, {
+    kind: "preference",
+    title: "E2E検索: 打ち合わせは30分までにしたい",
+    source: "本人",
+    topics: ["進め方"],
+  });
+  // Excluded from retrieval, with wording that would match the same query.
+  await post(request, `/v1/workspaces/${personal}/memories`, {
+    kind: "context",
+    title: "E2E検索: 打ち合わせ中の体調のこと",
+    source: "本人",
+    excluded_from_retrieval: true,
+  });
+
+  await openMemory(page);
+  const panel = page.locator(".memory-retrieval");
+  await panel.getByLabel("試したい質問").fill("打ち合わせ");
+  await panel.getByRole("button", { name: "この質問で試す" }).click();
+
+  const results = panel.locator(".memory-retrieval-results li");
+  await expect(
+    results.filter({ hasText: "E2E検索: 打ち合わせは30分までにしたい" }),
+  ).toHaveCount(1);
+  // The excluded one is not a candidate, so it is not here — the screen and
+  // the AI see the same index.
+  await expect(
+    results.filter({ hasText: "E2E検索: 打ち合わせ中の体調のこと" }),
+  ).toHaveCount(0);
+  // The ranking says what it used rather than showing a bare number.
+  await expect(panel.getByTestId("retrieval-signals")).toContainText("keyword");
+  await expect(panel.getByText("語句が一致", { exact: false })).toBeVisible();
+});
+
+test("a question with no match stays empty instead of reaching elsewhere", async ({
+  page,
+  request,
+}) => {
+  const personal = await personalWorkspaceId(request);
+  await post(request, `/v1/workspaces/${personal}/memories`, {
+    kind: "learning",
+    title: "E2E無関係: 朝の30分が一番続く",
+    source: "本人",
+  });
+
+  await openMemory(page);
+  const panel = page.locator(".memory-retrieval");
+  await panel.getByLabel("試したい質問").fill("四半期の売上見込み");
+  await panel.getByRole("button", { name: "この質問で試す" }).click();
+  await expect(
+    panel.getByText("組織側の記録を代わりに探すことはしません", {
+      exact: false,
+    }),
+  ).toBeVisible();
+});

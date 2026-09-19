@@ -18,11 +18,15 @@ import {
   kindLabel,
   kinds,
   memoryListFrom,
+  retrievalFrom,
+  staleReason,
   statusLabel,
+  whyMatched,
   type DuplicateGroup,
   type Memory,
   type MemoryKind,
   type MemoryList,
+  type Retrieval,
 } from "./shared/memoryView";
 
 export function MemoryScreen({
@@ -43,6 +47,8 @@ export function MemoryScreen({
     body: "",
     source: "",
   });
+  const [probe, setProbe] = useState("");
+  const [retrieval, setRetrieval] = useState<Retrieval | null>(null);
 
   const personal = workspace?.scope === "個人";
 
@@ -92,6 +98,29 @@ export function MemoryScreen({
     } catch (failure) {
       setError(
         failure instanceof ApiError ? failure.message : "処理できませんでした",
+      );
+    }
+  };
+
+  /**
+   * Runs the same search an AI runs, over the same index.
+   *
+   * Not a preview built for the screen — the endpoint the MCP tool calls. A
+   * person deciding what to exclude from retrieval needs to see what is
+   * actually returned, not an approximation of it.
+   */
+  const retrieve = async () => {
+    if (!workspace) return;
+    setError("");
+    try {
+      const found = await request<unknown>(
+        "GET",
+        `/v1/workspaces/${workspace.id}/memories/search?query=${encodeURIComponent(probe)}`,
+      );
+      setRetrieval(retrievalFrom(found));
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError ? failure.message : "検索できませんでした",
       );
     }
   };
@@ -204,6 +233,73 @@ export function MemoryScreen({
             記録する
           </button>
         </div>
+      </section>
+
+      <section className="panel memory-retrieval">
+        <div className="section-header">
+          <h3>AIが取り出せるもの</h3>
+          {retrieval && <span>{retrieval.totalMatched}件</span>}
+        </div>
+        <p className="memory-hint">
+          AIが同じ質問をしたときに返るものを、そのまま表示します。
+          「AIに渡さない」にした記憶は候補にも入らないので、ここには出てきません。
+          組織のワークスペースからこの検索は実行できません。
+        </p>
+        <div className="memory-retrieval-form">
+          <label>
+            <span>試したい質問</span>
+            <input
+              aria-label="試したい質問"
+              value={probe}
+              onChange={(event) => setProbe(event.target.value)}
+              placeholder="例: 打ち合わせの進め方"
+            />
+          </label>
+          <button type="button" onClick={() => void retrieve()}>
+            この質問で試す
+          </button>
+        </div>
+
+        {retrieval && (
+          <>
+            <p className="memory-hint" data-testid="retrieval-signals">
+              使った手がかり: {retrieval.signals.join("・")}
+              {retrieval.semantic === "unavailable" &&
+                "（意味検索はこの環境では動いていません）"}
+            </p>
+            {retrieval.hits.length === 0 ? (
+              <p className="empty-value">
+                この質問では何も返りません。組織側の記録を代わりに探すことはしません。
+              </p>
+            ) : (
+              <ul className="memory-retrieval-results">
+                {retrieval.hits.map((hit) => {
+                  const stale = staleReason(hit);
+                  return (
+                    <li key={hit.id} data-current={hit.current}>
+                      <div className="memory-head">
+                        <span className="memory-kind">
+                          {kindLabel(hit.kind)}
+                        </span>
+                        <strong>{hit.title}</strong>
+                        <span
+                          className="memory-status"
+                          data-status={hit.status}
+                        >
+                          {statusLabel(hit.status)}
+                        </span>
+                      </div>
+                      {/* The ranking says why, because a score nobody can
+                          check is a score nobody should be asked to trust. */}
+                      <small className="memory-why">{whyMatched(hit)}</small>
+                      {stale && <small className="memory-stale">{stale}</small>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </>
+        )}
       </section>
 
       {duplicates.length > 0 && (
