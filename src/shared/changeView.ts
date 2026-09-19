@@ -42,6 +42,28 @@ export type ChangeSet = {
   proposedByConnection: string | null;
   createdAt: string;
   expiresAt: string;
+  /**
+   * Whether this proposal falls inside a range the person set in Basepath in
+   * advance, and could therefore be reflected from the conversation.
+   *
+   * The server answers this; the app never decides it. What the app does with
+   * the answer is offer the right control instead of a button that would fail
+   * — and a button that is present is still only a trigger. The evidence is
+   * the range, which only the person could have written.
+   */
+  autoApplyEligible: boolean;
+  /** Applied under such a range rather than approved one at a time. */
+  autoApplied: boolean;
+  /** Which range it was applied under, for reading the history afterwards. */
+  autoApplyRule: string | null;
+  /**
+   * Where to approve it, as the server built it.
+   *
+   * Preferred over composing one locally: a host that renders nothing still
+   * passes this to the model, so the same URL is what the person is told
+   * whether or not they can see this view at all.
+   */
+  approvalUrl: string | null;
   rows: ChangeRow[];
   /**
    * What the proposer assumed, in their own words.
@@ -118,7 +140,18 @@ function fieldChanges(before: unknown, after: unknown): FieldChange[] {
 
 export function changeSetFrom(value: unknown): ChangeSet | null {
   const source = value as Unknown | undefined;
-  if (!source || typeof source.id !== "string") return null;
+  // Recognised by what a person needs in order to act on it, not by having an
+  // id. Every other record has an id too, and a tool result is read here
+  // without knowing which tool produced it.
+  if (
+    !source ||
+    typeof source.id !== "string" ||
+    typeof source.status !== "string" ||
+    typeof source.workspace_id !== "string" ||
+    !Array.isArray(source.changes)
+  ) {
+    return null;
+  }
   const rows = Array.isArray(source.changes)
     ? (source.changes as Unknown[]).map((change) => ({
         id: text(change.id),
@@ -158,6 +191,14 @@ export function changeSetFrom(value: unknown): ChangeSet | null {
         : null,
     createdAt: text(source.created_at),
     expiresAt: text(source.expires_at),
+    autoApplyEligible: source.auto_apply_eligible === true,
+    autoApplied: source.auto_applied === true,
+    autoApplyRule:
+      typeof source.auto_apply_rule === "string"
+        ? source.auto_apply_rule
+        : null,
+    approvalUrl:
+      typeof source.approval_url === "string" ? source.approval_url : null,
     rows,
     assumptions: Array.isArray(source.assumptions)
       ? (source.assumptions as unknown[]).filter(
@@ -195,6 +236,10 @@ export function summarize(change: ChangeSet) {
  * a call made from inside an AI host cannot supply one.
  */
 export function approvalUrl(base: string, change: ChangeSet): string {
+  // The server's own link wins when there is one: it is the same string the
+  // model is given for a host that renders nothing, and two places composing
+  // the same URL is two places to get it wrong.
+  if (change.approvalUrl) return change.approvalUrl;
   const root = base.replace(/\/$/, "");
   return `${root}/changes/${encodeURIComponent(change.workspaceId)}/${encodeURIComponent(change.id)}`;
 }

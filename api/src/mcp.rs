@@ -36,7 +36,39 @@ pub const UI_RESOURCE_ORGANIZATION: &str = "ui://basepath/organization/plan.html
 /// working. New links use one of the two above.
 pub const UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
 pub const UI_RESOURCE_MIME: &str = "text/html;profile=mcp-app";
+/// The same document, offered under the convention OpenAI's Apps SDK reads.
+///
+/// ChatGPT does not look for `_meta.ui.resourceUri`; it looks for
+/// `openai/outputTemplate` naming a resource whose media type is
+/// `text/html+skybridge`. Publishing only the MCP Apps spelling meant a
+/// ChatGPT connection saw no view at all — and because nothing recorded a
+/// resource read, that was indistinguishable from a bug in the view itself.
+///
+/// So both spellings are published, side by side, for the same bytes. A host
+/// ignores the `_meta` key it does not know, which is what makes this additive
+/// rather than a fork: one document, one behaviour, two names for it.
+pub const UI_RESOURCE_PERSONAL_OPENAI: &str = "ui://basepath/personal/plan.skybridge.html";
+pub const UI_RESOURCE_ORGANIZATION_OPENAI: &str = "ui://basepath/organization/plan.skybridge.html";
+pub const UI_RESOURCE_MIME_OPENAI: &str = "text/html+skybridge";
 const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
+
+/// The OpenAI-convention twin of an MCP Apps resource URI.
+fn openai_twin(uri: &str) -> Option<&'static str> {
+    match uri {
+        UI_RESOURCE_PERSONAL => Some(UI_RESOURCE_PERSONAL_OPENAI),
+        UI_RESOURCE_ORGANIZATION => Some(UI_RESOURCE_ORGANIZATION_OPENAI),
+        _ => None,
+    }
+}
+
+/// Every URI that serves the application shell, in either convention.
+pub const UI_RESOURCE_URIS: [&str; 5] = [
+    UI_RESOURCE_PERSONAL,
+    UI_RESOURCE_ORGANIZATION,
+    UI_RESOURCE_URI,
+    UI_RESOURCE_PERSONAL_OPENAI,
+    UI_RESOURCE_ORGANIZATION_OPENAI,
+];
 
 /// Which UI resource a tool opens, if any.
 ///
@@ -52,6 +84,31 @@ fn ui_resource(tool: &str) -> Option<&'static str> {
         | "pathbase_get_today"
         | "pathbase_get_week"
         | "pathbase_get_weekly_review" => Some(UI_RESOURCE_PERSONAL),
+        // Everything that produces or reads a change set.
+        //
+        // These had no view, and that was the bug: a proposal was created on
+        // the server, the host had nothing to render, and the model answered
+        // in prose that approving happens in Basepath — without the diff and
+        // without the link. The person read a paragraph, could not act on it,
+        // and the proposal expired. Twice in one day.
+        //
+        // The diff is the thing most worth seeing in the conversation, because
+        // it is the only moment where what an AI proposes and what a person
+        // agrees to are the same object. A tool that makes one and cannot show
+        // it is a tool that asks for agreement to something unread.
+        //
+        // Like the plan tools, these take a `workspace_id` and cannot know
+        // which side of the boundary it names, so they keep the personal
+        // resource and the view states the context of the data it received.
+        "pathbase_preview_changes"
+        | "pathbase_propose_plan"
+        | "pathbase_list_changes"
+        | "pathbase_get_change"
+        | "pathbase_apply_changes"
+        | "pathbase_reject_change"
+        | "pathbase_complete_action"
+        | "pathbase_record_checkin"
+        | "pathbase_record_observation" => Some(UI_RESOURCE_PERSONAL),
         // Memory exists only in a person's own workspace.
         "pathbase_memory_search" | "pathbase_memory_context" | "pathbase_list_memory" => {
             Some(UI_RESOURCE_PERSONAL)
@@ -319,10 +376,7 @@ impl Mcp {
                 // app reaches this server as an ordinary tool call, which the
                 // server cannot distinguish from the model's, so it is not
                 // evidence of anything.
-                let basepath_url = std::env::var("PATHBASE_PUBLIC_URL")
-                    .ok()
-                    .map(|value| value.trim_end_matches('/').to_owned())
-                    .filter(|value| !value.is_empty());
+                let basepath_url = basepath_url();
                 return Ok(
                     json!({"me":me,"workspaces":workspaces,"delegation":"proposal_only","basepath_url":basepath_url,"approval":"Approve a change set in Basepath; an app-initiated call is never accepted as approval"}),
                 );
@@ -449,7 +503,8 @@ impl Mcp {
             }
             _ => return Err(crate::model::ApiError::missing()),
         };
-        self.service
+        let mut result = self
+            .service
             .handle(
                 &actor,
                 method,
@@ -458,8 +513,81 @@ impl Mcp {
                 body,
                 args["idempotency_key"].as_str(),
             )
-            .await
+            .await?;
+        with_change_links(&mut result);
+        Ok(result)
     }
+}
+
+/// Where a person goes to read a change set and decide about it.
+pub fn basepath_url() -> Option<String> {
+    std::env::var("PATHBASE_PUBLIC_URL")
+        .ok()
+        .map(|value| value.trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Puts the Basepath link on every change set in a tool result.
+///
+/// The view in the conversation is the good path, and it is not the only path.
+/// A host that renders nothing still returns this text to the model, and the
+/// difference between a useful answer and a dead end is whether the model has
+/// a URL to hand over. On 2026-09-19 it did not: it said approving happens in
+/// Basepath, could not say where, and the proposal expired unread.
+///
+/// So the link travels with the data rather than with the view. It is not a
+/// permission and grants nothing — the screen it points at is where the
+/// person's session is, which is the entire reason it is a link and not a
+/// button.
+fn with_change_links(value: &mut Value) {
+    let Some(base) = basepath_url() else {
+        return;
+    };
+    fn annotate(base: &str, value: &mut Value) {
+        // A change set, recognised by what a person needs to act on it rather
+        // than by which tool returned it: the same shape arrives from a
+        // preview, a read, a list row and an apply.
+        let is_change = value.get("changes").is_some_and(Value::is_array)
+            && value.get("status").is_some_and(Value::is_string)
+            && value.get("workspace_id").is_some_and(Value::is_string);
+        if is_change {
+            let workspace = value["workspace_id"].as_str().unwrap_or_default();
+            let id = value["id"].as_str().unwrap_or_default();
+            value["approval_url"] = json!(format!("{base}/changes/{workspace}/{id}"));
+            // Said in words too, because a host that shows no view shows this
+            // to the model, and "tell them where to go" has to survive being
+            // read as prose.
+            //
+            // Two different sentences, because they are two different states
+            // and a model given the wrong one sends the person somewhere they
+            // did not need to go — or tells them to press a button that is not
+            // there.
+            value["where_to_approve"] = json!(if value["auto_apply_eligible"] == json!(true) {
+                "This falls inside a range the person set in Basepath in advance. Show them the diff, say it is inside a range they set — not that you have permission — and reflect it with pathbase_apply_changes. If that is refused, nothing was written: show them this URL."
+            } else {
+                "Show the person this diff and this URL. Approving happens in Basepath, on their own session; approving there also applies it."
+            });
+            return;
+        }
+        match value {
+            Value::Object(fields) => {
+                for (key, child) in fields.iter_mut() {
+                    // Only where a change set can be, so an item's `changes`
+                    // or a review's `status` is never mistaken for one.
+                    if ["changeset", "items", "changesets"].contains(&key.as_str()) {
+                        annotate(base, child);
+                    }
+                }
+            }
+            Value::Array(entries) => {
+                for entry in entries {
+                    annotate(base, entry);
+                }
+            }
+            _ => {}
+        }
+    }
+    annotate(&base, value);
 }
 
 fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
@@ -744,10 +872,25 @@ fn tools() -> Vec<Tool> {
         for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),_=>json!({"type":"string"})};}
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
         if let Some(uri) = ui_resource(shape.name) {
-            // MCP Apps: link the tool to its UI resource. Visibility stays the
-            // default (model and app) — hiding a tool from the model is a
-            // presentation choice, never an authorization one.
-            tool["_meta"] = json!({"ui":{"resourceUri":uri}});
+            // Both conventions, for the same document. MCP Apps reads
+            // `ui.resourceUri`; OpenAI's Apps SDK reads `openai/outputTemplate`
+            // and will not look at the other. A host ignores the key it does
+            // not recognise, so naming both costs nothing and is the
+            // difference between a view and a paragraph on ChatGPT.
+            //
+            // Visibility stays the default (model and app) — hiding a tool
+            // from the model is a presentation choice, never an authorization
+            // one.
+            let mut meta = json!({"ui":{"resourceUri":uri}});
+            if let Some(twin) = openai_twin(uri) {
+                meta["openai/outputTemplate"] = json!(twin);
+                // The view calls tools back through the host on the person's
+                // behalf. Without this the Apps SDK renders it read-only, and
+                // "the diff appeared but the button did nothing" is the same
+                // dead end in a nicer frame.
+                meta["openai/widgetAccessible"] = json!(true);
+            }
+            tool["_meta"] = meta;
         }
         serde_json::from_value(tool).unwrap()
     }).collect()
@@ -820,18 +963,49 @@ impl ServerHandler for Mcp {
                 "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}
             })
         };
+        // The Apps SDK spelling of the same declaration: its own media type,
+        // and its own key for "this document loads nothing from anywhere".
+        let openai_shell = |uri: &str, name: &str, description: &str| {
+            json!({
+                "uri": uri,
+                "name": name,
+                "description": description,
+                "mimeType": UI_RESOURCE_MIME_OPENAI,
+                "_meta": {
+                    "openai/widgetCSP": {"connect_domains": [], "resource_domains": []},
+                    "openai/widgetDescription": description,
+                }
+            })
+        };
+        const PERSONAL_NAME: &str = "Basepath personal plan view";
+        const PERSONAL_ABOUT: &str = "One person's own goals, actions, change proposals and weekly review. Nothing from a shared workspace is in it.";
+        const ORGANIZATION_NAME: &str = "Basepath organization plan view";
+        const ORGANIZATION_ABOUT: &str = "A shared workspace's goals, alignment and health. No one's personal memory or personal goals are in it.";
         let mut resources = vec![
-            shell(
-                UI_RESOURCE_PERSONAL,
-                "Basepath personal plan view",
-                "One person's own goals, actions and weekly review. Nothing from a shared workspace is in it.",
-            ),
+            shell(UI_RESOURCE_PERSONAL, PERSONAL_NAME, PERSONAL_ABOUT),
             shell(
                 UI_RESOURCE_ORGANIZATION,
-                "Basepath organization plan view",
-                "A shared workspace's goals, alignment and health. No one's personal memory or personal goals are in it.",
+                ORGANIZATION_NAME,
+                ORGANIZATION_ABOUT,
             ),
         ];
+        // The same two views, declared the way OpenAI's Apps SDK expects to
+        // find them. A host that implements MCP Apps reads the pair above and
+        // never asks for these; ChatGPT reads these and never asks for those.
+        // Neither carries data, so there is one document and two listings of
+        // it, not two documents to keep in step.
+        resources.extend([
+            openai_shell(
+                UI_RESOURCE_PERSONAL_OPENAI,
+                PERSONAL_NAME,
+                PERSONAL_ABOUT,
+            ),
+            openai_shell(
+                UI_RESOURCE_ORGANIZATION_OPENAI,
+                ORGANIZATION_NAME,
+                ORGANIZATION_ABOUT,
+            ),
+        ]);
         // The skills are listed here too, so a host that does not implement
         // the extension can still read the instructions rather than losing
         // them entirely.
@@ -853,20 +1027,24 @@ impl ServerHandler for Mcp {
         // The UI resource carries no workspace data and no credential: it is
         // the empty application shell, which then asks the host for data on
         // the person's behalf.
-        if [
-            UI_RESOURCE_PERSONAL,
-            UI_RESOURCE_ORGANIZATION,
-            UI_RESOURCE_URI,
-        ]
-        .contains(&r.uri.as_str())
-        {
-            // The same shell answers both, because the shell holds no data —
-            // it asks the host for it. What differs is the identity the host
-            // caches and frames it under, which is what keeps the two views
-            // from becoming one view with a toggle.
+        if UI_RESOURCE_URIS.contains(&r.uri.as_str()) {
+            // The same shell answers all of them, because the shell holds no
+            // data — it asks the host for it. What differs is the identity the
+            // host caches and frames it under, which is what keeps the two
+            // views from becoming one view with a toggle, and the media type,
+            // which is how each host recognises a view at all.
+            let openai = r.uri.ends_with(".skybridge.html");
+            // A host reads this resource only in order to draw it. Recording
+            // that it did is the only way the question "does this host render
+            // MCP Apps?" has ever had an answer that came from a host rather
+            // than from documentation. Best-effort: rendering must not fail
+            // because the note did.
+            if let Some(identity) = context.extensions.get::<McpIdentity>() {
+                mcp_auth::note_ui_read(&self.service.db, &identity.connection.id).await;
+            }
             return Ok(serde_json::from_value(json!({"contents":[{
                 "uri": r.uri,
-                "mimeType": UI_RESOURCE_MIME,
+                "mimeType": if openai { UI_RESOURCE_MIME_OPENAI } else { UI_RESOURCE_MIME },
                 "text": UI_RESOURCE_HTML
             }]}))
             .unwrap());

@@ -827,3 +827,184 @@ test("the weekly review stays readable in a narrow conversation pane", async ({
     .evaluate((element) => element.scrollWidth - element.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });
+
+/**
+ * A quiet workspace, so a pushed proposal is the only thing on screen.
+ *
+ * The tests below are about the moment a proposal arrives and what a person
+ * can do about it there. Fixtures for the plan itself would only add noise.
+ */
+const QUIET = {
+  pathbase_get_context: {
+    workspaces: [
+      {
+        id: "personal",
+        name: "個人",
+        scope: "個人",
+        timezone: "Asia/Tokyo",
+        role: "owner",
+      },
+    ],
+    basepath_url: "https://basepath.example",
+  },
+  pathbase_get_graph: {
+    items: [],
+    relations: [],
+    truncated: false,
+    limit: 200,
+  },
+  pathbase_get_today: { local_date: "2026-09-18", items: [] },
+  pathbase_get_week: {
+    start: "2026-09-14",
+    end: "2026-09-20",
+    timezone: "Asia/Tokyo",
+    days: [],
+    unscheduled: [],
+  },
+  pathbase_list_changes: { items: [] },
+};
+
+/** A change set as the server returns it from a proposal. */
+function proposal(overrides = {}) {
+  return {
+    id: "change_live",
+    workspace_id: "personal",
+    title: "朝の習慣を足す",
+    status: "pending",
+    hash: "digest-live",
+    created_at: "2026-09-19T08:50:00Z",
+    expires_at: "2099-01-01T00:00:00Z",
+    proposed_by_connection: "mcpconn_b3578e78",
+    approval_url: "https://basepath.example/changes/personal/change_live",
+    auto_apply_eligible: false,
+    changes: [
+      {
+        id: "i9",
+        collection: "items",
+        title: "朝の散歩",
+        effect: "created",
+        before: null,
+        after: { title: "朝の散歩", kind: "action" },
+        guarded_values: [],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+test("a proposal is rendered as a diff the moment the model makes it", async ({
+  page,
+}) => {
+  // The failure this replaces: the change set existed on the server, the
+  // conversation showed a paragraph about it, and it expired unread.
+  const app = await openHarness(page, { fixtures: QUIET });
+  await expect(app.getByRole("region", { name: "変更案" })).toBeHidden();
+
+  await page.evaluate((change) => window.__pushToolResult(change), proposal());
+
+  const review = app.getByRole("region", { name: "変更案" });
+  await expect(review).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "朝の習慣を足す" }),
+  ).toBeVisible();
+  // Once as the row's title, once in the before/after table.
+  await expect(review.getByText("朝の散歩").first()).toBeVisible();
+  await expect(review.getByRole("row", { name: /タイトル/ })).toBeVisible();
+  // No round trip was needed: the result that created it was the render.
+  const calls = await page.evaluate(() => window.__calls);
+  expect(calls).not.toContain("pathbase_get_change");
+});
+
+test("a proposal outside every range still leads somewhere", async ({
+  page,
+}) => {
+  const app = await openHarness(page, { fixtures: QUIET });
+  await page.evaluate((change) => window.__pushToolResult(change), proposal());
+
+  const review = app.getByRole("region", { name: "変更案" });
+  // No trigger, because nothing authorized one.
+  await expect(
+    review.getByRole("button", { name: "この内容を反映する" }),
+  ).toBeHidden();
+  // And no dead end: the way onward is named and the URL is readable even if
+  // the host cannot open a link.
+  await expect(
+    review.getByRole("button", { name: "Basepathで承認する" }),
+  ).toBeVisible();
+  await expect(
+    review.getByText("https://basepath.example/changes/personal/change_live"),
+  ).toBeVisible();
+});
+
+test("a proposal inside a range the person set can be reflected from here", async ({
+  page,
+}) => {
+  const applied = proposal({ status: "applied", auto_applied: true });
+  const app = await openHarness(page, {
+    fixtures: {
+      ...QUIET,
+      pathbase_apply_changes: {
+        changeset: applied,
+        results: [],
+        auto_applied: true,
+      },
+    },
+  });
+  await page.evaluate(
+    (change) => window.__pushToolResult(change),
+    proposal({ auto_apply_eligible: true }),
+  );
+
+  const review = app.getByRole("region", { name: "変更案" });
+  // The button is a trigger, and it says so: the decision was made earlier, in
+  // Basepath, and this is not standing in for it.
+  await expect(
+    review.getByText("事前に決めた範囲に入っています", { exact: false }),
+  ).toBeVisible();
+  await review.getByRole("button", { name: "この内容を反映する" }).click();
+
+  // What happened, where the button was. Not "sent" — reflected.
+  await expect(
+    app.getByText("事前に決めた範囲としてBasepathに反映しました", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(app.getByText("自動反映済み")).toBeVisible();
+  const calls = await page.evaluate(() => window.__calls);
+  expect(calls).toContain("pathbase_apply_changes");
+});
+
+test("a refused reflection says the plan did not change, and where to go", async ({
+  page,
+}) => {
+  const app = await openHarness(page, {
+    fixtures: {
+      ...QUIET,
+      // The range was revoked between the proposal and the press. The server
+      // re-reads it on every apply, which is the point.
+      "pathbase_apply_changes:error": {
+        code: "APPROVAL_REQUIRED",
+        message: "画面での差分確認と承認が必要です",
+        status: 403,
+      },
+    },
+  });
+  await page.evaluate(
+    (change) => window.__pushToolResult(change),
+    proposal({ auto_apply_eligible: true }),
+  );
+
+  const review = app.getByRole("region", { name: "変更案" });
+  await review.getByRole("button", { name: "この内容を反映する" }).click();
+
+  await expect(
+    app.getByText("反映されていません", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    app
+      .getByText("https://basepath.example/changes/personal/change_live", {
+        exact: false,
+      })
+      .first(),
+  ).toBeVisible();
+});

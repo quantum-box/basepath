@@ -39,6 +39,11 @@ pub fn document() -> Value {
         ("/v1/invitations/{id}/decline", vec!["post"]),
         ("/v1/settings", vec!["get", "patch"]),
         ("/v1/templates", vec!["get"]),
+        // Delegations, and the ranges that narrow when they still need asking.
+        // Both are the person's own; an AI connection is refused on all of
+        // them before anything is read.
+        ("/v1/mcp/connections", vec!["get"]),
+        ("/v1/mcp/auto-apply", vec!["get", "post"]),
         ("/v1/integrations/field/tenants", vec!["get"]),
         ("/v1/integrations/field/tasks", vec!["get"]),
         ("/v1/integrations/field/metrics", vec!["get"]),

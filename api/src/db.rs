@@ -507,6 +507,12 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         include_str!("../migrations/sqlite/0006_sessions.sql"),
         include_str!("../migrations/mysql/0006_sessions.sql"),
     ),
+    (
+        7,
+        "pre-authorized apply ranges",
+        include_str!("../migrations/sqlite/0007_auto_apply.sql"),
+        include_str!("../migrations/mysql/0007_auto_apply.sql"),
+    ),
 ];
 
 /// The schema version this build expects. Readiness compares against it, so a

@@ -135,6 +135,58 @@ person.
 To publish to a workspace rather than to yourself: **Plugins → Personal → ⋯ →
 Publish** (workspace admin only).
 
+## The in-conversation view, and which spelling ChatGPT reads
+
+This is the part that cost a day, so it goes in full.
+
+There are two conventions for telling a host "this tool has a view", and they
+are not the same key:
+
+| | MCP Apps (SEP-1865) | OpenAI Apps SDK |
+| --- | --- | --- |
+| On the tool | `_meta["ui"]["resourceUri"]` | `_meta["openai/outputTemplate"]` |
+| Media type | `text/html;profile=mcp-app` | `text/html+skybridge` |
+| May the view call tools | negotiated by the bridge | `_meta["openai/widgetAccessible"]` |
+| Read by | claude.ai, Claude Desktop | ChatGPT |
+
+Basepath published only the first. A ChatGPT Developer Mode connection
+therefore saw no view at all — and because nothing recorded that a host had
+read a UI resource, that was indistinguishable from the view being broken. On
+2026-09-19 a proposal was created from ChatGPT, the conversation showed a
+paragraph saying approval happens in Basepath, and it expired unread
+(PLT-4943).
+
+Both spellings are now published for the same bytes, as two listings of one
+document rather than two documents. A host ignores the key it does not know, so
+this is additive: nothing about the MCP Apps contract changed.
+
+Separately, the tools that *create* a change set had no view in either
+convention — only the read tools did. So even a host that renders MCP Apps
+showed no diff at the moment a proposal was made. Every change tool now names
+a view.
+
+### Measuring it rather than arguing about it
+
+Reading a `ui://` resource stamps `mcp_connections.ui_read_at`, and
+**設定 → AIクライアントの接続** shows it per connection:
+
+- 「会話内に表示あり・<日時>」 — this host rendered the view. Measured, from the
+  host, on that connection.
+- 「会話内の表示はまだありません」 — it has not. Either the client does not
+  implement either convention, or nothing has opened a view yet.
+
+A host reads that resource only in order to draw it, so the timestamp is the
+evidence. Fill the table at the end of this file from what it says, not from
+anyone's documentation, and give the host name and version you actually used.
+
+### When a host renders nothing
+
+It must still not be a dead end, and that is not left to the model's judgement.
+Every change set a tool returns carries `approval_url` — the absolute Basepath
+link — and `where_to_approve`, a sentence telling the model to show the diff and
+the URL. So the worst case is prose *with a working link*, which is a person who
+can finish, rather than prose alone, which is a person who cannot.
+
 ## What happens when something goes wrong
 
 | Situation | What the person sees |
@@ -145,7 +197,9 @@ Publish** (workspace admin only).
 | Disconnected in settings | The next call fails. The host can reconnect, which starts a new consent |
 | Authorization request expired (15 min) | "この認可リクエストは期限切れです" with no way to grant from that page |
 | Access token expired (1 hour) | The host refreshes silently. Refresh tokens rotate |
-| Host does not render MCP Apps | Every tool still returns the same `structuredContent` and text. Nothing is lost but the in-conversation view |
+| Host does not render MCP Apps | Every tool still returns the same `structuredContent` and text, including `approval_url`, so the model can hand over a working link. Nothing is lost but the in-conversation view |
+| A proposal is outside every pre-set range | The app offers 「Basepathで承認する」 and shows the URL. Nothing is applied |
+| A proposal is inside a range | The app offers 「この内容を反映する」, and says afterwards what it did. See [change-approval.md](change-approval.md#deciding-in-advance) |
 
 ## Verified, and not
 
@@ -158,9 +212,24 @@ Keeping these apart is the point of the table.
 | A client can register, consent, exchange, and call MCP over HTTP | **CI** | `api/tests/mcp_remote.rs` — real child process, real HTTP |
 | The package is well-formed and carries no credential | **CI** | `tests/plugin.test.mjs`, `npm run check:plugin` |
 | `WWW-Authenticate` survives API Gateway | **CI** | `tests/sites-worker.test.mjs`. Observed failing in production before this change: the header arrived as `x-amzn-remapped-www-authenticate` |
-| **Connecting from real ChatGPT** | **not verified** | Needs a ChatGPT account with Developer Mode. Not performed |
+| Both view conventions are published for every tool that has one | **CI** | `api/tests/mcp_apps.rs` — `openai/outputTemplate`, `text/html+skybridge`, `openai/widgetAccessible`, and the MCP Apps keys, asserted together over a real MCP session |
+| Every change tool names a view | **CI** | `api/tests/mcp_apps.rs`. This is the PLT-4943 regression: a tool that creates a proposal and cannot render it |
+| A proposal renders as a diff the moment it is made, with no round trip | **CI** | `tests/e2e/mcp-app.spec.mjs` — pushed through the real AppBridge as a host does |
+| A host that renders nothing still gets a working link | **CI** | `api/tests/mcp_apps.rs` and the `approval_url` on every change set |
+| **Connecting from real ChatGPT** | **not verified** | Needs a ChatGPT account with Developer Mode. Not performed in this repository |
+| **Whether ChatGPT renders the view once both conventions are published** | **not verified** | The change is reasoned from the two published conventions, not from an observation. Read `ui_read_at` in 設定 → AIクライアントの接続 after connecting, and record the answer here with the host version and the date |
 | **The listing metadata as ChatGPT renders it** | **not verified** | Same |
 | **Supported clients, plans, versions** | **not measured** | Fill in from an actual connection; do not copy from documentation |
+
+### Real-host log
+
+One row per actual connection. Empty rows are the honest state; do not fill
+them from documentation or from the harness.
+
+| Date | Host and version | View rendered (`ui_read_at`) | Proposal → reflected in Basepath | Notes |
+| --- | --- | --- | --- | --- |
+| 2026-09-19 | ChatGPT, Developer Mode | **no** | **no** — expired unread | Before this change. No view in either convention on the change tools, and only the MCP Apps spelling anywhere. PLT-4943 |
+| | | | | |
 
 Submission to a public directory is out of scope and has not been prepared for
 review. The privacy and support material a directory requires is not written.

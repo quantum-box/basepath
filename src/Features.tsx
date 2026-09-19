@@ -1415,36 +1415,59 @@ export function StorageSettings({
         <summary>AIからの変更案</summary>
         <p className="empty-value">
           提案はこの画面で承認するまで適用されません。有効期限は30分です。
+          事前に決めた範囲で自動反映されたものも、差分を残したままここに並びます。
         </p>
         {store.snapshots
           .flatMap((s) => s.changesets)
-          .filter((c) => c.status !== "applied")
+          .filter((c) => c.status !== "rejected")
+          // What still needs the person first. An applied one is history, and
+          // history must not push a pending decision below the fold.
+          .sort(
+            (a, b) =>
+              Number(a.status === "applied") - Number(b.status === "applied") ||
+              b.created_at.localeCompare(a.created_at),
+          )
           .map((c) => (
-            <div className="pending-change" key={c.id}>
+            <div className="pending-change" key={c.id} data-status={c.status}>
               <strong>{c.title}</strong>
               <small>
                 {store.workspaces.find((w) => w.id === c.workspace_id)?.name} ·{" "}
-                {new Date(c.expires_at).toLocaleString("ja-JP")}まで
+                {c.status === "applied"
+                  ? // Said as two different sentences, because they are two
+                    // different acts. A history that renders "they approved
+                    // this one" and "they had already decided about this kind"
+                    // identically cannot answer the only question anyone asks
+                    // of it afterwards.
+                    c.auto_applied
+                    ? `事前に決めた範囲で自動反映（${c.proposed_by_connection ?? "接続不明"}）`
+                    : "承認して反映済み"
+                  : `${new Date(c.expires_at).toLocaleString("ja-JP")}まで`}
               </small>
               <ChangePreview operations={c.operations} store={store} />
-              <button
-                className="primary-button"
-                disabled={store.pending}
-                onClick={() =>
-                  void store.run(async () => {
-                    // Approving applies. `apply` is only for a proposal
-                    // approved back when that was not so.
-                    const step = c.status === "pending" ? "approve" : "apply";
-                    await store.write(
-                      "POST",
-                      `/v1/workspaces/${c.workspace_id}/changesets/${c.id}/${step}`,
-                      {},
-                    );
-                  })
-                }
-              >
-                差分を承認して反映
-              </button>
+              {c.status === "applied" ? (
+                <a href={`/changes/${c.workspace_id}/${c.id}`}>
+                  この変更の差分を開く
+                </a>
+              ) : (
+                <button
+                  className="primary-button"
+                  disabled={store.pending}
+                  onClick={() =>
+                    void store.run(async () => {
+                      // Approving applies. `apply` is only for a proposal
+                      // approved back when that was not so.
+                      const step = c.status === "pending" ? "approve" : "apply";
+                      await store.write(
+                        "POST",
+                        `/v1/workspaces/${c.workspace_id}/changesets/${c.id}/${step}`,
+                        {},
+                      );
+                    })
+                  }
+                >
+                  差分を承認して反映
+                </button>
+              )}
             </div>
           ))}
       </details>

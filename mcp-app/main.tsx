@@ -45,6 +45,7 @@ import { WeeklyReviewPanel } from "../src/shared/WeeklyReview";
 import { ChangeReview } from "../src/shared/ChangeReview";
 import {
   approvalUrl,
+  changeSetFrom,
   changeSetsFrom,
   type ChangeSet,
 } from "../src/shared/changeView";
@@ -53,6 +54,44 @@ import "./document.css";
 import "../src/shared/planView.css";
 
 const APP_INFO = { name: "Basepath", version: "1.0.0" };
+
+/**
+ * Every change set inside one tool result, whichever tool produced it.
+ *
+ * A preview returns the change set itself, an apply wraps it in `changeset`,
+ * and a list returns `items`. The person does not care which tool ran; they
+ * care that the diff is in front of them, so all three shapes are read here
+ * rather than at each call site.
+ */
+function changesIn(structured: unknown): ChangeSet[] {
+  const source = structured as Record<string, unknown> | undefined;
+  if (!source || typeof source !== "object") return [];
+  const single = changeSetFrom(source.changeset ?? source);
+  if (single) return [single];
+  return changeSetsFrom(source);
+}
+
+/**
+ * Folds newer change sets into what is on screen, newest first.
+ *
+ * Replacing the list outright would make a proposal blink out of view the
+ * moment the model read something else, and a diff that disappears while
+ * somebody is reading it is the same failure as never showing it.
+ */
+function mergeChanges(
+  current: ChangeSet[],
+  incoming: ChangeSet[],
+): ChangeSet[] {
+  const merged = [...incoming];
+  for (const existing of current) {
+    if (!merged.some((change) => change.id === existing.id))
+      merged.push(existing);
+  }
+  // Withdrawn proposals are the one thing worth dropping: nothing happened and
+  // nothing can. Everything else — including what was just applied — stays, so
+  // the person can read the outcome of what they pressed.
+  return merged.filter((change) => change.status !== "rejected").slice(0, 5);
+}
 
 function problemFor(error: HostError) {
   switch (error.code) {
@@ -147,6 +186,21 @@ function BasepathApp() {
       created.ontoolresult = (params) => {
         try {
           const structured = structuredResult(params);
+          // A proposal, arriving the moment it is made.
+          //
+          // This is the path that was missing. The change tools had no view at
+          // all, so a proposal reached the server and the conversation showed
+          // prose about it; the person could not read the diff and could not
+          // act on it, and it expired. Now the result that created it *is* the
+          // render, with no round trip and nothing to wait for.
+          const proposed = changesIn(structured);
+          if (proposed.length > 0) {
+            setChanges((current) => mergeChanges(current, proposed));
+            setChangeNotice(null);
+            setLoading(false);
+            setStale(false);
+            return;
+          }
           // The weekly summary opens this app too. Which tool the host ran is
           // what the person asked about, so it decides which surface is shown.
           if (isWeeklyReview(structured)) {
@@ -254,15 +308,22 @@ function BasepathApp() {
       const listed = await host.call("pathbase_list_changes", {
         workspace_id: workspace.id,
       });
-      setChanges(
-        changeSetsFrom(listed).filter(
-          (change) =>
-            change.status === "pending" || change.status === "approved",
+      // Only what is still awaiting the person is *fetched*; what is already on
+      // screen is kept. A proposal the person just reflected would otherwise
+      // vanish at the next refresh, taking the answer to "what did that do?"
+      // with it.
+      setChanges((current) =>
+        mergeChanges(
+          current,
+          changeSetsFrom(listed).filter(
+            (change) =>
+              change.status === "pending" || change.status === "approved",
+          ),
         ),
       );
     } catch {
-      // A plan that loads without its proposals is still worth showing.
-      setChanges([]);
+      // A plan that loads without its proposals is still worth showing, and a
+      // proposal already on screen is not withdrawn by a failed list call.
     }
   }, [hostFor, workspaceId, limit]);
 
@@ -350,7 +411,7 @@ function BasepathApp() {
     setWeeklyBusy(true);
     setWeeklyNotice(null);
     try {
-      await host.call("pathbase_preview_changes", {
+      const result = await host.call("pathbase_preview_changes", {
         workspace_id: workspace.id,
         title: `${summary.weekStart}の週次レビュー案`,
         operations: [
@@ -364,8 +425,12 @@ function BasepathApp() {
         // keeps edited text from colliding with an earlier proposal.
         idempotency_key: `weekly:${summary.weekStart}:${summary.review?.version ?? 0}:${draftKey(input)}`,
       });
+      // The diff itself goes on screen; the sentence only has to say what the
+      // diff cannot — that a week is not declared reviewed by approving text.
+      const proposed = changesIn(result);
+      if (proposed.length > 0) setChanges((now) => mergeChanges(now, proposed));
       setWeeklyNotice(
-        "変更案を作成しました。Basepathで差分を確認して承認すると保存されます。この週はまだ確定していません。",
+        "変更案を作成しました。下の差分を確認してください。この週はまだ確定していません。確定はBasepathで行います。",
       );
     } catch (failure) {
       if (failure instanceof HostError) {
@@ -398,15 +463,20 @@ function BasepathApp() {
       setBusyAction(key);
       setNotice(null);
       try {
-        await host.call("pathbase_complete_action", {
+        const result = await host.call("pathbase_complete_action", {
           workspace_id: view.workspace.id,
           item_id: action.id,
           expected_version: action.version,
           local_date: view.localDate,
           idempotency_key: `${intent}:${key}:${action.version}`,
         });
+        const proposed = changesIn(result);
+        if (proposed.length > 0)
+          setChanges((now) => mergeChanges(now, proposed));
         setNotice(
-          "変更案を作成しました。Basepathで内容を確認して承認すると反映されます。",
+          proposed[0]?.autoApplyEligible
+            ? "変更案を作成しました。下の差分を確認して「この内容を反映する」を押してください。"
+            : "変更案を作成しました。下の差分を確認し、Basepathで承認すると反映されます。",
         );
       } catch (failure) {
         if (failure instanceof HostError) {
@@ -433,13 +503,13 @@ function BasepathApp() {
    * when it did not.
    */
   const actOnChange = useCallback(
-    async (change: ChangeSet, intent: "reject" | "apply") => {
+    async (change: ChangeSet, intent: "reject" | "apply" | "auto") => {
       const host = hostFor();
       if (!host || changeBusy) return;
       setChangeBusy(true);
       setChangeNotice(null);
       try {
-        await host.call(
+        const result = await host.call(
           intent === "reject"
             ? "pathbase_reject_change"
             : "pathbase_apply_changes",
@@ -449,24 +519,39 @@ function BasepathApp() {
             idempotency_key: `${intent}:${change.id}:${change.hash}`,
           },
         );
+        // The server's answer, not an assumption about it. "I pressed the
+        // button and nothing told me what happened" is the thing this replaces,
+        // so the change set that comes back is what gets rendered.
+        const updated = changesIn(result);
+        if (updated.length > 0) setChanges((now) => mergeChanges(now, updated));
         setChangeNotice(
           intent === "reject"
-            ? "変更案を取り下げました。"
-            : "承認済みの内容を適用しました。",
+            ? "変更案を取り下げました。計画は変わっていません。"
+            : intent === "auto"
+              ? "事前に決めた範囲としてBasepathに反映しました。"
+              : "承認済みの内容を適用しました。",
         );
       } catch (failure) {
         if (failure instanceof HostError) {
           const described = problemFor(failure);
-          setChangeNotice(`${described.title}: ${described.detail}`);
+          // A refusal has to end somewhere the person can go. The most common
+          // one here is "this is outside the range", and the answer to that is
+          // the approval screen, not an apology.
+          const href = basepathUrl ? approvalUrl(basepathUrl, change) : "";
+          setChangeNotice(
+            failure.code === "APPROVAL_REQUIRED" && href
+              ? `反映されていません。この変更案は事前に決めた範囲の外なので、Basepathで確認して承認してください: ${href}`
+              : `${described.title}: ${described.detail}`,
+          );
         } else {
-          setChangeNotice("操作できませんでした。");
+          setChangeNotice("操作できませんでした。計画は変わっていません。");
         }
       } finally {
         setChangeBusy(false);
         await refresh();
       }
     },
-    [hostFor, changeBusy, refresh],
+    [hostFor, changeBusy, refresh, basepathUrl],
   );
 
   const openApproval = useCallback(
@@ -578,6 +663,14 @@ function BasepathApp() {
           onApply={
             change.approvedBy
               ? () => void actOnChange(change, "apply")
+              : undefined
+          }
+          // Offered only where the server said this proposal is inside a range
+          // the person set in Basepath. It triggers the apply; it does not
+          // stand in for their decision, which already happened.
+          onAutoApply={
+            change.autoApplyEligible
+              ? () => void actOnChange(change, "auto")
               : undefined
           }
         />

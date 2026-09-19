@@ -77,6 +77,52 @@ arrives for one already applied by this same person returns the change set with
 `already_applied: true` rather than an error — a model relaying "I approved it"
 should not report a failure about something that is in the plan.
 
+## Deciding in advance
+
+A person can say, in Basepath, that proposals of a particular shape from a
+particular AI client may be reflected without being asked again. `auto_apply.rs`
+holds the rule and `api/tests/auto_apply.rs` is written from the attacker's
+side, the same way this file's table is.
+
+This is **not** an exception to anything above, and the distinction is worth
+being exact about, because it is the only place an apply proceeds without a
+per-change approval.
+
+The argument against a button in the app is that the server cannot attribute
+the click. That argument is untouched. What a range changes is *when* the
+person decides, not *where*: the row is written on Basepath's origin, with
+their session and the same-origin CSRF header — the identical evidence an
+approval carries. Applying under it is the server reading a decision they
+already made, in the one place it can read decisions. Approval moved from
+one件ずつ to 範囲ごと; the boundary did not move.
+
+So the app may now show a trigger, and the trigger proves nothing. The range
+does. The server re-reads it on every apply, which is why revoking takes effect
+on the next call rather than the next session.
+
+### What a range cannot reach
+
+| | |
+| --- | --- |
+| A deletion | Never. There is no column for it. A proposal containing one falls outside every range that can be expressed |
+| `due_date` / `start_date` / `scheduled_date` / `assignee_id` / `self_assessment` / `target` / `baseline` | Only if the person turned that on for that one range, as a separate decision. These read afterwards as things they decided |
+| Another workspace, or another AI client | Never. Both are part of the key, and the proposal must have arrived on the connection now applying it |
+| Part of a proposal | Never. A range covers every operation or none: applying the covered half leaves a plan nobody described |
+| Forever | Never. Every range expires, at most 90 days out |
+| An AI connection reading or writing one | Never. `GET` is a 404 — not a 403, which would confirm there is something to widen — and a write gets the same refusal every agent write gets, so the answer carries no information either way |
+
+### Telling the two apart afterwards
+
+`approved_by` stays null on an auto-applied change set, and `auto_applied` and
+`auto_apply_rule` are set instead. The trail has to answer "did they approve
+this one, or had they already decided about this kind?" and it can only do that
+if the two are not written into the same field. Both appear in the change list
+in Basepath, and the diff stays readable either way: "気づいたら変わっていた"
+is the failure this is built not to cause.
+
+The revoked range is kept rather than deleted, so a change set applied under it
+can still name what it was applied under.
+
 ### Weekly review text
 
 A proposal may also carry the week's review text, as
@@ -117,10 +163,37 @@ test:
 | Approve a review draft written against an older version | `409 VERSION_CONFLICT` |
 | Re-send the same approval (double click, retry) | the stored result, written once |
 | Apply what this person's approval already applied | the change set, `already_applied: true`, nothing written |
+| Apply with no range, or one that does not cover every operation | `403 APPROVAL_REQUIRED` |
+| Apply a deletion under the widest range that can be saved | `403 APPROVAL_REQUIRED` |
+| Apply a proposal that arrived on another connection, under this one's range | `403 APPROVAL_REQUIRED` |
+| Apply under a range revoked or expired since the proposal | `403 APPROVAL_REQUIRED` |
+| `auto_applied` / `auto_apply_rule` / `auto_apply_eligible` in a proposal body | `422` |
+| Read or create a range from an AI connection | `404` / the blanket agent-write refusal |
 
 And one more, which is the point of the whole design: **previewing does not
 change the plan.** The operations run inside a savepoint that is rolled back;
 what survives is the description of what they did.
+
+## Seeing the diff where the decision is made
+
+The conversation shows the change set. That is the point of the whole MCP Apps
+surface, and for a while it did not happen: the tools that *create* a change set
+carried no UI resource, so a host had nothing to render. The model answered in
+prose, the person never saw the diff, and the proposal expired
+(PLT-4943). Every change tool now names a view, in both the MCP Apps and the
+OpenAI Apps SDK spelling, because a host reads one or the other and not both.
+
+A host that renders nothing must still not be a dead end. Every change set a
+tool returns carries `approval_url` — the absolute Basepath link — and a
+sentence saying what to do with it, so the model has somewhere to send the
+person even when there is no view at all. "It told me to approve in Basepath
+and did not say where" is what that field exists to prevent.
+
+Whether a given host draws the view is now recorded rather than argued:
+reading a `ui://` resource stamps `mcp_connections.ui_read_at`, and 設定 →
+AIクライアントの接続 shows it per connection. A host reads that resource only in
+order to draw it, so the timestamp separates "this client does not support it"
+from "it does, and something else went wrong".
 
 ## The diff a person sees
 

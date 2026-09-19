@@ -231,8 +231,12 @@ test("a granted connection is listed in settings and can be disconnected there",
     .getByRole("button", { name: "設定", exact: true });
   await settings.focus();
   await settings.press("Enter");
+  // Scoped to the connections list: the same panel now also lists this client
+  // under the ranges below it, and that is a different question.
   const dialog = page.getByRole("dialog");
-  const entry = dialog.locator("li", { hasText: "E2E AI host" }).last();
+  const entry = dialog
+    .locator(".mcp-connections > ul > li", { hasText: "E2E AI host" })
+    .last();
   await expect(entry).toBeVisible();
   await expect(entry.getByText("接続中", { exact: false })).toBeVisible();
   // Only the scope the person granted is checked.
@@ -245,4 +249,65 @@ test("a granted connection is listed in settings and can be disconnected there",
 
   await entry.getByRole("button", { name: "接続を解除", exact: true }).click();
   await expect(entry.getByText("解除済みです", { exact: false })).toBeVisible();
+});
+
+test("a person can set, narrow and remove a range that skips per-change approval", async ({
+  page,
+  request,
+}) => {
+  // The point of this test is where the decision is made. Every apply that
+  // later proceeds without a per-change approval proceeds because of a row
+  // written on this screen, with this session — and for no other reason.
+  const clientId = await registerClient(request, REDIRECT);
+  await page.goto("/");
+  const { challenge } = await pkce(page, "range");
+  await page.goto(
+    authorizeUrl(
+      clientId,
+      REDIRECT,
+      challenge,
+      "pathbase.read pathbase.propose pathbase.apply",
+    ),
+  );
+  await page.getByRole("button", { name: "許可する", exact: true }).click();
+  await page.waitForURL((url) => url.pathname === "/e2e-oauth-callback");
+
+  await page.goto("/");
+  const settings = page
+    .getByRole("navigation", { name: "ユーティリティ" })
+    .getByRole("button", { name: "設定", exact: true });
+  await settings.focus();
+  await settings.press("Enter");
+
+  const ranges = page.getByRole("dialog").locator(".auto-apply");
+  await expect(ranges).toBeVisible();
+  // The edges are stated while the permission is being granted, not in a
+  // document somewhere else.
+  await expect(
+    ranges.getByText("削除は、どの設定でも自動反映されません", {
+      exact: false,
+    }),
+  ).toBeVisible();
+
+  const entry = ranges.locator("ul > li", { hasText: "E2E AI host" }).last();
+  await expect(entry.getByText("設定なし", { exact: false })).toBeVisible();
+  // Adding is offered by default; rewriting what the person wrote, and the
+  // values that read afterwards as their decisions, are not.
+  await expect(
+    entry.getByRole("checkbox", { name: /追加を自動で反映する/ }),
+  ).toBeChecked();
+  await expect(
+    entry.getByRole("checkbox", { name: /更新も自動で反映する/ }),
+  ).not.toBeChecked();
+  await expect(
+    entry.getByRole("checkbox", { name: /期限・担当・目標値なども含める/ }),
+  ).not.toBeChecked();
+
+  await entry.getByRole("button", { name: "この範囲で許可する" }).click();
+  await expect(entry.getByText("追加", { exact: false }).first()).toBeVisible();
+
+  // Nothing is indefinite, and removing it is one press.
+  await expect(entry.getByRole("button", { name: "設定を解除" })).toBeVisible();
+  await entry.getByRole("button", { name: "設定を解除" }).click();
+  await expect(entry.getByText("設定なし", { exact: false })).toBeVisible();
 });

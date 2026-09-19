@@ -1,3 +1,4 @@
+pub mod auto_apply;
 pub mod auth;
 pub mod breakdown;
 pub mod collaboration;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { request, type ApiError } from "./api";
 import type { WorkspaceStore } from "./useWorkspace";
 import { Icon } from "./icons";
+import { AutoApplyRanges } from "./AutoApplyRanges";
 
 /** One AI client's delegation. */
 export type McpConnection = {
@@ -14,6 +15,16 @@ export type McpConnection = {
   created_at: string;
   updated_at: string;
   last_used_at: string;
+  /**
+   * When a host on this connection last rendered Basepath inside the
+   * conversation. Empty means it never has.
+   *
+   * Shown because "does this AI client draw the plan, or only talk about it?"
+   * was a question nobody could answer from here, and a day was spent on it.
+   * The host reads that view only in order to draw it, so this is measured
+   * rather than inferred from anyone's documentation.
+   */
+  ui_read_at: string;
   version: number;
 };
 
@@ -155,6 +166,11 @@ export function McpConnections({ store }: { store: WorkspaceStore }) {
                   {statusLabel(connection.status)}・最終利用{" "}
                   {when(connection.last_used_at)}
                 </small>
+                <small>
+                  {connection.ui_read_at
+                    ? `会話内に表示あり・${when(connection.ui_read_at)}`
+                    : "会話内の表示はまだありません（このクライアントが対応していないか、まだ開いていません）"}
+                </small>
               </div>
             </div>
 
@@ -209,6 +225,11 @@ export function McpConnections({ store }: { store: WorkspaceStore }) {
           </li>
         ))}
       </ul>
+
+      {/* The range lives beside the delegation it narrows, because it only
+          means anything in terms of one: "this AI client, this workspace,
+          this shape of change". */}
+      <AutoApplyRanges store={store} connections={connections ?? []} />
     </section>
   );
 }

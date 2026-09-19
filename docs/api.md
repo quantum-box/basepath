@@ -321,7 +321,19 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 - `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビューを再検証して追加します。同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。
 - `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。
 - `POST …/changesets/{id}/approve`：`hash`（任意）。人のアプリ操作のみが承認できます。**承認がそのまま適用です。**同じトランザクションで操作を実行し、`status`は`applied`になります。承認だけして反映されていない状態は作られません。2段階に分かれているのはAIが適用する経路のためで、人に二度押させるためではありませんでした。
-- `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。承認時に適用されるようになる前に承認された案のための経路で、すでに適用済みのものには`already_applied: true`を返し、何も書きません。
+- `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。承認時に適用されるようになる前に承認された案のための経路で、すでに適用済みのものには`already_applied: true`を返し、何も書きません。**本人が事前に決めた範囲に入る案は、個別の承認なしでもここで適用されます**（下記）。
+
+### 事前に決めた範囲（自動反映）
+
+1件ずつの承認を、範囲ごとの承認に置き換える設定です。承認の境界は動きません：行はBasepathのオリジンで本人のセッションからしか書けず、AI接続は読むことも書くこともできません（`GET`は404、書き込みはエージェントの一律拒否）。詳細と脅威モデルは[change-approval.md](change-approval.md#deciding-in-advance)。
+
+- `GET /v1/mcp/auto-apply`：本人の範囲一覧。
+- `POST /v1/mcp/auto-apply`：`workspace_id`、`connection_id`、`allow_create`、`allow_update`、`allow_guarded`、`days`（1〜90）。同じ(本人, ワークスペース, 接続)の組は置き換えです。追加も更新も許可しない範囲、有効な接続でないもの、参加していないワークスペースは422 / 404。
+- `POST /v1/mcp/auto-apply/{id}/revoke`：空オブジェクト。次の呼び出しから効きます。
+
+範囲に**入らない**もの：削除（列自体が無い）、`due_date` / `start_date` / `scheduled_date` / `assignee_id` / `self_assessment` / `target` / `baseline`を設定する操作（`allow_guarded`で明示しない限り）、別のワークスペース、別の接続、提案が届いた接続以外からの適用、1件でも範囲外の操作を含む変更案、期限切れ・解除済みの範囲。
+
+変更案を読むと`auto_apply_eligible`（この案をその場で反映できるか）が付きます。自動反映されたものは`auto_applied`と`auto_apply_rule`を持ち、`approved_by`はnullのままです——「本人が1件ずつ承認した」と「事前承認の範囲で自動反映した」を後から区別するためです。
 
 ## Field
 
