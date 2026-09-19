@@ -278,7 +278,7 @@ async fn idempotency_is_shared_across_service_instances() {
 }
 
 #[tokio::test]
-async fn changeset_apply_is_atomic_and_cannot_be_applied_twice() {
+async fn changeset_approval_is_atomic_and_cannot_be_applied_twice() {
     let fixture = tidb!();
     let (service, who) = seeded(&fixture).await;
     let base = "/v1/workspaces/personal";
@@ -307,8 +307,13 @@ async fn changeset_apply_is_atomic_and_cannot_be_applied_twice() {
     .await
     .unwrap();
     let change_id = preview["id"].as_str().unwrap().to_owned();
-    call(
-        &service,
+
+    // Approving writes, so this is where a second instance must not write
+    // again: approve from one, then try the same approval from another.
+    let applier = fixture.service().await;
+    let other = fixture.service().await;
+    let applied = call(
+        &applier,
         &who,
         "POST",
         &format!("{base}/changesets/{change_id}/approve"),
@@ -317,12 +322,21 @@ async fn changeset_apply_is_atomic_and_cannot_be_applied_twice() {
     )
     .await
     .unwrap();
-
-    // Apply from one instance, then try to replay it from another.
-    let applier = fixture.service().await;
-    let other = fixture.service().await;
-    call(
-        &applier,
+    assert_eq!(applied["status"], "applied");
+    let second = call(
+        &other,
+        &who,
+        "POST",
+        &format!("{base}/changesets/{change_id}/approve"),
+        json!({}),
+        Some(&new_key().await),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(second.status, 409);
+    // And an apply arriving afterwards from a third instance writes nothing.
+    let late = call(
+        &service,
         &who,
         "POST",
         &format!("{base}/changesets/{change_id}/apply"),
@@ -331,17 +345,7 @@ async fn changeset_apply_is_atomic_and_cannot_be_applied_twice() {
     )
     .await
     .unwrap();
-    let second = call(
-        &other,
-        &who,
-        "POST",
-        &format!("{base}/changesets/{change_id}/apply"),
-        json!({}),
-        Some(&new_key().await),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(second.status, 409);
+    assert_eq!(late["already_applied"], true);
 
     let items = call(
         &service,

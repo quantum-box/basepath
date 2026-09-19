@@ -137,6 +137,13 @@ export function AiSuggestions({
         {},
       );
       setChange(approved);
+      // Approving applies it. There is nothing left for the person to press,
+      // so the panel closes rather than showing a button that would do what
+      // has already been done.
+      if (approved.status === "applied") {
+        await store.refresh();
+        onApplied();
+      }
     } catch (failure) {
       setError(
         failure instanceof Error ? failure.message : "承認できませんでした",
@@ -301,7 +308,7 @@ export function AiSuggestions({
               disabled={busy}
               onClick={() => void approve()}
             >
-              この差分を承認
+              この差分を承認して反映
             </button>
           ) : (
             <button

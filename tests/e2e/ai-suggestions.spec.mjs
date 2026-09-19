@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("AI proposal stays read-only until preview approval and apply", async ({
+test("AI proposal stays read-only until the person approves it", async ({
   page,
   request,
 }) => {
@@ -54,8 +54,9 @@ test("AI proposal stays read-only until preview approval and apply", async ({
     actionCount,
   );
 
-  await dialog.getByRole("button", { name: "この差分を承認" }).click();
-  await dialog.getByRole("button", { name: "承認済みの差分を適用" }).click();
+  // Approving is the write: the person is looking at the diff and has decided,
+  // so the dialog closes rather than asking for a second click.
+  await dialog.getByRole("button", { name: "この差分を承認して反映" }).click();
   await expect(dialog).not.toBeVisible();
   const afterResponse = await request.get(
     `/api/v1/workspaces/${workspaceId}/snapshot`,

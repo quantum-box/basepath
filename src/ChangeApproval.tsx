@@ -82,7 +82,7 @@ export function ChangeApproval({
         );
         setNotice(
           intent === "approve"
-            ? "承認しました。適用するとこの内容が計画へ反映されます。"
+            ? "承認しました。この内容を計画へ反映しました。"
             : intent === "apply"
               ? "適用しました。"
               : "取り下げました。",

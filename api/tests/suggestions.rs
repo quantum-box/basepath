@@ -183,16 +183,7 @@ async fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
         .code,
         "APPROVAL_REQUIRED"
     );
-    call(
-        &service,
-        &Actor::local(),
-        "POST",
-        &format!("/v1/workspaces/organization/changesets/{id}/approve"),
-        json!({}),
-        Some("approve-ai"),
-    )
-    .await
-    .unwrap();
+    // The goal the proposal hangs off moves while the proposal is waiting.
     call(
         &service,
         &Actor::local(),
@@ -206,14 +197,16 @@ async fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
     )
     .await
     .unwrap();
+    // Approving writes, so a proposal that no longer matches the plan is
+    // refused at the approval rather than after it.
     assert_eq!(
         call(
             &service,
             &Actor::local(),
             "POST",
-            &format!("/v1/workspaces/organization/changesets/{id}/apply"),
+            &format!("/v1/workspaces/organization/changesets/{id}/approve"),
             json!({}),
-            Some("stale-apply")
+            Some("stale-approve")
         )
         .await
         .unwrap_err()
@@ -223,7 +216,7 @@ async fn adoption_still_requires_preview_approval_and_rejects_conflicts() {
 }
 
 #[tokio::test]
-async fn expired_approved_proposal_is_rejected() {
+async fn an_expired_proposal_is_rejected() {
     let (_dir, service) = setup().await;
     let proposal = call(
         &service,
@@ -235,18 +228,8 @@ async fn expired_approved_proposal_is_rejected() {
     ).await
     .unwrap();
     let id = proposal["id"].as_str().unwrap();
-    call(
-        &service,
-        &Actor::local(),
-        "POST",
-        &format!("/v1/workspaces/organization/changesets/{id}/approve"),
-        json!({}),
-        Some("expiry-approve"),
-    )
-    .await
-    .unwrap();
     {
-        // Expire the approved changeset without waiting 30 minutes.
+        // Expire the changeset without waiting 30 minutes.
         let mut tx = service.db.begin_write().await.unwrap();
         let mut change: Value =
             pathbase_api::storage::get(&mut tx, "organization", "changesets", id)
@@ -258,18 +241,22 @@ async fn expired_approved_proposal_is_rejected() {
             .unwrap();
         tx.commit().await.unwrap();
     }
-    assert_eq!(
-        call(
-            &service,
-            &Actor::local(),
-            "POST",
-            &format!("/v1/workspaces/organization/changesets/{id}/apply"),
-            json!({}),
-            Some("expired-apply")
-        )
-        .await
-        .unwrap_err()
-        .code,
-        "VERSION_CONFLICT"
-    );
+    // Neither door opens on an expired proposal: it has to be made again.
+    for (step, key) in [("approve", "expired-approve"), ("apply", "expired-apply")] {
+        assert_eq!(
+            call(
+                &service,
+                &Actor::local(),
+                "POST",
+                &format!("/v1/workspaces/organization/changesets/{id}/{step}"),
+                json!({}),
+                Some(key)
+            )
+            .await
+            .unwrap_err()
+            .code,
+            "VERSION_CONFLICT",
+            "{step}"
+        );
+    }
 }

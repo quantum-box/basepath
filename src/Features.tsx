@@ -1432,21 +1432,18 @@ export function StorageSettings({
                 disabled={store.pending}
                 onClick={() =>
                   void store.run(async () => {
-                    if (c.status === "pending")
-                      await store.write(
-                        "POST",
-                        `/v1/workspaces/${c.workspace_id}/changesets/${c.id}/approve`,
-                        {},
-                      );
+                    // Approving applies. `apply` is only for a proposal
+                    // approved back when that was not so.
+                    const step = c.status === "pending" ? "approve" : "apply";
                     await store.write(
                       "POST",
-                      `/v1/workspaces/${c.workspace_id}/changesets/${c.id}/apply`,
+                      `/v1/workspaces/${c.workspace_id}/changesets/${c.id}/${step}`,
                       {},
                     );
                   })
                 }
               >
-                差分を承認して適用
+                差分を承認して反映
               </button>
             </div>
           ))}

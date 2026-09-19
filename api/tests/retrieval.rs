@@ -120,20 +120,13 @@ async fn through_approval(
     )
     .await?;
     let id = change["id"].as_str().unwrap().to_owned();
-    call(
+    // Approving is what writes it: the person is looking at the diff.
+    let applied = call(
         service,
         who,
         "POST",
         &format!("/v1/workspaces/{w}/changesets/{id}/approve"),
         json!({"hash":change["hash"]}),
-    )
-    .await?;
-    let applied = call(
-        service,
-        who,
-        "POST",
-        &format!("/v1/workspaces/{w}/changesets/{id}/apply"),
-        json!({}),
     )
     .await?;
     Ok(applied["results"][0].clone())

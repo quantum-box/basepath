@@ -52,7 +52,7 @@ async function proposeChange(request, workspaceId) {
   return response.json();
 }
 
-test("a deep link approves the shown content and then applies it", async ({
+test("a deep link approves the shown content, and approving is what applies it", async ({
   page,
   request,
 }) => {
@@ -80,29 +80,25 @@ test("a deep link approves the shown content and then applies it", async ({
     before.items.filter((item) => item.title === "E2E: 承認で作られる行動"),
   ).toHaveLength(0);
 
-  await review.getByRole("button", { name: "この内容で承認する" }).click();
-  await expect(page.getByText("承認しました", { exact: false })).toBeVisible();
-  // Approval alone still changes nothing.
-  const afterApproval = await (
-    await request.get(`/api/v1/workspaces/${workspaceId}/snapshot`)
-  ).json();
-  expect(
-    afterApproval.items.filter(
-      (item) => item.title === "E2E: 承認で作られる行動",
-    ),
-  ).toHaveLength(0);
-
   await review
-    .getByRole("button", { name: "承認済みの内容を適用する" })
+    .getByRole("button", { name: "この内容で承認して反映する" })
     .click();
-  await expect(page.getByText("適用しました")).toBeVisible();
+  await expect(
+    page.getByText("計画へ反映しました", { exact: false }),
+  ).toBeVisible();
 
+  // The person is done. Nothing is left for them to come back and press —
+  // which is what used to let an approval expire having written nothing.
   const after = await (
     await request.get(`/api/v1/workspaces/${workspaceId}/snapshot`)
   ).json();
   expect(
     after.items.filter((item) => item.title === "E2E: 承認で作られる行動"),
   ).toHaveLength(1);
+  await expect(review.getByText("適用済み")).toBeVisible();
+  await expect(
+    review.getByRole("button", { name: "承認済みの内容を適用する" }),
+  ).toBeHidden();
 });
 
 test("withdrawing a proposal leaves the plan untouched", async ({
@@ -119,7 +115,7 @@ test("withdrawing a proposal leaves the plan untouched", async ({
   await expect(review.getByText("却下済み")).toBeVisible();
   // A withdrawn proposal offers no way forward.
   await expect(
-    review.getByRole("button", { name: "この内容で承認する" }),
+    review.getByRole("button", { name: "この内容で承認して反映する" }),
   ).toBeHidden();
 
   const after = await (

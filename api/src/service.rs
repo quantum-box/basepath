@@ -3728,9 +3728,22 @@ async fn dispatch_inner(
             }
             c["approved_by"] = json!(actor.id);
             c["approved_at"] = json!(now());
-            c["status"] = json!("approved");
             c["approved_hash"] = c["hash"].clone();
+            // A person looking at the diff has already decided. Asking them to
+            // press a second button afterwards is how an approval ends up
+            // expiring with nothing written and nobody knowing.
+            //
+            // The two steps exist so that an *agent* can only apply what the
+            // person approved. They were never meant to make the person act
+            // twice, so when the approver is here, approving is applying — in
+            // this transaction, so there is no moment where one happened and
+            // the other did not.
+            let results = commit(tx, actor, &mut c).await?;
             put(tx, w, col, id, &c).await?;
+            // The change set itself, so every caller that reads an approval
+            // response keeps working, with what the operations produced
+            // alongside it rather than stored on the row.
+            c["results"] = json!(results);
             Ok(c)
         }
         // Rejecting only discards a proposal, so an agent may do it: nothing
@@ -3756,6 +3769,14 @@ async fn dispatch_inner(
         ("POST", "changesets", id, "apply") => {
             only(body, &[])?;
             let mut c: Value = get(tx, w, col, id).await?;
+            // Approving in Basepath already applied it. An apply arriving
+            // afterwards — from the model that proposed it, or from a second
+            // click — is asking for something that is already true, so it is
+            // answered rather than refused. Telling the person "適用できません"
+            // about a change that is in their plan would be worse than useless.
+            if c["status"] == "applied" && c["approved_by"] == actor.id {
+                return Ok(json!({"changeset":c,"results":[],"already_applied":true}));
+            }
             validate_preview(tx, w, &c).await?;
             // Applying is allowed for the person who approved this exact
             // content, whichever surface they are on. It is never allowed
@@ -3771,22 +3792,7 @@ async fn dispatch_inner(
                     "画面での差分確認と承認が必要です",
                 ));
             }
-            let ops: Vec<Operation> = serde_json::from_value(c["operations"].clone())?;
-            let human = Actor {
-                id: actor.id.clone(),
-                agent: false,
-                connection: actor.connection.clone(),
-            };
-            let mut output = vec![];
-            for op in ops {
-                output.push(
-                    dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?,
-                );
-            }
-            c["status"] = json!("applied");
-            c["applied_at"] = json!(now());
-            c["applied_by"] = json!(actor.id);
-            c["applied_by_connection"] = json!(actor.connection);
+            let output = commit(tx, actor, &mut c).await?;
             put(tx, w, col, id, &c).await?;
             Ok(json!({"changeset":c,"results":output}))
         }
@@ -4204,6 +4210,32 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         "guarded_values": crate::copilot::guarded_values(&op.body),
         "basis": op.basis,
     }))
+}
+/// Runs a change set's operations and stamps it as applied.
+///
+/// The operations always run as a person, never as an agent: a change set
+/// exists because someone approved it, so what it writes is theirs and is not
+/// subject to the restrictions on what an agent may decide on its own.
+///
+/// The caller validated the change set and writes the row back; this only
+/// fills in the record of what happened, so that approving and applying leave
+/// the same trail whichever one the person went through.
+async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>> {
+    let ops: Vec<Operation> = serde_json::from_value(c["operations"].clone())?;
+    let human = Actor {
+        id: actor.id.clone(),
+        agent: false,
+        connection: actor.connection.clone(),
+    };
+    let mut output = vec![];
+    for op in ops {
+        output.push(dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?);
+    }
+    c["status"] = json!("applied");
+    c["applied_at"] = json!(now());
+    c["applied_by"] = json!(actor.id);
+    c["applied_by_connection"] = json!(actor.connection);
+    Ok(output)
 }
 async fn validate_preview(tx: &mut Tx, w: &str, c: &Value) -> Result<()> {
     if text(c, "expires_at") < now().as_str()

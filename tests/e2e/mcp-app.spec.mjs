@@ -389,7 +389,7 @@ test("a change set is shown as a diff that cannot be approved in the app", async
 
   // Approval is not offered here, and the reason is stated.
   await expect(
-    review.getByRole("button", { name: "この内容で承認する" }),
+    review.getByRole("button", { name: "この内容で承認して反映する" }),
   ).toBeHidden();
   await expect(
     review.getByText("ここでの操作は本人確認の代わりになりません", {
@@ -473,7 +473,9 @@ test("applying is offered only once someone has approved", async ({ page }) => {
   });
 
   const review = app.getByRole("region", { name: "変更案" });
-  await expect(review.getByText("承認済み・適用待ち")).toBeVisible();
+  // Approving applies, so this one was approved before that was so: it is
+  // still not in the plan, and the label says that rather than sounding done.
+  await expect(review.getByText("承認済み・未反映")).toBeVisible();
   await expect(review.getByText("承認 us_me", { exact: false })).toBeVisible();
   await review
     .getByRole("button", { name: "承認済みの内容を適用する" })

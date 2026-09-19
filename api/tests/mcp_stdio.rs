@@ -146,8 +146,25 @@ async fn stdio_negotiates_and_requires_human_approval_before_writing() {
         )
         .await
         .unwrap();
+    // The person's approval is the write, so the item exists before the tool
+    // is called again.
+    let snapshot = service
+        .handle(
+            &Actor::local(),
+            "GET",
+            "/v1/workspaces/personal/snapshot",
+            &HashMap::new(),
+            json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot["items"].as_array().unwrap().len(), 1);
+    // And the model asking afterwards is told so, rather than refused or
+    // writing a second copy.
     let applied = client.request(8, "tools/call", args);
     assert_eq!(applied["isError"], false);
+    assert_eq!(applied["structuredContent"]["already_applied"], true);
     let snapshot = service
         .handle(
             &Actor::local(),

@@ -470,10 +470,14 @@ async fn a_person_plans_with_an_ai_approves_the_change_and_finds_it_everywhere()
     .await
     .unwrap_err();
     assert_eq!(wrong.code, "CHANGESET_SUPERSEDED");
-    as_person(&service, &alice, "POST", &approve, json!({"hash": hash}))
+    let approved = as_person(&service, &alice, "POST", &approve, json!({"hash": hash}))
         .await
         .unwrap();
+    // Approving is the write. Nothing is left for the person to come back to.
+    assert_eq!(approved["status"], "applied");
+    assert_eq!(approved["applied_by"], alice.id);
 
+    // The model asking afterwards is told it is already done, not refused.
     let (failed, applied) = tool(
         &http,
         &mcp_url,

@@ -639,14 +639,8 @@ async fn proposals_require_human_approval_and_reject_stale_base() {
         .code,
         "APPROVAL_REQUIRED"
     );
-    req(
-        &s,
-        "POST",
-        &format!("/v1/workspaces/personal/changesets/{}/approve", id(&c)),
-        json!({}),
-    )
-    .await
-    .unwrap();
+    // The plan moves under the proposal. Approving is what writes, so the
+    // staleness is caught there rather than at a later step.
     req(
         &s,
         "PATCH",
@@ -655,6 +649,19 @@ async fn proposals_require_human_approval_and_reject_stale_base() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        req(
+            &s,
+            "POST",
+            &format!("/v1/workspaces/personal/changesets/{}/approve", id(&c)),
+            json!({}),
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "VERSION_CONFLICT"
+    );
+    // And it stays unapplicable: stale first, unapproved underneath.
     assert_eq!(
         req(&s, "POST", &apply, json!({})).await.unwrap_err().code,
         "VERSION_CONFLICT"
@@ -665,16 +672,19 @@ async fn approved_preview_is_atomic_and_agent_cannot_replay_approval() {
     let (_d, s) = setup().await;
     let c=req(&s,"POST","/v1/workspaces/personal/changesets/preview",json!({"operations":[{"method":"POST","path":"/v1/workspaces/personal/items","body":{"title":"new"}}]})).await.unwrap();
     let approve = format!("/v1/workspaces/personal/changesets/{}/approve", id(&c));
-    s.handle(
-        &Actor::local(),
-        "POST",
-        &approve,
-        &HashMap::new(),
-        json!({}),
-        Some("approval-key"),
-    )
-    .await
-    .unwrap();
+    let approved = s
+        .handle(
+            &Actor::local(),
+            "POST",
+            &approve,
+            &HashMap::new(),
+            json!({}),
+            Some("approval-key"),
+        )
+        .await
+        .unwrap();
+    // Approving wrote it, in the same transaction.
+    assert_eq!(approved["status"], "applied");
     let agent = Actor {
         id: "local-owner".into(),
         agent: true,
@@ -705,7 +715,13 @@ async fn approved_preview_is_atomic_and_agent_cannot_replay_approval() {
         )
         .await
         .unwrap();
-    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    // Already done, and said so — not done a second time.
+    assert_eq!(result["already_applied"], true);
+    assert!(result["results"].as_array().unwrap().is_empty());
+    let items = req(&s, "GET", "/v1/workspaces/personal/items", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(items["items"].as_array().unwrap().len(), 1);
 }
 #[tokio::test]
 async fn habit_occurrences_do_not_complete_the_whole_habit() {

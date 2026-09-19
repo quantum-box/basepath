@@ -77,12 +77,14 @@ hosted MCP は Streamable HTTP の `/mcp`（`PATHBASE_WEB_ROOT` 使用時は `/a
 - 登録: RFC 7591のdynamic client registrationに対応します。登録しただけでは何も得られません。本人がBasepathの許可画面でサインインした状態で権限を選んではじめて、トークンが発行されます。
 - audience: トークンは1つのリソースに紐づきます。preview用のトークンは本番では通りませんし、その逆も同様です。
 - 同意: どのAIクライアントに何を許すかは`mcp_connections`の記録です。許可画面で選んだ権限がそのまま記録になり、設定画面でいつでも狭められます。接続を解除すると、有効期限の残っているトークンも同じトランザクションで無効になります。
-- 権限: `pathbase.read` / `pathbase.propose` / `pathbase.apply`。scopeがあっても変更は案のままで、本人が差分を確認して承認するまで反映されません。`apply`は本人が承認済みの案だけを適用できます。
+- 権限: `pathbase.read` / `pathbase.propose` / `pathbase.apply`。scopeがあっても変更は案のままで、本人が差分を確認して承認するまで反映されません。承認した時点で反映されるので、`apply`が実際に書くのはそれ以前に承認された案だけです。
 - 認可: 操作ごとにワークスペース権限を再検証します。引数で別のworkspaceを指定しても権限は得られません。
 
 transportはstateless Streamable HTTP（JSON応答）です。Lambdaでは連続したリクエストが別の実行環境に届くため、sessionを持ちません。`initialize`は`Mcp-Session-Id`を返さず、応答は`application/json`、SSE用の`GET`は拒否します。`Host`（と設定時は`Origin`）を検証し、応答は常に`Cache-Control: no-store`です。
 
-変更案の確認と承認は[docs/change-approval.md](docs/change-approval.md)にまとめています。要点は「AIホスト内のクリックは承認の証拠にならない」ことです。アプリからのtool呼び出しはモデルからの呼び出しと同じ接続・同じトークン・同じ形でサーバーへ届き、区別できる情報がありません。そのため承認はBasepath自身のオリジンで本人のセッションを使って行い（`/changes/{workspace}/{id}`）、会話内では差分の提示・取り下げ・承認済みの適用までを行います。
+変更案の確認と承認は[docs/change-approval.md](docs/change-approval.md)にまとめています。要点は「AIホスト内のクリックは承認の証拠にならない」ことです。アプリからのtool呼び出しはモデルからの呼び出しと同じ接続・同じトークン・同じ形でサーバーへ届き、区別できる情報がありません。そのため承認はBasepath自身のオリジンで本人のセッションを使って行い（`/changes/{workspace}/{id}`）、会話内では差分の提示と取り下げを行います。
+
+**承認がそのまま適用です。**同じトランザクションで操作を実行し、承認だけされて反映されていない状態は作られません。2段階の検証（`approved_hash` / `approved_by`）が守っているのはAIが勝手に適用しないことであって、人に二度押させることではありませんでした。AIが適用できるのは本人が承認した内容だけ、という保証は変わりません。
 
 toolのannotationsは実際の副作用に合わせています。変更案はDELETEを含みうるので、preview / propose / applyは`destructiveHint: true`です。`pathbase_get_graph`は最大`limit`件（既定・上限とも200）を返し、`truncated`を明示します。
 
