@@ -3835,7 +3835,8 @@ async fn dispatch_inner(
             // click — is asking for something that is already true, so it is
             // answered rather than refused. Telling the person "適用できません"
             // about a change that is in their plan would be worse than useless.
-            if c["status"] == "applied" && (c["approved_by"] == actor.id || c["applied_by"] == actor.id)
+            if c["status"] == "applied"
+                && (c["approved_by"] == actor.id || c["applied_by"] == actor.id)
             {
                 return Ok(json!({"changeset":c,"results":[],"already_applied":true}));
             }

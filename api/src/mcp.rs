@@ -995,11 +995,7 @@ impl ServerHandler for Mcp {
         // Neither carries data, so there is one document and two listings of
         // it, not two documents to keep in step.
         resources.extend([
-            openai_shell(
-                UI_RESOURCE_PERSONAL_OPENAI,
-                PERSONAL_NAME,
-                PERSONAL_ABOUT,
-            ),
+            openai_shell(UI_RESOURCE_PERSONAL_OPENAI, PERSONAL_NAME, PERSONAL_ABOUT),
             openai_shell(
                 UI_RESOURCE_ORGANIZATION_OPENAI,
                 ORGANIZATION_NAME,

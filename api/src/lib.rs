@@ -1,5 +1,5 @@
-pub mod auto_apply;
 pub mod auth;
+pub mod auto_apply;
 pub mod breakdown;
 pub mod collaboration;
 pub mod copilot;

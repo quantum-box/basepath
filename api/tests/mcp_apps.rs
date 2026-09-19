@@ -322,7 +322,11 @@ async fn every_change_set_carries_somewhere_to_go() {
     );
 
     let call = |client: &mut Client, id: u64, name: &str, arguments: Value| {
-        client.request(id, "tools/call", json!({"name": name, "arguments": arguments}))
+        client.request(
+            id,
+            "tools/call",
+            json!({"name": name, "arguments": arguments}),
+        )
     };
 
     let proposed = call(
@@ -341,7 +345,9 @@ async fn every_change_set_carries_somewhere_to_go() {
         }),
     );
     let change = &proposed["structuredContent"];
-    let id = change["id"].as_str().unwrap_or_else(|| panic!("{proposed}"));
+    let id = change["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{proposed}"));
     // Absolute, and built by the server rather than by whatever is reading it:
     // the same string reaches the model, the view and the person.
     assert_eq!(
@@ -385,5 +391,8 @@ async fn every_change_set_carries_somewhere_to_go() {
     // Nothing was applied by any of that: with no range set, the proposal is
     // still waiting for the person.
     assert_eq!(read["structuredContent"]["status"], "pending");
-    assert_eq!(read["structuredContent"]["auto_apply_eligible"], json!(false));
+    assert_eq!(
+        read["structuredContent"]["auto_apply_eligible"],
+        json!(false)
+    );
 }

@@ -95,7 +95,8 @@ impl Rule {
         if !self.active() {
             return false;
         }
-        let Ok(operations) = serde_json::from_value::<Vec<Operation>>(changeset["operations"].clone())
+        let Ok(operations) =
+            serde_json::from_value::<Vec<Operation>>(changeset["operations"].clone())
         else {
             return false;
         };

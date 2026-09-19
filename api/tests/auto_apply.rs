@@ -200,13 +200,22 @@ async fn a_range_the_person_set_lets_a_proposal_through_and_says_so_afterwards()
         "an auto-applied change must not claim a per-change approval"
     );
     assert_eq!(stored["auto_applied"], json!(true));
-    assert!(stored["auto_apply_rule"].as_str().unwrap().starts_with("autoapply"));
+    assert!(stored["auto_apply_rule"]
+        .as_str()
+        .unwrap()
+        .starts_with("autoapply"));
     assert_eq!(stored["applied_by_connection"], CONNECTION);
 
     // And it is in the plan, readable afterwards like anything else.
-    let items = call(&service, &person(), "GET", "/v1/workspaces/personal/items", json!({}))
-        .await
-        .unwrap();
+    let items = call(
+        &service,
+        &person(),
+        "GET",
+        "/v1/workspaces/personal/items",
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert!(items["items"]
         .as_array()
         .unwrap()
@@ -304,9 +313,15 @@ async fn a_deletion_mixed_into_an_otherwise_covered_proposal_stops_all_of_it() {
         "half a proposal is not a proposal the person read"
     );
     // Neither half ran.
-    let items = call(&service, &person(), "GET", "/v1/workspaces/personal/items", json!({}))
-        .await
-        .unwrap();
+    let items = call(
+        &service,
+        &person(),
+        "GET",
+        "/v1/workspaces/personal/items",
+        json!({}),
+    )
+    .await
+    .unwrap();
     assert!(!items["items"]
         .as_array()
         .unwrap()
@@ -406,7 +421,12 @@ async fn a_range_belongs_to_one_ai_client_and_one_workspace() {
 
     // Another delegation's proposal is not covered, even though its contents
     // would be. A range is a statement about one AI client.
-    let change = propose(&service, &ai(OTHER_CONNECTION), add_action("別クライアント")).await;
+    let change = propose(
+        &service,
+        &ai(OTHER_CONNECTION),
+        add_action("別クライアント"),
+    )
+    .await;
     assert_eq!(change["auto_apply_eligible"], json!(false));
     assert_eq!(
         apply(&service, &ai(OTHER_CONNECTION), &change)
@@ -520,9 +540,15 @@ async fn an_ai_connection_can_neither_read_a_range_nor_create_one() {
         let refused = call(&service, &ai(CONNECTION), "POST", path, body)
             .await
             .unwrap_err();
-        assert_eq!((refused.status, refused.code, refused.message),
-                   (baseline.status, baseline.code.clone(), baseline.message.clone()),
-                   "POST {path} answered differently from an unknown route");
+        assert_eq!(
+            (refused.status, refused.code, refused.message),
+            (
+                baseline.status,
+                baseline.code.clone(),
+                baseline.message.clone()
+            ),
+            "POST {path} answered differently from an unknown route"
+        );
     }
 
     // Nothing an agent sent changed anything: the person's range is as they
