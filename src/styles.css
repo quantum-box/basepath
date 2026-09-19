@@ -6079,3 +6079,96 @@ button:disabled {
   font-size: 12px;
   line-height: 1.7;
 }
+
+/* --- Context switcher --------------------------------------------------
+   The top-level choice between a person's own Basepath and an organization's.
+   Deliberately not styled as a segmented filter: it is two places, and the
+   control reads as a list of places, each labelled in words. */
+.context-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 14px;
+  /* A person can belong to any number of organizations, and the list grows
+     with them. It scrolls rather than pushing the navigation below it off the
+     bottom of the screen — an entry that exists but cannot be reached is
+     worse than one that is not there. */
+  overflow-y: auto;
+  min-height: 0;
+  flex: 0 1 auto;
+  max-height: 40vh;
+}
+.context-switch button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid #e6eaf1;
+  border-radius: 10px;
+  background: #fff;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.context-switch button span {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+  min-width: 0;
+}
+.context-switch button small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.context-switch button.active {
+  border-color: #b9c6dd;
+  background: #f3f7ff;
+  font-weight: 600;
+}
+/* Not colour alone: the selected place carries a mark that survives a
+   greyscale screen and a colour-blind reader. */
+.context-switch button.active::after {
+  content: "●";
+  margin-inline-start: auto;
+  font-size: 9px;
+  color: #4a6cd4;
+}
+.context-switch button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.context-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.context-chip {
+  border: 1px solid #dfe4ec;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-weight: 600;
+  color: #33415c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.context-breadcrumb[data-context="organization"] .context-chip {
+  border-style: dashed;
+}
+.context-screen {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 720px) {
+  /* On a phone the breadcrumb is the only place the context is visible, so it
+     keeps its space and the search gives some up. */
+  .context-breadcrumb {
+    flex: 0 0 auto;
+    max-width: 55%;
+  }
+}

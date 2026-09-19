@@ -25,18 +25,45 @@ use std::sync::Arc;
 /// render it under its deny-by-default policy unchanged. `api/ui/mcp-app.html`
 /// is built by `npm run build:mcp-app`; CI fails if it has drifted from the
 /// source it was built from.
+/// A person's own Basepath, rendered in the conversation.
+pub const UI_RESOURCE_PERSONAL: &str = "ui://basepath/personal/plan.html";
+/// An organization's, which is a different resource for the same reason it is
+/// a different screen in the app: they are separate stores with a boundary
+/// between them, and one resource serving both would teach a host — and the
+/// person reading it — that the boundary is a display option.
+pub const UI_RESOURCE_ORGANIZATION: &str = "ui://basepath/organization/plan.html";
+/// The previous single URI, still served so that a host which cached it keeps
+/// working. New links use one of the two above.
 pub const UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
 pub const UI_RESOURCE_MIME: &str = "text/html;profile=mcp-app";
 const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
 
-/// Tools that open the plan view. The host may preload the resource as soon as
-/// it sees one of these in `tools/list`, before the tool is even called.
-const UI_TOOLS: [&str; 4] = [
-    "pathbase_get_graph",
-    "pathbase_get_today",
-    "pathbase_get_week",
-    "pathbase_get_weekly_review",
-];
+/// Which UI resource a tool opens, if any.
+///
+/// A tool that only exists on one side of the boundary names that side's
+/// resource. The plan tools take a `workspace_id` and render whichever
+/// workspace the caller names, so the tool cannot know — they keep the
+/// personal resource, and the view itself states which context the data it
+/// received belongs to. Naming the ambiguity is better than resolving it with
+/// a guess that is wrong half the time.
+fn ui_resource(tool: &str) -> Option<&'static str> {
+    match tool {
+        "pathbase_get_graph"
+        | "pathbase_get_today"
+        | "pathbase_get_week"
+        | "pathbase_get_weekly_review" => Some(UI_RESOURCE_PERSONAL),
+        // Memory exists only in a person's own workspace.
+        "pathbase_memory_search" | "pathbase_memory_context" | "pathbase_list_memory" => {
+            Some(UI_RESOURCE_PERSONAL)
+        }
+        // These answer questions about an organization and have no meaning in
+        // a personal workspace.
+        "pathbase_get_alignment" | "pathbase_get_dashboard" | "pathbase_get_review_queue" => {
+            Some(UI_RESOURCE_ORGANIZATION)
+        }
+        _ => None,
+    }
+}
 
 #[derive(Clone)]
 pub struct Mcp {
@@ -716,11 +743,11 @@ fn tools() -> Vec<Tool> {
         let mut props=json!({});
         for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),_=>json!({"type":"string"})};}
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
-        if UI_TOOLS.contains(&shape.name) {
+        if let Some(uri) = ui_resource(shape.name) {
             // MCP Apps: link the tool to its UI resource. Visibility stays the
             // default (model and app) — hiding a tool from the model is a
             // presentation choice, never an authorization one.
-            tool["_meta"] = json!({"ui":{"resourceUri":UI_RESOURCE_URI}});
+            tool["_meta"] = json!({"ui":{"resourceUri":uri}});
         }
         serde_json::from_value(tool).unwrap()
     }).collect()
@@ -779,15 +806,32 @@ impl ServerHandler for Mcp {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        let mut resources = vec![json!({
-            "uri": UI_RESOURCE_URI,
-            "name": "Basepath plan view",
-            "description": "Goal tree, the day's actions, and the weekly review, rendered in the conversation.",
-            "mimeType": UI_RESOURCE_MIME,
-            // The bundle is self-contained, so no origin is requested. An empty
-            // policy is the strongest one the host can apply.
-            "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}
-        })];
+        // Two resources, not one with a parameter. A host that caches, labels
+        // or frames them does so separately, which is the same boundary the
+        // app draws, expressed where the host can see it.
+        let shell = |uri: &str, name: &str, description: &str| {
+            json!({
+                "uri": uri,
+                "name": name,
+                "description": description,
+                "mimeType": UI_RESOURCE_MIME,
+                // The bundle is self-contained, so no origin is requested. An
+                // empty policy is the strongest one the host can apply.
+                "_meta": {"ui": {"csp": {"connectDomains": [], "resourceDomains": []}}}
+            })
+        };
+        let mut resources = vec![
+            shell(
+                UI_RESOURCE_PERSONAL,
+                "Basepath personal plan view",
+                "One person's own goals, actions and weekly review. Nothing from a shared workspace is in it.",
+            ),
+            shell(
+                UI_RESOURCE_ORGANIZATION,
+                "Basepath organization plan view",
+                "A shared workspace's goals, alignment and health. No one's personal memory or personal goals are in it.",
+            ),
+        ];
         // The skills are listed here too, so a host that does not implement
         // the extension can still read the instructions rather than losing
         // them entirely.
@@ -809,9 +853,19 @@ impl ServerHandler for Mcp {
         // The UI resource carries no workspace data and no credential: it is
         // the empty application shell, which then asks the host for data on
         // the person's behalf.
-        if r.uri == UI_RESOURCE_URI {
+        if [
+            UI_RESOURCE_PERSONAL,
+            UI_RESOURCE_ORGANIZATION,
+            UI_RESOURCE_URI,
+        ]
+        .contains(&r.uri.as_str())
+        {
+            // The same shell answers both, because the shell holds no data —
+            // it asks the host for it. What differs is the identity the host
+            // caches and frames it under, which is what keeps the two views
+            // from becoming one view with a toggle.
             return Ok(serde_json::from_value(json!({"contents":[{
-                "uri": UI_RESOURCE_URI,
+                "uri": r.uri,
                 "mimeType": UI_RESOURCE_MIME,
                 "text": UI_RESOURCE_HTML
             }]}))

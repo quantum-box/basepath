@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { open } from "./navigate.mjs";
 
 /**
  * The goal review, in the browser.
@@ -31,25 +32,10 @@ async function post(request, path, data) {
 }
 
 async function openReview(page, workspaceName) {
-  await page.goto("/");
-  const menu = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await menu.isVisible().catch(() => false)) await menu.click();
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "目標レビュー", exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "目標レビュー", exact: true, level: 1 }),
-  ).toBeVisible();
+  // The workspace is the context now, so it is crossed to before the screen is
+  // opened rather than chosen from a dropdown inside it.
+  await open(page, { workspace: workspaceName, screen: "目標レビュー" });
   if (workspaceName) {
-    await page
-      .getByRole("combobox")
-      .first()
-      .selectOption({ label: workspaceName });
     await expect(page.locator(".review-intro .eyebrow")).toHaveText(
       workspaceName,
     );
@@ -217,9 +203,11 @@ test("the timeline shows what happened to the goal, in order", async ({
   await expect(timeline.getByText("E2E件数 4 件")).toBeVisible();
 });
 
-test("the review screen is usable at 390px", async ({ page }) => {
+test("the review screen is usable at 390px", async ({ page, request }) => {
+  const workspace = `E2E狭幅レビュー${Date.now()}`;
+  await shared(request, workspace);
   await page.setViewportSize({ width: 390, height: 844 });
-  await openReview(page);
+  await openReview(page, workspace);
   expect(
     await page
       .locator(".review-screen")

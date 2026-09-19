@@ -81,6 +81,8 @@ fn start(db: &std::path::Path) -> Client {
     client
 }
 
+const UI_RESOURCE_PERSONAL: &str = "ui://basepath/personal/plan.html";
+const UI_RESOURCE_ORGANIZATION: &str = "ui://basepath/organization/plan.html";
 const UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
 const UI_RESOURCE_MIME: &str = "text/html;profile=mcp-app";
 
@@ -92,21 +94,50 @@ async fn tools_point_at_the_ui_resource_and_the_resource_is_self_contained() {
     // --- tools/list carries the standard link -----------------------------
     let tools = client.request(2, "tools/list", json!({}));
     let listed = tools["tools"].as_array().unwrap();
-    let ui_tools: Vec<&str> = listed
-        .iter()
-        .filter(|tool| tool["_meta"]["ui"]["resourceUri"] == UI_RESOURCE_URI)
-        .map(|tool| tool["name"].as_str().unwrap())
-        .collect();
+    let opening = |uri: &str| {
+        listed
+            .iter()
+            .filter(|tool| tool["_meta"]["ui"]["resourceUri"] == uri)
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>()
+    };
+    let personal = opening(UI_RESOURCE_PERSONAL);
+    let organization = opening(UI_RESOURCE_ORGANIZATION);
     assert_eq!(
-        ui_tools,
+        personal,
         vec![
             "pathbase_get_graph",
             "pathbase_get_today",
             "pathbase_get_week",
-            "pathbase_get_weekly_review"
+            "pathbase_get_weekly_review",
+            "pathbase_list_memory",
+            "pathbase_memory_search",
+            "pathbase_memory_context",
         ],
-        "the app is opened by the tools that return a plan or a week of it"
+        "the plan and the person's own memory open the personal view"
     );
+    assert_eq!(
+        organization,
+        vec![
+            "pathbase_get_alignment",
+            "pathbase_get_dashboard",
+            "pathbase_get_review_queue",
+        ],
+        "questions about an organization open the organization view"
+    );
+    // Two resources, and nothing points at both: a host that cached one is
+    // not showing the other's data under it.
+    assert!(
+        personal.iter().all(|tool| !organization.contains(tool)),
+        "a tool opened two different views"
+    );
+    // Nothing still points at the single pre-split URI.
+    assert!(opening(UI_RESOURCE_URI).is_empty());
+    let ui_tools: Vec<&str> = personal
+        .iter()
+        .chain(organization.iter())
+        .copied()
+        .collect();
     // A tool without a view must not claim one.
     assert!(listed
         .iter()
@@ -120,15 +151,43 @@ async fn tools_point_at_the_ui_resource_and_the_resource_is_self_contained() {
 
     // --- resources/list advertises the resource with a strict policy -------
     let resources = client.request(3, "resources/list", json!({}));
-    let resource = &resources["resources"].as_array().unwrap()[0];
-    assert_eq!(resource["uri"], UI_RESOURCE_URI);
-    assert_eq!(resource["mimeType"], UI_RESOURCE_MIME);
-    // No origin is requested, because the document loads nothing.
-    assert_eq!(resource["_meta"]["ui"]["csp"]["connectDomains"], json!([]));
-    assert_eq!(resource["_meta"]["ui"]["csp"]["resourceDomains"], json!([]));
+    let listed_resources = resources["resources"].as_array().unwrap();
+    for (index, uri) in [UI_RESOURCE_PERSONAL, UI_RESOURCE_ORGANIZATION]
+        .into_iter()
+        .enumerate()
+    {
+        let resource = &listed_resources[index];
+        assert_eq!(resource["uri"], uri);
+        assert_eq!(resource["mimeType"], UI_RESOURCE_MIME);
+        // No origin is requested, because the document loads nothing.
+        assert_eq!(resource["_meta"]["ui"]["csp"]["connectDomains"], json!([]));
+        assert_eq!(resource["_meta"]["ui"]["csp"]["resourceDomains"], json!([]));
+    }
+    // Each one says in its own description what is not in it, because a host
+    // showing them side by side is where the two are most easily confused.
+    assert!(listed_resources[0]["description"]
+        .as_str()
+        .unwrap()
+        .contains("shared workspace"));
+    assert!(listed_resources[1]["description"]
+        .as_str()
+        .unwrap()
+        .contains("personal"));
 
     // --- the document itself ----------------------------------------------
-    let read = client.request(4, "resources/read", json!({"uri": UI_RESOURCE_URI}));
+    // The same shell answers either URI: it holds no data, so what differs is
+    // the identity the host caches and frames it under.
+    for uri in [
+        UI_RESOURCE_PERSONAL,
+        UI_RESOURCE_ORGANIZATION,
+        UI_RESOURCE_URI,
+    ] {
+        let read = client.request(4, "resources/read", json!({ "uri": uri }));
+        let content = &read["contents"].as_array().unwrap()[0];
+        assert_eq!(content["uri"], uri);
+        assert_eq!(content["mimeType"], UI_RESOURCE_MIME);
+    }
+    let read = client.request(4, "resources/read", json!({"uri": UI_RESOURCE_PERSONAL}));
     let content = &read["contents"].as_array().unwrap()[0];
     assert_eq!(content["mimeType"], UI_RESOURCE_MIME);
     let document = content["text"].as_str().unwrap();

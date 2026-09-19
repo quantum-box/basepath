@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { open } from "./navigate.mjs";
 
 /**
  * The dashboard, in the browser.
@@ -33,29 +34,10 @@ async function post(request, path, data) {
 }
 
 async function openDashboard(page, workspaceName) {
-  await page.goto("/");
-  const menu = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await menu.isVisible().catch(() => false)) await menu.click();
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "ダッシュボード", exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", {
-      name: "ダッシュボード",
-      exact: true,
-      level: 1,
-    }),
-  ).toBeVisible();
+  // The workspace is the context now, so it is crossed to before the screen is
+  // opened rather than chosen from a dropdown inside it.
+  await open(page, { workspace: workspaceName, screen: "ダッシュボード" });
   if (workspaceName) {
-    await page
-      .getByRole("combobox")
-      .first()
-      .selectOption({ label: workspaceName });
     await expect(page.locator(".dashboard-intro .eyebrow")).toHaveText(
       workspaceName,
     );
@@ -219,9 +201,13 @@ test("a number can be opened to the observation behind it", async ({
   await expect(table.getByText("2026-09-14")).toBeVisible();
 });
 
-test("the dashboard is usable at 390px", async ({ page }) => {
+test("the dashboard is usable at 390px", async ({ page, request }) => {
+  // The screen only exists in an organization, so the test needs one: a
+  // personal Basepath does not offer it at any width.
+  const workspace = `E2E狭幅指標${Date.now()}`;
+  await shared(request, workspace);
   await page.setViewportSize({ width: 390, height: 844 });
-  await openDashboard(page);
+  await openDashboard(page, workspace);
   expect(
     await page
       .locator(".dashboard-screen")

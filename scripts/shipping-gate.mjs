@@ -140,6 +140,8 @@ const SUITES = [
   { file: "tests/e2e/review.spec.mjs", pattern: /^test\(/gm, least: 5 },
   { file: "tests/e2e/memory.spec.mjs", pattern: /^test\(/gm, least: 8 },
   { file: "tests/e2e/breakdown.spec.mjs", pattern: /^test\(/gm, least: 5 },
+  { file: "tests/e2e/context.spec.mjs", pattern: /^test\(/gm, least: 6 },
+  { file: "tests/app-context.test.mjs", pattern: /^test\(/gm, least: 9 },
   { file: "tests/plugin.test.mjs", pattern: /^test\(/gm, least: 9 },
   { file: "tests/sites-worker.test.mjs", pattern: /^test\(/gm, least: 12 },
 ];

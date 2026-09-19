@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { showMenu, switchTo } from "./navigate.mjs";
 
 /**
  * Personal memory, in the browser.
@@ -166,30 +167,35 @@ test("similar memories are reported as a question, not merged", async ({
   expect(titles).toContain("E2E: 毎週金曜に振り返りをする習慣");
 });
 
-test("a shared workspace has no memory, and says so plainly", async ({
+test("a shared workspace has no memory — not an empty one", async ({
   page,
   request,
 }) => {
+  const name = `E2E記憶なし${Date.now()}`;
   const created = await request.post("/api/v1/workspaces", {
     headers: {
       "idempotency-key": `e2e-mem-ws-${Date.now()}`,
       "content-type": "application/json",
     },
-    data: { name: "E2E記憶なし", scope: "チーム" },
+    data: { name, scope: "チーム" },
   });
   expect(created.ok()).toBeTruthy();
+  const workspaceId = (await created.json()).id;
 
-  await openMemory(page);
-  await page
-    .getByRole("combobox")
-    .first()
-    .selectOption({ label: "E2E記憶なし" });
+  await page.goto("/");
+  await switchTo(page, name);
+  await showMenu(page);
+  // Not a screen that explains its own emptiness: no entry at all. There is
+  // nothing here for it to be empty of.
   await expect(
-    page.getByText("記憶は個人のワークスペースにだけ保存されます", {
-      exact: false,
-    }),
-  ).toBeVisible();
-  await expect(page.locator(".memory-form")).toBeHidden();
+    page
+      .getByRole("navigation", { name: "メインメニュー" })
+      .getByRole("button", { name: "記憶", exact: true }),
+  ).toHaveCount(0);
+
+  // And the server says the same thing to anyone who asks directly.
+  const asked = await request.get(`/api/v1/workspaces/${workspaceId}/memories`);
+  expect(asked.status()).toBe(404);
 });
 
 test("the screen shows what an AI would actually retrieve, and why", async ({

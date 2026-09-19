@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { open } from "./navigate.mjs";
 
 /**
  * The alignment map, in the browser.
@@ -32,33 +33,9 @@ async function post(request, path, data) {
 }
 
 async function openAlignment(page, workspaceName) {
-  await page.goto("/");
-  const menu = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await menu.isVisible().catch(() => false)) await menu.click();
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "アラインメント", exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", {
-      name: "アラインメント",
-      exact: true,
-      level: 1,
-    }),
-  ).toBeVisible();
-  if (workspaceName) {
-    await page
-      .getByRole("combobox")
-      .first()
-      .selectOption({ label: workspaceName });
-    await expect(page.locator(".alignment-intro .eyebrow")).toHaveText(
-      workspaceName,
-    );
-  }
+  // The workspace is the context now, so it is crossed to before the screen is
+  // opened rather than chosen from a dropdown inside it.
+  await open(page, { workspace: workspaceName, screen: "アラインメント" });
 }
 
 /** A company goal, a team goal under it, and a person's goal under that. */
@@ -188,11 +165,13 @@ test("contribution is shown as contribution, not as structure", async ({
   ).toBeVisible();
 });
 
-test("the alignment map is usable at 390px", async ({ page }) => {
-  // The workspace switcher is desktop chrome, so this checks the screen
-  // itself rather than driving it through a selection.
+test("the alignment map is usable at 390px", async ({ page, request }) => {
+  // The screen only exists in an organization, so the test needs one: a
+  // personal Basepath does not offer it at any width.
+  const workspace = `E2E狭幅整列${Date.now()}`;
+  await shared(request, workspace);
   await page.setViewportSize({ width: 390, height: 844 });
-  await openAlignment(page);
+  await openAlignment(page, workspace);
   expect(
     await page
       .locator(".alignment-screen")
