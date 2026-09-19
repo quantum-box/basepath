@@ -186,8 +186,18 @@ spec:
             # one to the authorization server.
             - name: PATHBASE_MCP_RESOURCE
               value: https://pathbase-v2.txcloud.app/api/mcp
+            # Both names this process is reached by, and it is reached by two.
+            #
+            # The check exists to stop DNS rebinding: a browser tricked into
+            # sending requests to a name that resolves somewhere unexpected.
+            # It compares the `Host` header against this list, and the header
+            # is whatever the last hop addressed. A client calls the public
+            # name; the Worker then proxies to the API origin, and *that* is
+            # the `Host` the process sees. Listing only the public name means
+            # every real request is refused — after authentication has already
+            # succeeded, so the connection looks approved and nothing works.
             - name: PATHBASE_MCP_ALLOWED_HOSTS
-              value: pathbase-v2.txcloud.app
+              value: pathbase-v2.txcloud.app,pathbase-api.txcloud.app
         preview:
           # Each pull request gets its own database and credentials. Data and
           # permissions are therefore separate between PR A, PR B, and
@@ -204,5 +214,6 @@ spec:
             # production.
             - name: PATHBASE_MCP_RESOURCE
               value: https://pathbase-v2.txcloud.app/api/mcp/preview
+            # Same two names, for the same reason as production above.
             - name: PATHBASE_MCP_ALLOWED_HOSTS
-              value: pathbase-v2.txcloud.app
+              value: pathbase-v2.txcloud.app,pathbase-api.txcloud.app
