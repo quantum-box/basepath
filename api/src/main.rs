@@ -101,7 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pathbase_api::auth::TachyonAuth::for_runtime_from_env(
                 pathbase_api::auth::AuthConfig::from_env().map_err(|e| e.message)?,
             )
-            .map_err(|e| e.message)?,
+            .map_err(|e| e.message)?
+            // Sessions live in the shared database, which is what lets them be
+            // renewed and — the part a cookie could never do — ended.
+            .with_database(service.db.clone()),
         ))
     };
     let field = pathbase_api::field::FieldClient::from_env().map_err(|e| e.message)?;

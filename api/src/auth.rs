@@ -184,6 +184,9 @@ pub struct Session {
     pub selected_tenant: Option<String>,
     expires_at: i64,
     session_expires_at: i64,
+    /// Never leaves the server. Carried here only so a tenant change can
+    /// rewrite the stored envelope without losing it.
+    refresh_token: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct SessionEnvelope {
@@ -191,6 +194,13 @@ struct SessionEnvelope {
     selected_tenant: Option<String>,
     expires_at: i64,
     session_expires_at: i64,
+    /// Kept only in the stored envelope, never in the cookie.
+    ///
+    /// A rotating refresh token in a stateless cookie is a cookie that, once
+    /// stolen, renews itself forever with nothing able to stop it. Here it
+    /// sits behind a row that signing out deletes.
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 #[derive(Clone)]
 struct Login {
@@ -205,7 +215,25 @@ pub struct TachyonAuth {
     discovery: Discovery,
     logins: Arc<Mutex<HashMap<String, Login>>>,
     session_keys: Arc<Vec<[u8; 32]>>,
+    /// Where sessions live, when there is somewhere to put them.
+    ///
+    /// Without it the session is the cookie and lasts exactly as long as one
+    /// access token, because a refresh token has nowhere safe to go. With it
+    /// the cookie is an opaque id and the session can be renewed — and ended.
+    db: Option<crate::db::Db>,
 }
+
+/// How long a session may live, however many access tokens it goes through.
+///
+/// Renewal has to stop somewhere. A session that renews indefinitely is one
+/// that never ends, and "sign out everywhere" then means "wait".
+const SESSION_LIFETIME: i64 = 12 * 3600;
+
+/// How close to expiry an access token is refreshed.
+///
+/// Wide enough that a request in flight does not race the expiry, narrow
+/// enough that a token is not replaced on every request.
+const REFRESH_WINDOW: i64 = 120;
 #[derive(Deserialize)]
 struct Claims {
     sub: String,
@@ -216,6 +244,8 @@ struct TokenResponse {
     access_token: String,
     id_token: Option<String>,
     expires_in: Option<i64>,
+    #[serde(default)]
+    refresh_token: Option<String>,
 }
 /// Claims Tachyon's own Cognito verifier checks, mirrored here so PathBase
 /// rejects a token before it ever reaches Tachyon or Field.
@@ -252,6 +282,10 @@ struct AuthenticationResult {
     access_token: Option<String>,
     #[serde(rename = "ExpiresIn")]
     expires_in: Option<i64>,
+    /// Cognito returns this when the app client allows refresh; without it a
+    /// session can only ever last as long as one access token.
+    #[serde(rename = "RefreshToken")]
+    refresh_token: Option<String>,
 }
 #[derive(Deserialize)]
 struct PasswordLoginResponse {
@@ -349,10 +383,16 @@ impl TachyonAuth {
             discovery,
             logins: Default::default(),
             session_keys: Arc::new(session_keys),
+            db: None,
         })
     }
     pub fn for_runtime_from_env(config: AuthConfig) -> Result<Self> {
         Self::for_runtime_with_session_keys(config, session_keys_from_env()?)
+    }
+    /// Gives sessions somewhere to live, which is what makes renewal possible.
+    pub fn with_database(mut self, db: crate::db::Db) -> Self {
+        self.db = Some(db);
+        self
     }
 }
 
@@ -645,7 +685,7 @@ impl TachyonAuth {
         let result = body.authentication_result.ok_or_else(unauthorized)?;
         let access_token = result.access_token.ok_or_else(unauthorized)?;
         self.validate_cognito_access_token(&access_token).await?;
-        self.establish_cognito_session(access_token, result.expires_in)
+        self.establish_cognito_session(access_token, result.expires_in, result.refresh_token)
             .await
     }
     /// Reject anything Tachyon's verifier would reject, before it is stored in a
@@ -719,20 +759,29 @@ impl TachyonAuth {
         &self,
         access_token: String,
         expires_in: Option<i64>,
+        refresh_token: Option<String>,
     ) -> Result<String> {
         // Canonical identity and tenant memberships still come from Tachyon,
         // which accepts a Cognito access token on the same bearer scheme.
-        self.verify_identity(&access_token).await?;
+        let identity = self.verify_identity(&access_token).await?;
         let now = Utc::now().timestamp();
         let expires_at = now + expires_in.unwrap_or(3600).clamp(60, 8 * 3600);
+        // How long the session may live, as opposed to how long this
+        // particular access token lasts. Without a refresh token they are the
+        // same thing, which is the old behaviour: about an hour.
+        let session_expires_at = if refresh_token.is_some() {
+            now + SESSION_LIFETIME
+        } else {
+            expires_at
+        };
         let envelope = SessionEnvelope {
             access_token,
             selected_tenant: None,
             expires_at,
-            session_expires_at: expires_at,
+            session_expires_at,
+            refresh_token,
         };
-        let value = self.seal_session(&envelope)?;
-        Ok(self.cookie_header("pathbase_session", &value, expires_at - now))
+        self.store_session(&identity.id, envelope).await
     }
     pub async fn direct_login(&self, username: &str, password: &str) -> Result<String> {
         let username = username.trim();
@@ -932,22 +981,210 @@ impl TachyonAuth {
         // No Field tenant lookup, membership resolution or RBAC in authentication.
         let now = Utc::now().timestamp();
         let expires_at = now + token.expires_in.unwrap_or(3600).min(8 * 3600);
+        let identity = self.verify_identity(&token.access_token).await?;
+        let session_expires_at = if token.refresh_token.is_some() {
+            now + SESSION_LIFETIME
+        } else {
+            expires_at
+        };
         let envelope = SessionEnvelope {
             access_token: token.access_token,
             selected_tenant: None,
             expires_at,
-            session_expires_at: expires_at,
+            session_expires_at,
+            refresh_token: token.refresh_token,
         };
-        let value = self.seal_session(&envelope)?;
-        Ok(self.cookie_header("pathbase_session", &value, expires_at - now))
+        self.store_session(&identity.id, envelope).await
     }
+    /// Cookie values that name a row rather than carry one.
+    const STORED_PREFIX: &'static str = "s1.";
+
+    /// Writes the session where it can be renewed and, more importantly, ended.
+    ///
+    /// Falls back to the sealed cookie when there is no database: without
+    /// somewhere to keep a refresh token there is nothing to renew, so the
+    /// session is the token's lifetime and behaves exactly as it used to.
+    async fn store_session(&self, actor: &str, envelope: SessionEnvelope) -> Result<String> {
+        let now = Utc::now().timestamp();
+        let max_age = envelope.session_expires_at - now;
+        let Some(db) = &self.db else {
+            let mut envelope = envelope;
+            // A refresh token would have to ride in the cookie, and a cookie
+            // that renews itself forever is the thing this avoids.
+            envelope.refresh_token = None;
+            let value = self.seal_session(&envelope)?;
+            return Ok(self.cookie_header("pathbase_session", &value, max_age));
+        };
+        let id = random();
+        let sealed = self.seal_session(&envelope)?;
+        let mut tx = db.begin_write().await?;
+        tx.execute(
+            "INSERT INTO sessions(id,actor,envelope,expires_at,created_at,last_used_at) \
+             VALUES(?,?,?,?,?,?)",
+            &crate::params![
+                &id,
+                actor,
+                &sealed,
+                &envelope.session_expires_at.to_string(),
+                &now.to_string(),
+                &now.to_string()
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(self.cookie_header(
+            "pathbase_session",
+            &format!("{}{id}", Self::STORED_PREFIX),
+            max_age,
+        ))
+    }
+
+    /// Reads the envelope a cookie refers to, from wherever it lives.
+    async fn load_session(&self, value: &str) -> Result<(Option<String>, SessionEnvelope)> {
+        let Some(id) = value.strip_prefix(Self::STORED_PREFIX) else {
+            // A cookie from before sessions were stored, or a deployment with
+            // no database. It carries the envelope itself.
+            return Ok((None, self.open_session(value)?));
+        };
+        let db = self.db.as_ref().ok_or_else(unauthorized)?;
+        let mut tx = db.begin_read().await?;
+        let row = tx
+            .fetch_optional(
+                &format!(
+                    "SELECT envelope FROM sessions WHERE id=?{}",
+                    tx.lock_reads()
+                ),
+                &crate::params![id],
+            )
+            .await?;
+        // No row is the whole point: signing out deleted it, and this cookie
+        // now refers to nothing. Not "expired" — gone.
+        let sealed = row.ok_or_else(unauthorized)?.text(0)?;
+        Ok((Some(id.to_owned()), self.open_session(&sealed)?))
+    }
+
+    /// Exchanges the refresh token for a new access token.
+    ///
+    /// Returns `None` when there is nothing to refresh with, which is not an
+    /// error: it simply means this session ends when its token does.
+    async fn refresh_access_token(
+        &self,
+        envelope: &SessionEnvelope,
+    ) -> Result<Option<SessionEnvelope>> {
+        let (Some(refresh), Some(client_id)) = (
+            envelope.refresh_token.as_deref(),
+            self.config.cognito_client_id.as_deref(),
+        ) else {
+            return Ok(None);
+        };
+        let response = self
+            .client
+            .post(
+                self.config
+                    .cognito_idp_endpoint()
+                    .ok_or_else(unauthorized)?,
+            )
+            .header("content-type", "application/x-amz-json-1.1")
+            .header(
+                "x-amz-target",
+                "AWSCognitoIdentityProviderService.InitiateAuth",
+            )
+            .body(
+                json!({
+                    "AuthFlow": "REFRESH_TOKEN_AUTH",
+                    "ClientId": client_id,
+                    "AuthParameters": {"REFRESH_TOKEN": refresh},
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .map_err(|_| unavailable())?;
+        if !response.status().is_success() {
+            // The upstream has ended the session — a password change, a
+            // revoked token, a disabled account. Ending it here too is the
+            // correct answer, not a retry.
+            return Ok(None);
+        }
+        let body: InitiateAuthResponse = response.json().await.map_err(|_| unavailable())?;
+        let Some(result) = body.authentication_result else {
+            return Ok(None);
+        };
+        let Some(access_token) = result.access_token else {
+            return Ok(None);
+        };
+        self.validate_cognito_access_token(&access_token).await?;
+        let now = Utc::now().timestamp();
+        Ok(Some(SessionEnvelope {
+            access_token,
+            selected_tenant: envelope.selected_tenant.clone(),
+            expires_at: now + result.expires_in.unwrap_or(3600).clamp(60, 8 * 3600),
+            // The session's own end does not move. Renewing the token is not
+            // renewing the session.
+            session_expires_at: envelope.session_expires_at,
+            // Cognito returns a new refresh token only when it rotates them.
+            refresh_token: result
+                .refresh_token
+                .or_else(|| envelope.refresh_token.clone()),
+        }))
+    }
+
+    /// Ends a session, everywhere, at once.
+    ///
+    /// This is what a stateless cookie could not do. Deleting the row means
+    /// the next request carrying that cookie finds nothing — in whichever
+    /// execution environment it lands.
+    async fn delete_session(&self, id: &str) -> Result<()> {
+        let Some(db) = &self.db else { return Ok(()) };
+        let mut tx = db.begin_write().await?;
+        tx.execute("DELETE FROM sessions WHERE id=?", &crate::params![id])
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Replaces the stored envelope in place, keeping the same cookie.
+    async fn update_session(&self, id: &str, envelope: &SessionEnvelope) -> Result<()> {
+        let Some(db) = &self.db else { return Ok(()) };
+        let sealed = self.seal_session(envelope)?;
+        let mut tx = db.begin_write().await?;
+        tx.execute(
+            "UPDATE sessions SET envelope=?,last_used_at=? WHERE id=?",
+            &crate::params![&sealed, &Utc::now().timestamp().to_string(), id],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn session(&self, headers: &HeaderMap) -> Result<Session> {
         let value = cookie(headers, "pathbase_session").ok_or_else(unauthorized)?;
-        let envelope = self.open_session(&value)?;
-        if envelope.session_expires_at <= Utc::now().timestamp()
-            || envelope.expires_at <= Utc::now().timestamp() + 30
-        {
+        let (id, mut envelope) = self.load_session(&value).await?;
+        let now = Utc::now().timestamp();
+        // The session's own end is final. Renewal moves the token, not this.
+        if envelope.session_expires_at <= now {
+            if let Some(id) = &id {
+                self.delete_session(id).await?;
+            }
             return Err(unauthorized());
+        }
+        // The token is spent or nearly so. Renew it rather than ending the
+        // person's work, which is what used to happen roughly every hour.
+        if envelope.expires_at <= now + REFRESH_WINDOW {
+            match (&id, self.refresh_access_token(&envelope).await?) {
+                (Some(id), Some(renewed)) => {
+                    self.update_session(id, &renewed).await?;
+                    envelope = renewed;
+                }
+                // Nothing to renew with, or the upstream refused. Either way
+                // this session is over; say so rather than retrying.
+                _ => {
+                    if let Some(id) = &id {
+                        self.delete_session(id).await?;
+                    }
+                    return Err(unauthorized());
+                }
+            }
         }
         // Token revocation / authN changes are checked at the protected boundary.
         let identity = self.verify_identity(&envelope.access_token).await?;
@@ -964,6 +1201,7 @@ impl TachyonAuth {
             selected_tenant,
             expires_at: envelope.expires_at,
             session_expires_at: envelope.session_expires_at,
+            refresh_token: envelope.refresh_token,
         })
     }
     pub async fn select_tenant(
@@ -990,15 +1228,38 @@ impl TachyonAuth {
             selected_tenant: Some(tenant.id.clone()),
             expires_at: session.expires_at,
             session_expires_at: session.session_expires_at,
+            refresh_token: session.refresh_token,
         };
-        let value = self.seal_session(&envelope)?;
         let max_age = envelope.session_expires_at - Utc::now().timestamp();
+        // A stored session keeps its cookie: the id has not changed, only what
+        // it refers to. Re-issuing the cookie here would also be correct, but
+        // it would quietly rotate the id on every tenant switch.
+        let value = match self
+            .load_session(&cookie(headers, "pathbase_session").unwrap_or_default())
+            .await?
+        {
+            (Some(id), _) => {
+                self.update_session(&id, &envelope).await?;
+                format!("{}{id}", Self::STORED_PREFIX)
+            }
+            (None, _) => self.seal_session(&envelope)?,
+        };
         Ok((
             tenant,
             self.cookie_header("pathbase_session", &value, max_age),
         ))
     }
-    pub fn logout(&self, _headers: &HeaderMap) -> Result<String> {
+    /// Signing out, which now actually ends something.
+    ///
+    /// Clearing the cookie only ever stopped *this* browser from presenting
+    /// it. The row is what the session is, so deleting it is what ends it —
+    /// and a copy of the cookie taken elsewhere stops working too.
+    pub async fn logout(&self, headers: &HeaderMap) -> Result<String> {
+        if let Some(value) = cookie(headers, "pathbase_session") {
+            if let Some(id) = value.strip_prefix(Self::STORED_PREFIX) {
+                self.delete_session(id).await?;
+            }
+        }
         Ok(self.cookie_header("pathbase_session", "", 0))
     }
     pub fn actor(session: &Session) -> Actor {

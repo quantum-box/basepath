@@ -357,7 +357,7 @@ async fn endpoint(
         }
         if path == "/auth/logout" && method == Method::POST {
             return Ok((
-                [(header::SET_COOKIE, auth.logout(&headers)?)],
+                [(header::SET_COOKIE, auth.logout(&headers).await?)],
                 Json(json!({"signed_out":true})),
             )
                 .into_response());
