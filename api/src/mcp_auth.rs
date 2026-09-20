@@ -54,6 +54,9 @@ pub fn required_scope(tool: &str) -> &'static str {
 pub struct Connection {
     pub id: String,
     pub actor: String,
+    /// The canonical Tachyon display name shown to the person at consent.
+    /// This is presentation data only; `actor` remains the authority.
+    pub display_name: String,
     /// The tenant this delegation was granted in.
     ///
     /// A person authorizes an AI client while acting in one tenant, and that
@@ -88,20 +91,22 @@ fn row_to_connection(row: &crate::db::Row) -> Result<Connection> {
     Ok(Connection {
         id: row.text(0)?,
         actor: row.text(1)?,
-        client_id: row.text(2)?,
-        client_name: row.text(3)?,
-        scopes: row.text(4)?.split_whitespace().map(str::to_owned).collect(),
-        status: row.text(5)?,
-        created_at: row.text(6)?,
-        updated_at: row.text(7)?,
-        last_used_at: row.text(8)?,
-        ui_read_at: row.text(9)?,
-        version: row.int(10)?,
-        tenant: row.text(11)?,
+        display_name: row.text(2)?,
+        client_id: row.text(3)?,
+        client_name: row.text(4)?,
+        scopes: row.text(5)?.split_whitespace().map(str::to_owned).collect(),
+        status: row.text(6)?,
+        created_at: row.text(7)?,
+        updated_at: row.text(8)?,
+        last_used_at: row.text(9)?,
+        ui_read_at: row.text(10)?,
+        version: row.int(11)?,
+        tenant: row.text(12)?,
     })
 }
 
-const SELECT: &str = "SELECT id,actor,client_id,client_name,scopes,status,created_at,updated_at,\
+const SELECT: &str =
+    "SELECT id,actor,display_name,client_id,client_name,scopes,status,created_at,updated_at,\
                       last_used_at,ui_read_at,version,tenant FROM mcp_connections";
 
 pub async fn list_connections(tx: &mut Tx, actor: &Actor) -> Result<Vec<Connection>> {
@@ -180,20 +185,40 @@ pub async fn ensure_pending(
     actor: &Actor,
     client_id: &str,
     client_name: &str,
+    display_name: Option<&str>,
 ) -> Result<Connection> {
+    let display_name = display_name
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(191)
+        .collect::<String>();
     let mut tx = db.begin_write().await?;
     if let Some(existing) = find_for_client(&mut tx, actor, client_id).await? {
-        tx.execute(
-            "UPDATE mcp_connections SET last_used_at=? WHERE id=?",
-            &params![now(), &existing.id],
-        )
-        .await?;
+        if !display_name.is_empty() && existing.display_name != display_name {
+            tx.execute(
+                "UPDATE mcp_connections SET display_name=?,last_used_at=? WHERE id=?",
+                &params![&display_name, now(), &existing.id],
+            )
+            .await?;
+        } else {
+            tx.execute(
+                "UPDATE mcp_connections SET last_used_at=? WHERE id=?",
+                &params![now(), &existing.id],
+            )
+            .await?;
+        }
         tx.commit().await?;
+        let mut existing = existing;
+        if !display_name.is_empty() {
+            existing.display_name = display_name;
+        }
         return Ok(existing);
     }
     let connection = Connection {
         id: new_id("mcpconn"),
         actor: actor.id.clone(),
+        display_name,
         tenant: actor.tenant.clone(),
         client_id: client_id.into(),
         client_name: client_name.chars().take(120).collect(),
@@ -211,6 +236,7 @@ pub async fn ensure_pending(
             "id",
             "actor",
             "tenant",
+            "display_name",
             "client_id",
             "client_name",
             "scopes",
@@ -227,6 +253,7 @@ pub async fn ensure_pending(
             &connection.id,
             &connection.actor,
             &connection.tenant,
+            &connection.display_name,
             &connection.client_id,
             &connection.client_name,
             "",

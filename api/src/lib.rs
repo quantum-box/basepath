@@ -389,16 +389,33 @@ async fn endpoint(
         // so it reports the actor it actually resolved rather than borrowing
         // a name from a mode it is not running in.
         let body = match &session {
-            Some(s) => json!({
-                "id": s.identity.id,
-                "name": s.identity.name.as_deref().unwrap_or("あなた"),
-                "email": s.identity.email,
-                "mode": "tachyon",
-            }),
-            None if state.auth.is_some() => {
-                json!({"id": actor.id, "name": "あなた", "mode": "tachyon"})
+            Some(s) => {
+                let display_name = s.identity.name.as_deref().unwrap_or("あなた");
+                json!({
+                    "id": s.identity.id,
+                    "name": display_name,
+                    "display_name": display_name,
+                    "email": s.identity.email,
+                    "mode": "tachyon",
+                    "identity_source": "tachyon",
+                })
             }
-            None => json!({"id": actor.id, "name": "やまだ はるか", "mode": "local-preview"}),
+            None if state.auth.is_some() => {
+                json!({
+                    "id": actor.id,
+                    "name": "あなた",
+                    "display_name": "あなた",
+                    "mode": "tachyon",
+                    "identity_source": "tachyon",
+                })
+            }
+            None => json!({
+                "id": actor.id,
+                "name": "ローカルプレビュー（やまだ はるか）",
+                "display_name": "ローカルプレビュー（やまだ はるか）",
+                "mode": "local-preview",
+                "identity_source": "local-preview",
+            }),
         };
         return Ok(Json(body).into_response());
     }
@@ -478,9 +495,12 @@ async fn endpoint(
                 ApiError::new(400, "INVALID_JSON", "接続の許可内容を確認してください")
             })?;
             return Ok(Json(
-                oauth::decide(
+                oauth::decide_with_display_name(
                     &state.service,
                     &actor,
+                    session
+                        .as_ref()
+                        .and_then(|session| session.identity.name.as_deref()),
                     &resource.issuer,
                     &decision.request_id,
                     &decision.scopes,

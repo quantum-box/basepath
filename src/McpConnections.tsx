@@ -8,6 +8,7 @@ import { AutoApplyRanges } from "./AutoApplyRanges";
 export type McpConnection = {
   id: string;
   actor: string;
+  display_name?: string;
   client_id: string;
   client_name: string;
   scopes: string[];
@@ -170,6 +171,14 @@ export function McpConnections({ store }: { store: WorkspaceStore }) {
                   {connection.ui_read_at
                     ? `会話内に表示あり・${when(connection.ui_read_at)}`
                     : "会話内の表示はまだありません（このクライアントが対応していないか、まだ開いていません）"}
+                </small>
+                <small>
+                  承認したアカウント：
+                  {connection.display_name ||
+                    (store.me.mode === "local-preview"
+                      ? "ローカルプレビュー"
+                      : "Tachyonアカウント")}（
+                  {connection.actor}）
                 </small>
               </div>
             </div>

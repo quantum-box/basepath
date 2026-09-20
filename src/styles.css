@@ -303,6 +303,30 @@ input[type="checkbox"]:checked::after {
   color: #7c8da6;
   font-size: 11px;
 }
+
+/* A short laptop window still has one sidebar scroller. Keep the utility
+   escape hatch and profile visible without stealing part of the first or last
+   choice from that scroller. */
+@media (max-height: 520px) {
+  .sidebar {
+    padding-bottom: 8px;
+  }
+  .utility-nav {
+    margin-top: 8px;
+    padding-top: 5px;
+  }
+  .utility-nav button {
+    height: 34px;
+  }
+  .profile {
+    padding-top: 5px;
+    padding-bottom: 3px;
+  }
+  .profile .avatar {
+    margin-top: 4px;
+    margin-bottom: 2px;
+  }
+}
 .avatar {
   border-radius: 50%;
   object-fit: cover;

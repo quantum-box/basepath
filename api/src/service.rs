@@ -2260,13 +2260,21 @@ async fn dispatch_inner(
         // it is the only one that may claim to be local preview.
         ("GET", ["v1", "me"]) => {
             let local = actor.id == Actor::local().id;
+            let display_name = if local {
+                "やまだ はるか".to_owned()
+            } else {
+                // The MCP request carries Basepath's delegation, not the
+                // browser's Tachyon session.  Do not invent or persist a
+                // profile name here; make the account boundary explicit and
+                // keep the canonical actor id alongside it.
+                format!("Tachyonアカウント（{}）", actor.id)
+            };
             return Ok(json!({
                 "id": actor.id,
-                // No display name is stored here. "あなた" is what the
-                // browser falls back to when the upstream has none, and a
-                // neutral word beats a borrowed one.
-                "name": if local { "やまだ はるか" } else { "あなた" },
+                "name": display_name,
+                "display_name": display_name,
                 "mode": if local { "local-preview" } else { "tachyon" },
+                "identity_source": if local { "local-preview" } else { "tachyon" },
                 // Said separately, because "an AI acting for you" and "you"
                 // are different answers to "who is this".
                 "agent": actor.agent,

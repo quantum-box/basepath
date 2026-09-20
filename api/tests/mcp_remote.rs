@@ -322,7 +322,7 @@ async fn connect(
     let oauth::Authorization::Ask(_, handle) = asked else {
         panic!("the authorization request should have reached the person");
     };
-    let decided = oauth::decide(
+    let decided = oauth::decide_with_display_name(
         service,
         &Actor {
             id: actor.into(),
@@ -330,6 +330,7 @@ async fn connect(
             agent: false,
             connection: None,
         },
+        Some("Bob Tachyon"),
         public,
         &handle,
         &scopes
@@ -691,6 +692,16 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     .await;
     assert_eq!(bob_context["isError"], false);
     assert_eq!(bob_context["structuredContent"]["me"]["id"], "us_bob");
+    assert_eq!(
+        bob_context["structuredContent"]["me"]["display_name"],
+        "Bob Tachyon"
+    );
+    assert_eq!(
+        bob_context["structuredContent"]["me"]["identity_source"],
+        "tachyon"
+    );
+    let bob_connection = connection_of(&service, "us_bob").await;
+    assert_eq!(bob_connection["display_name"], "Bob Tachyon");
     let bob_workspaces = bob_context["structuredContent"]["workspaces"]
         .as_array()
         .unwrap()

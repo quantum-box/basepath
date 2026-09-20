@@ -89,6 +89,40 @@ async fn accept(s: &Service, i: &Value, a: &str) -> Result<Value> {
     )
     .await
 }
+
+#[tokio::test]
+async fn member_listing_has_a_human_label_without_copying_profiles() {
+    let (_dir, s, w) = setup().await;
+    let invitation = invite(&s, &w, "us_owner", "us_guest", "viewer").await;
+    accept(&s, &invitation, "us_guest").await.unwrap();
+
+    let listed = req(
+        &s,
+        "us_owner",
+        "GET",
+        &format!("/v1/workspaces/{w}/members"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let members = listed["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    let owner = members
+        .iter()
+        .find(|member| member["actor"] == "us_owner")
+        .unwrap();
+    let guest = members
+        .iter()
+        .find(|member| member["actor"] == "us_guest")
+        .unwrap();
+    assert_eq!(owner["display_name"], "あなたのTachyonアカウント");
+    assert_eq!(guest["display_name"], "Tachyonアカウント");
+    // The response keeps only the canonical actor reference and a label kind;
+    // no locally copied name or email is persisted/returned for the guest.
+    assert!(guest.get("name").is_none());
+    assert!(guest.get("email").is_none());
+}
+
 async fn member_change(
     s: &Service,
     w: &str,

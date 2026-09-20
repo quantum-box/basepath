@@ -366,10 +366,23 @@ impl Mcp {
         }
         let (method, path, body) = match name {
             "pathbase_get_context" => {
-                let me = self
+                let mut me = self
                     .service
                     .handle(&actor, "GET", "/v1/me", &q, json!({}), None)
                     .await?;
+                // The browser consent request carries Tachyon's canonical
+                // display name into the one connection it approved. Use that
+                // narrow presentation field here; the actor id remains the
+                // identity authority and no email/profile directory is read.
+                if let Some(identity) = extensions
+                    .get::<axum::http::request::Parts>()
+                    .and_then(|parts| parts.extensions.get::<McpIdentity>())
+                {
+                    if !identity.connection.display_name.is_empty() {
+                        me["name"] = json!(identity.connection.display_name);
+                        me["display_name"] = json!(identity.connection.display_name);
+                    }
+                }
                 let workspaces = self
                     .service
                     .handle(&actor, "GET", "/v1/workspaces", &q, json!({}), None)

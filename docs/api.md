@@ -19,7 +19,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 
 | パス | 内容 |
 | --- | --- |
-| `GET /v1/me` | 正規ユーザーID、表示名、実行モード |
+| `GET /v1/me` | 正規ユーザーID、表示名（`name`/`display_name`）、実行モード、identity_source。MCPでは接続同意時のTachyon表示名を返す |
 | `GET /v1/tenants` | ログインユーザーが所属するTachyonテナントと現在の選択 |
 | `POST /v1/tenant-selection` | `{tenant_id}`で利用する所属テナントを選択 |
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
@@ -56,7 +56,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 
 | 操作 | 入力・結果 |
 | --- | --- |
-| `GET /v1/workspaces/{w}/members` | workspace（versionと自分のrole）、members（actor/role）、invitations（ownerのみ） |
+| `GET /v1/workspaces/{w}/members` | workspace（versionと自分のrole）、members（actor/display_name/role）、invitations（ownerのみ） |
 | `PATCH /v1/workspaces/{w}` | name、timezone、expected_version |
 | `POST /v1/workspaces/{w}/invitations` | target_actor（正規Tachyon ID）、role（editor/viewer）、expected_version |
 | `DELETE /v1/workspaces/{w}/invitations/{id}` | expected_version。未使用の招待を取り消す |

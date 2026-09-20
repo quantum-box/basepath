@@ -216,10 +216,10 @@ Keeping these apart is the point of the table.
 | Every change tool names a view | **CI** | `api/tests/mcp_apps.rs`. This is the PLT-4943 regression: a tool that creates a proposal and cannot render it |
 | A proposal renders as a diff the moment it is made, with no round trip | **CI** | `tests/e2e/mcp-app.spec.mjs` — pushed through the real AppBridge as a host does |
 | A host that renders nothing still gets a working link | **CI** | `api/tests/mcp_apps.rs` and the `approval_url` on every change set |
-| **Connecting from real ChatGPT** | **not verified** | Needs a ChatGPT account with Developer Mode. Not performed in this repository |
-| **Whether ChatGPT renders the view once both conventions are published** | **not verified** | The change is reasoned from the two published conventions, not from an observation. Read `ui_read_at` in 設定 → AIクライアントの接続 after connecting, and record the answer here with the host version and the date |
-| **The listing metadata as ChatGPT renders it** | **not verified** | Same |
-| **Supported clients, plans, versions** | **not measured** | Fill in from an actual connection; do not copy from documentation |
+| **Connecting from real ChatGPT** | **verified 2026-09-20** | ChatGPT Work reconnected to the production endpoint and read the sole `個人` workspace. |
+| **Whether ChatGPT renders the view once both conventions are published** | **verified 2026-09-20** | ChatGPT rendered `ui://basepath/personal/plan.html` inside the conversation after `pathbase_get_graph`; the embedded view named the workspace, rendered its plan, and showed the week. |
+| **The listing metadata as ChatGPT renders it** | **verified 2026-09-20** | ChatGPT's installed-plugin detail showed `Basepath`, description `目標・行動・記憶を、会話から扱う`, and plugin version `1.0.0`. |
+| **Supported clients, plans, versions** | **measured 2026-09-20** | ChatGPT Work with GPT-5.6 Sol (medium effort), using Basepath plugin `1.0.0`. This is one observed configuration, not a compatibility claim for other plans or versions. |
 
 ### Real-host log
 
@@ -229,7 +229,9 @@ them from documentation or from the harness.
 | Date | Host and version | View rendered (`ui_read_at`) | Proposal → reflected in Basepath | Notes |
 | --- | --- | --- | --- | --- |
 | 2026-09-19 | ChatGPT, Developer Mode | **no** | **no** — expired unread | Before this change. No view in either convention on the change tools, and only the MCP Apps spelling anywhere. PLT-4943 |
-| | | | | |
+| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — `ui://basepath/personal/plan.html` rendered in the conversation | **yes** — one `outcome` named `ChatGPT 実機受入` was proposed, then explicitly approved in Basepath and appeared in the personal goal map | The proposal's text diff and `Basepathで変更案を確認` link were visible in the conversation. The applied change contained one create, zero updates, and zero deletes. |
+| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — the conversation displayed the proposal diff and the Basepath review link | **yes** — `ChatGPT 会話内適用テスト` was approved and applied in Basepath, then a fresh conversation read returned `タイトル: ChatGPT 会話内適用テスト` and `状態: active` | This is an out-of-range change: the conversation led to Basepath for the person's approval, rather than treating an in-conversation click as evidence of approval. |
+| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — the conversation displayed the create diff | **yes, automatically** — `ChatGPT 自動適用テスト` was created as one `outcome` with no date, assignee, or target values; ChatGPT reported `applied` and Basepath recorded `事前に決めた範囲で自動反映` | The rule was limited to the personal workspace, create operations only, for seven days. The proposal record retains the diff; updates and guarded values were not included. |
 
 Submission to a public directory is out of scope and has not been prepared for
 review. The privacy and support material a directory requires is not written.

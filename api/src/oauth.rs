@@ -619,6 +619,21 @@ pub async fn decide(
     granted: &[String],
     allow: bool,
 ) -> Result<Value> {
+    decide_with_display_name(service, actor, None, issuer, handle, granted, allow).await
+}
+
+/// The browser consent path supplies the canonical Tachyon display name that
+/// was visible to the person. It is stored on this one MCP connection only;
+/// no profile directory or email is copied into PathBase.
+pub async fn decide_with_display_name(
+    service: &Service,
+    actor: &Actor,
+    display_name: Option<&str>,
+    issuer: &str,
+    handle: &str,
+    granted: &[String],
+    allow: bool,
+) -> Result<Value> {
     // Read first, so the slow parts (workspace provisioning, the delegation
     // row) happen outside the transaction that finally consumes the request.
     let mut tx = service.db.begin_read().await?;
@@ -661,8 +676,14 @@ pub async fn decide(
     // or an AI client, and the delegation row may already be there from an
     // earlier connection.
     service.provision_personal(actor).await?;
-    let existing =
-        mcp_auth::ensure_pending(&service.db, actor, &pending.client_id, &client_name).await?;
+    let existing = mcp_auth::ensure_pending(
+        &service.db,
+        actor,
+        &pending.client_id,
+        &client_name,
+        display_name,
+    )
+    .await?;
 
     // Everything that must not happen twice happens here, in one transaction,
     // against a request that is re-read under the same lock.

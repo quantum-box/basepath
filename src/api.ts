@@ -83,7 +83,12 @@ export type Workspace = {
   local: boolean;
   version: number;
 };
-export type Member = { actor: string; role: Workspace["role"] };
+export type Member = {
+  actor: string;
+  /** Human-readable kind from Tachyon; the actor id remains the authority. */
+  display_name?: string;
+  role: Workspace["role"];
+};
 export type Invitation = {
   id: string;
   workspace_id: string;

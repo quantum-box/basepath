@@ -222,6 +222,9 @@ export function WorkspaceMembers({
           <section aria-label="参加メンバー">
             {data.members.map((member) => {
               const self = member.actor === store.me.id;
+              const memberLabel = self
+                ? `${store.me.name}（あなた）`
+                : `${member.display_name || "Tachyonアカウント"}（${member.actor}）`;
               const lastOwner =
                 member.role === "owner" &&
                 data.members.filter((m) => m.role === "owner").length === 1;
@@ -229,19 +232,23 @@ export function WorkspaceMembers({
                 <div className="member-row" key={member.actor}>
                   <div>
                     <strong>
-                      {self ? `${store.me.name}（あなた）` : member.actor}
+                      {memberLabel}
                     </strong>
-                    <small>{self ? member.actor : roles[member.role]}</small>
+                    <small>
+                      {self
+                        ? `アカウントID：${member.actor}`
+                        : `アカウントID：${member.actor} · ${roles[member.role]}`}
+                    </small>
                   </div>
                   {canManage ? (
                     <div className="member-controls">
                       <select
                         value={member.role}
                         disabled={store.pending || lastOwner}
-                        aria-label={`${member.actor}の権限`}
+                        aria-label={`${memberLabel}の権限`}
                         onChange={(event) =>
                           setConfirmation({
-                            message: `${self ? "あなた" : member.actor}の権限を「${roles[event.target.value as Workspace["role"]]}」に変更します。${event.target.value === "owner" ? "メンバーと招待を管理できるようになります。" : ""}`,
+                            message: `${memberLabel}の権限を「${roles[event.target.value as Workspace["role"]]}」に変更します。${event.target.value === "owner" ? "メンバーと招待を管理できるようになります。" : ""}`,
                             method: "PATCH",
                             path: `${base}/members/${encodeURIComponent(member.actor)}`,
                             body: {
@@ -262,7 +269,7 @@ export function WorkspaceMembers({
                         disabled={store.pending || lastOwner}
                         onClick={() =>
                           setConfirmation({
-                            message: `${self ? "あなた" : member.actor}を「${data.workspace.name}」から解除します。この領域にアクセスできなくなります。記録は残ります。`,
+                            message: `${memberLabel}を「${data.workspace.name}」から解除します。この領域にアクセスできなくなります。記録は残ります。`,
                             method: "DELETE",
                             path: `${base}/members/${encodeURIComponent(member.actor)}`,
                             body: { expected_version: data.workspace.version },
