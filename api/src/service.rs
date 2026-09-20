@@ -1897,7 +1897,7 @@ async fn guard_personal_goal(tx: &mut Tx, actor: &Actor, w: &str, item: &Item) -
 
 async fn validate_relation(tx: &mut Tx, r: &Relation) -> Result<()> {
     let _: Item = get(tx, &r.workspace_id, "items", &r.source_id).await?;
-    let _: Item = get(tx, &r.workspace_id, "items", &r.target_id).await?;
+    let target: Item = get(tx, &r.workspace_id, "items", &r.target_id).await?;
     if r.source_id == r.target_id {
         return Err(ApiError::new(
             422,
@@ -1909,6 +1909,12 @@ async fn validate_relation(tx: &mut Tx, r: &Relation) -> Result<()> {
         .contains(&r.relation_type.as_str())
     {
         return Err(ApiError::invalid("不明な関係です"));
+    }
+    // An action is executable work, not an expandable container. Enforce this
+    // at the shared relation boundary so REST, MCP, import, and the browser
+    // cannot create a branch that the UI intentionally refuses to manage.
+    if r.relation_type == "part_of" && target.kind == "action" {
+        return Err(ApiError::invalid("行動の下に項目は追加できません"));
     }
     let all: Vec<Relation> = list(tx, &r.workspace_id, "relations").await?;
     let same: Vec<_> = all

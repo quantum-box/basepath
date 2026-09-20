@@ -786,6 +786,31 @@ input[type="checkbox"]:checked::after {
   color: var(--ink);
   border-color: #c3d2e6;
 }
+.map-node-actions {
+  position: absolute;
+  right: 3px;
+  bottom: -27px;
+  z-index: 4;
+  display: inline-flex;
+  gap: 3px;
+  pointer-events: all;
+  white-space: nowrap;
+}
+.map-node-action {
+  min-height: 19px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: #5b6b82;
+  font-size: 9px;
+  line-height: 1;
+  box-shadow: 0 2px 6px #40648814;
+}
+.map-node-action:hover {
+  color: var(--ink);
+  border-color: #c3d2e6;
+}
 .node-icon {
   display: flex;
   align-items: center;
