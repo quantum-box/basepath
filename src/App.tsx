@@ -925,10 +925,10 @@ export function App() {
   const editTreeItem = useCallback((id: string) => {
     const item = raw(id);
     if (!item) return;
-    setSelectedId(id);
     if (item.kind === "action" || item.kind === "initiative" || item.kind === "milestone") {
       setModal({ kind: "initiativeDetail", id });
     } else {
+      setSelectedId(id);
       setModal({ kind: "editGoal" });
     }
   }, [allItems]);

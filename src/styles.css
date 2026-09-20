@@ -740,6 +740,12 @@ input[type="checkbox"]:checked::after {
 .map-node:not(.root).has-actions {
   padding-bottom: 44px;
 }
+.map-node:not(.root).has-children {
+  padding-bottom: 32px;
+}
+.map-node:not(.root).has-actions.has-children {
+  padding-bottom: 44px;
+}
 .map-node:hover {
   box-shadow: 0 4px 14px #829ac21c;
 }
@@ -793,6 +799,12 @@ input[type="checkbox"]:checked::after {
 .map-node.goal.is-selected.has-actions {
   padding: 10px 10px 44px;
 }
+.map-node.goal.is-selected.has-children {
+  padding-bottom: 32px;
+}
+.map-node.goal.is-selected.has-actions.has-children {
+  padding-bottom: 44px;
+}
 .node-toggle {
   pointer-events: all;
   position: absolute;
@@ -821,6 +833,12 @@ input[type="checkbox"]:checked::after {
   border-color: #c3d2e6;
 }
 .map-node.has-actions ~ .node-toggle {
+  bottom: 45px;
+}
+.map-node.has-children ~ .node-toggle {
+  bottom: 3px;
+}
+.map-node.has-actions.has-children ~ .node-toggle {
   bottom: 45px;
 }
 .map-node-actions {

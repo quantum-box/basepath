@@ -56,7 +56,7 @@ function GoalNode({ data }: NodeProps<MapNode>) {
   return (
     <>
       <button
-        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""} ${data.hasActions ? "has-actions" : ""}`}
+        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""} ${data.hasActions ? "has-actions" : ""} ${data.hasChildren ? "has-children" : ""}`}
         onClick={data.onSelect}
         aria-pressed={data.active}
         tabIndex={data.kind === "root" ? -1 : 0}
