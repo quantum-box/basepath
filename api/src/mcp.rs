@@ -432,14 +432,11 @@ impl Mcp {
                     .and_then(|rows| rows.iter().find(|row| row["id"] == w))
                     .and_then(|row| row["scope"].as_str())
                     .unwrap_or("組織");
-                let screen = args["screen"].as_str().unwrap_or("home");
-                if !screen_allowed_for_scope(scope, screen) {
-                    return Err(crate::model::ApiError::invalid(
-                        "screen is not available in this workspace scope",
-                    ));
-                }
+                let requested_screen = args["screen"].as_str().unwrap_or("home");
+                let mut screen = requested_screen;
                 if let Some(item_id) = args["item_id"].as_str() {
-                    self.service
+                    let item = self
+                        .service
                         .handle(
                             &actor,
                             "GET",
@@ -449,6 +446,20 @@ impl Mcp {
                             None,
                         )
                         .await?;
+                    // A deep link must open the screen that can actually
+                    // address the item. In particular, an action is not a
+                    // goal and must never fall through to the first goal in
+                    // the map when a host supplies its id.
+                    screen = match item["kind"].as_str() {
+                        Some("action") => "today",
+                        Some("initiative") => "breakdown",
+                        _ => requested_screen,
+                    };
+                }
+                if !screen_allowed_for_scope(scope, screen) {
+                    return Err(crate::model::ApiError::invalid(
+                        "screen is not available in this workspace scope",
+                    ));
                 }
                 let Some(basepath) = basepath_url() else {
                     return Ok(json!({

@@ -500,6 +500,35 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     .await
     .unwrap_err();
     assert_eq!(collision.status, 409);
+    conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-2",
+            workspace_id: "personal",
+            item_id: None,
+            screen: None,
+            idempotency_key: "retry-owned",
+        },
+    )
+    .await
+    .unwrap();
+    let owned_key_conflict = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-1",
+            workspace_id: "personal",
+            item_id: Some("item-1"),
+            screen: Some("alignment"),
+            idempotency_key: "retry-owned",
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(owned_key_conflict.status, 409);
     conversation::stop_for_connection(&mut tx, "connection-a")
         .await
         .unwrap();

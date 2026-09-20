@@ -129,6 +129,7 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 * 文字で分かります。パンくず（`個人` / `組織・{名前}`）、タブのタイトル、空状態の文面。色やアイコンだけには依存しません。
 * 切替時に何も持ち越しません。選択中の項目、検索語、開いていたパネルはすべて、去るcontextへのポインタです。
 * 画面の中からワークスペースを選ぶ操作も同じ経路を通ります。境界を越える道が2本あって片方が古い選択を残すなら、2つはやがて分かれていません。
+* deep linkの`tenant_id`が現在の選択と違う場合は、`/tenants?tenant_id=...&return_to=...`で明示選択を挟みます。return先は同一originのPathBase routeだけを許可し、refreshや共有後もworkspace/item/screenを復元します。
 * 権限を失った組織は即座に使えなくなります。ワークスペース一覧が正で、そこに無いcontextはその人にとって存在しません。
 * そのcontextに無い画面へのdeep linkは、空の画面ではなくそのcontextのホームに着きます。空の記憶画面は「ここに記憶はあるのか」に「たぶん」と答えてしまいます。
 
@@ -363,6 +364,7 @@ MCP接続は会話本文を保存しません。ホストが渡した`conversati
   指定します。`idempotency_key`は任意で、conversation IDをキーとして安全に再試行できます。
   指定した場合は最大200文字で、同じキーに別の会話・対象・画面を割り当てると409です。
   `item_id`と`screen`は任意ですが、画面はworkspaceのscopeに適合するものだけ指定できます。
+  `item_id`が行動なら`today`、取り組みなら`breakdown`へ正規化し、目標画面へ誤ってfallbackしません。
   対象は通常のtenant/workspace membershipで再検証され、同じ会話への再試行は同じリンクを返します。
   作成・明示的な再リンクの返却`status`は`active`です。別の対象や画面への再リンクは409です。
 - `pathbase_link_context`（リンクの作成・明示的な再リンク）には`pathbase.context`権限が必要です。

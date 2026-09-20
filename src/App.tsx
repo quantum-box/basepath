@@ -170,6 +170,31 @@ function replaceScreenUrl(pathname: string, tenantId = "") {
   }
   window.history.replaceState({}, "", url);
 }
+function tenantReturnUrl(): string | null {
+  const url = new URL(window.location.href);
+  if (!parsePath(url.pathname)) return null;
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+function replaceTenantSelectionUrl(tenantId: string, returnTo?: string | null) {
+  const url = new URL(window.location.href);
+  url.pathname = "/tenants";
+  url.search = "";
+  url.searchParams.set("tenant_id", tenantId);
+  if (returnTo) url.searchParams.set("return_to", returnTo);
+  url.hash = "";
+  window.history.replaceState({}, "", url);
+}
+function safeTenantReturn(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value, window.location.origin);
+    if (url.origin !== window.location.origin || !parsePath(url.pathname))
+      return null;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return null;
+  }
+}
 function Badge({ scope }: { scope: Scope }) {
   return <span className={`scope-badge ${scopeClass[scope]}`}>{scope}</span>;
 }
@@ -493,6 +518,9 @@ export function App() {
   const [selectingTenant, setSelectingTenant] = useState(
     window.location.pathname === "/tenants",
   );
+  const tenantReturnRef = useRef<string | null>(
+    safeTenantReturn(new URLSearchParams(window.location.search).get("return_to")),
+  );
   // A deep link from the conversation lands here. Approval needs this origin
   // and this session, so the link goes to a real screen rather than back into
   // the AI host.
@@ -714,7 +742,14 @@ export function App() {
               : null
         : null,
     }));
-  const selected = goals.find((g) => g.id === selectedId) ?? goals[0];
+  const linkedItem = raw(selectedId);
+  // An item deep link must not silently select the first goal when the target
+  // is an action or initiative. Those links are routed to their own screen by
+  // the MCP contract; keeping the detail empty here also protects old links.
+  const selected =
+    linkedItem && !isGoalKind(linkedItem)
+      ? undefined
+      : goals.find((g) => g.id === selectedId) ?? goals[0];
   const selectedRaw = selected ? raw(selected.id) : undefined;
   const nextAction =
     selectedRaw &&
@@ -888,9 +923,13 @@ export function App() {
           requestedTenantId !== result.selected_tenant_id &&
           result.tenants.some((tenant) => tenant.id === requestedTenantId)
         ) {
+          tenantReturnRef.current = tenantReturnUrl();
           setTenantId(requestedTenantId);
           setSelectingTenant(true);
-          replaceScreenUrl("/tenants", requestedTenantId);
+          replaceTenantSelectionUrl(
+            requestedTenantId,
+            tenantReturnRef.current,
+          );
           return;
         }
         if (!result.selected_tenant_id) return;
@@ -1238,13 +1277,24 @@ export function App() {
         initialTenantId={tenantId}
         onTenantChange={(id) => {
           setTenantId(id);
-          replaceScreenUrl("/tenants", id);
+          replaceTenantSelectionUrl(id, tenantReturnRef.current);
         }}
         onSelected={async (id) => {
           setTenantId(id);
           await store.refresh();
           setSelectingTenant(false);
-          replaceScreenUrl("/", id);
+          const returnTo = tenantReturnRef.current;
+          tenantReturnRef.current = null;
+          if (returnTo) {
+            const restored = new URL(returnTo, window.location.origin);
+            const route = parsePath(restored.pathname);
+            setScreen(route?.screen ?? "home");
+            setWorkspaceId(route?.orgId ?? "");
+            setSelectedId(restored.searchParams.get("item") || "");
+            window.history.replaceState({}, "", restored);
+          } else {
+            replaceScreenUrl("/", id);
+          }
         }}
         onBack={async () => {
           await request("POST", "/auth/logout", {});
@@ -1286,15 +1336,27 @@ export function App() {
         initialTenantId={tenantId}
         onTenantChange={(id) => {
           setTenantId(id);
-          replaceScreenUrl("/tenants", id);
+          replaceTenantSelectionUrl(id, tenantReturnRef.current);
         }}
         onSelected={async (id) => {
           setTenantId(id);
           await store.refresh();
           setSelectingTenant(false);
-          replaceScreenUrl("/", id);
+          const returnTo = tenantReturnRef.current;
+          tenantReturnRef.current = null;
+          if (returnTo) {
+            const restored = new URL(returnTo, window.location.origin);
+            const route = parsePath(restored.pathname);
+            setScreen(route?.screen ?? "home");
+            setWorkspaceId(route?.orgId ?? "");
+            setSelectedId(restored.searchParams.get("item") || "");
+            window.history.replaceState({}, "", restored);
+          } else {
+            replaceScreenUrl("/", id);
+          }
         }}
         onBack={() => {
+          tenantReturnRef.current = null;
           setSelectingTenant(false);
           replaceScreenUrl("/", tenantId);
         }}
@@ -1333,7 +1395,8 @@ export function App() {
                 setNotifications(false);
                 setModal(null);
                 setSelectingTenant(true);
-                replaceScreenUrl("/tenants", tenantId);
+                tenantReturnRef.current = null;
+                replaceTenantSelectionUrl(tenantId);
               }}
             >
               テナント切替

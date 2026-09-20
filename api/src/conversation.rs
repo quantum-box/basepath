@@ -59,6 +59,33 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
             "conversation_id must be 1-191 characters",
         ));
     }
+    // Check ownership before the conversation lookup. Otherwise a retry of an
+    // existing conversation could silently return it while reusing a key that
+    // belongs to another conversation.
+    if let Some(existing) = tx
+        .fetch_optional(
+            &format!(
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND idempotency_key=?{}",
+                tx.lock_reads()
+            ),
+            &params![
+                &actor.id,
+                &actor.tenant,
+                input.connection_id,
+                input.idempotency_key
+            ],
+        )
+        .await?
+    {
+        let link = row(&existing)?;
+        if link.conversation_id != input.conversation_id {
+            return Err(ApiError::new(
+                409,
+                "CONTEXT_LINK_CONFLICT",
+                "idempotency key is already used for another context link",
+            ));
+        }
+    }
     let existing = tx
         .fetch_optional(
             &format!(
