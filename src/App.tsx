@@ -901,6 +901,43 @@ export function App() {
     },
     [allItems],
   );
+  const editTreeItem = useCallback((id: string) => {
+    const item = raw(id);
+    if (!item) return;
+    setSelectedId(id);
+    if (item.kind === "action" || item.kind === "initiative" || item.kind === "milestone") {
+      setModal({ kind: "initiativeDetail", id });
+    } else {
+      setModal({ kind: "editGoal" });
+    }
+  }, [allItems]);
+  const moveTreeItem = useCallback((id: string) => {
+    const item = raw(id);
+    if (!item || !canWrite(item.workspace_id)) return;
+    const current = partOfTarget(item);
+    const parentId = window.prompt("新しい親の項目ID（ルートに戻す場合は空欄）", current?.id ?? "");
+    if (parentId === null) return;
+    const target = parentId ? allItems.find((entry) => entry.id === parentId && entry.workspace_id === item.workspace_id) : undefined;
+    if (parentId && !target) { notify("同じワークスペースの項目IDを指定してください"); return; }
+    void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${item.id}/reparent`, { parent_id: target?.id ?? null, expected_version: item.version }), () => notify("親を変更しました"));
+  }, [allItems, canWrite, notify, raw, store]);
+  const reorderTreeItem = useCallback((id: string, delta: -1 | 1) => {
+    const item = raw(id);
+    if (!item || !canWrite(item.workspace_id)) return;
+    const parent = partOfTarget(item);
+    if (!parent) return;
+    const siblings = allItems.filter((entry) => entry.workspace_id === item.workspace_id && partOfTarget(entry)?.id === parent.id && ["outcome", "idea", "initiative", "milestone", "action"].includes(entry.kind));
+    siblings.sort((a, b) => {
+      const pa = allRelations.find((relation) => relation.source_id === a.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
+      const pb = allRelations.find((relation) => relation.source_id === b.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
+      return pa - pb || a.created_at.localeCompare(b.created_at);
+    });
+    const index = siblings.findIndex((entry) => entry.id === item.id);
+    const next = index + delta;
+    if (index < 0 || next < 0 || next >= siblings.length) return;
+    [siblings[index], siblings[next]] = [siblings[next], siblings[index]];
+    void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${parent.id}/children`, { order: siblings.map((entry) => entry.id) }), () => notify("並び順を変更しました"));
+  }, [allItems, allRelations, canWrite, notify, raw, store]);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 3200);
@@ -1944,6 +1981,14 @@ export function App() {
                 onInitiative={openInitiative}
                 onAddChild={(id) => openCreateRelative(id, "child")}
                 onAddSibling={(id) => openCreateRelative(id, "sibling")}
+                onEdit={editTreeItem}
+                onMove={moveTreeItem}
+                onMoveUp={(id) => reorderTreeItem(id, -1)}
+                onMoveDown={(id) => reorderTreeItem(id, 1)}
+                onEdit={editTreeItem}
+                onMove={moveTreeItem}
+                onMoveUp={(id) => reorderTreeItem(id, -1)}
+                onMoveDown={(id) => reorderTreeItem(id, 1)}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">

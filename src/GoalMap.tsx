@@ -27,6 +27,10 @@ type MapData = {
   onToggle?: () => void;
   onAddChild?: () => void;
   onAddSibling?: () => void;
+  onEdit?: () => void;
+  onMove?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 };
 /** A node in the generic part_of tree.  The map intentionally does not
  * encode a Goal -> Initiative hierarchy: every item kind can have a parent. */
@@ -113,8 +117,10 @@ function GoalNode({ data }: NodeProps<MapNode>) {
           )}
         </button>
       )}
-      {data.kind !== "root" && (data.onAddChild || data.onAddSibling) && (
+      {data.kind !== "root" && (data.onAddChild || data.onAddSibling || data.onEdit || data.onMove) && (
         <span className="map-node-actions">
+          {data.onEdit && <button type="button" className="map-node-action nodrag nopan" onClick={data.onEdit}>編集</button>}
+          {data.onMove && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMove}>親を変更</button>}
           {data.onAddChild && (
             <button
               type="button"
@@ -135,6 +141,8 @@ function GoalNode({ data }: NodeProps<MapNode>) {
               兄弟を追加
             </button>
           )}
+          {data.onMoveUp && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMoveUp}>↑</button>}
+          {data.onMoveDown && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMoveDown}>↓</button>}
         </span>
       )}
     </>
@@ -174,6 +182,10 @@ type Props = {
   onInitiative: (id: string) => void;
   onAddChild?: (id: string) => void;
   onAddSibling?: (id: string) => void;
+  onEdit?: (id: string) => void;
+  onMove?: (id: string) => void;
+  onMoveUp?: (id: string) => void;
+  onMoveDown?: (id: string) => void;
 };
 function MapCanvas({
   goals,
@@ -186,6 +198,10 @@ function MapCanvas({
   onInitiative,
   onAddChild,
   onAddSibling,
+  onEdit,
+  onMove,
+  onMoveUp,
+  onMoveDown,
 }: Props) {
   const flow = useReactFlow<MapNode>();
   const [zoom, setZoom] = useState(100);
@@ -324,6 +340,10 @@ function MapCanvas({
                 onAddSibling: onAddSibling
                   ? () => onAddSibling(item.id)
                   : undefined,
+                onEdit: onEdit ? () => onEdit(item.id) : undefined,
+                onMove: onMove ? () => onMove(item.id) : undefined,
+                onMoveUp: onMoveUp ? () => onMoveUp(item.id) : undefined,
+                onMoveDown: onMoveDown ? () => onMoveDown(item.id) : undefined,
               }
             : {
                 ...item.initiative!,
@@ -340,6 +360,10 @@ function MapCanvas({
                 onAddSibling: onAddSibling
                   ? () => onAddSibling(item.id)
                   : undefined,
+                onEdit: onEdit ? () => onEdit(item.id) : undefined,
+                onMove: onMove ? () => onMove(item.id) : undefined,
+                onMoveUp: onMoveUp ? () => onMoveUp(item.id) : undefined,
+                onMoveDown: onMoveDown ? () => onMoveDown(item.id) : undefined,
               },
       });
       if (item.parentId && depth > offset) {
@@ -389,6 +413,10 @@ function MapCanvas({
     onInitiative,
     onAddChild,
     onAddSibling,
+    onEdit,
+    onMove,
+    onMoveUp,
+    onMoveDown,
   ]);
   const resetView = useCallback(() => {
     // Establish the baseline after fitting async-loaded data, before animation
