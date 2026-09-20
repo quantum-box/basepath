@@ -594,6 +594,7 @@ export function App() {
             )
           : store.workspaces.find((w) => w.scope === "個人")
         : store.workspaces.find((w) => w.id === workspaceId) ||
+          store.workspaces.find((w) => w.scope === "個人") ||
           store.workspaces[0];
   const contextUnavailable =
     !store.loading &&
