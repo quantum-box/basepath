@@ -164,6 +164,27 @@ export function emptyStateFor(kind: ContextKind): string {
 /** A workspace, as far as this module needs to know. */
 export type WorkspaceLike = { id: string; name: string; scope: string };
 
+export function resolvePersonalWorkspace(
+  requestedId: string,
+  workspaces: WorkspaceLike[],
+): string {
+  return (
+    workspaces.find(
+      (workspace) =>
+        workspace.id === requestedId && workspace.scope === "個人",
+    )?.id || workspaces.find((workspace) => workspace.scope === "個人")?.id || ""
+  );
+}
+
+export function routeWorkspaceAvailable(
+  route: ParsedRoute,
+  workspaces: WorkspaceLike[],
+): boolean {
+  return route.kind === "personal"
+    ? workspaces.some((workspace) => workspace.scope === "個人")
+    : workspaces.some((workspace) => workspace.id === route.orgId);
+}
+
 export function contextOf(workspace: WorkspaceLike): AppContext {
   return {
     kind: workspace.scope === "個人" ? "personal" : "organization",

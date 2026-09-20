@@ -485,6 +485,53 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     .await
     .unwrap_err();
     assert_eq!(later_key_collision.status, 409);
+    let ascii_200 = "a".repeat(200);
+    let accepted_ascii = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-ascii-200",
+            workspace_id: "personal",
+            item_id: None,
+            screen: None,
+            idempotency_key: &ascii_200,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted_ascii.conversation_id, "chat-ascii-200");
+    let unicode_key = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-unicode-key",
+            workspace_id: "personal",
+            item_id: None,
+            screen: None,
+            idempotency_key: "é",
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(unicode_key.status, 422);
+    let over_byte_key = "a".repeat(201);
+    let over_byte = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-over-byte-key",
+            workspace_id: "personal",
+            item_id: None,
+            screen: None,
+            idempotency_key: &over_byte_key,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(over_byte.status, 422);
     let screen_conflict = conversation::upsert(
         &mut tx,
         &actor,
@@ -800,6 +847,18 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         .as_str()
         .unwrap()
         .to_owned();
+
+    let (unicode_fallback, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        5,
+        "tools/call",
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":alice_personal,"conversation_id":"é"}}),
+    )
+    .await;
+    assert_eq!(unicode_fallback["isError"], true);
 
     let (linked, _) = request(
         &client,

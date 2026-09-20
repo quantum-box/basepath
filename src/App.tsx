@@ -50,6 +50,7 @@ import {
   navItemFor,
   parsePath,
   pathFor,
+  resolvePersonalWorkspace,
   screenBelongs,
   stillAvailable,
   tenantReturnWithSelection,
@@ -591,7 +592,7 @@ export function App() {
   const contextKind = context?.kind ?? "personal";
   /** The person's own workspace, which they always have exactly one of. */
   const personalWorkspaceId = () =>
-    store.workspaces.find((w) => w.scope === "個人")?.id ?? "";
+    resolvePersonalWorkspace("", store.workspaces);
   const navItems = navFor(contextKind);
   // The screen that is actually shown. A deep link into a screen this context
   // does not have lands on its home instead of rendering an empty one, because
@@ -1061,12 +1062,7 @@ export function App() {
     const requested = new URLSearchParams(window.location.search).get(
       "workspace",
     );
-    const requestedPersonal = requested
-      ? store.workspaces.find(
-          (workspace) => workspace.id === requested && workspace.scope === "個人",
-        )?.id
-      : undefined;
-    const target = requestedPersonal || own;
+    const target = resolvePersonalWorkspace(requested || "", store.workspaces) || own;
     if (target && target !== workspaceId) setWorkspaceId(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.workspaces.length]);
