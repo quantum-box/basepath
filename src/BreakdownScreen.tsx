@@ -324,13 +324,29 @@ export function BreakdownScreen({
   const merged = useMemo(() => {
     if (!tree) return null;
     const seen = new Map<string, BreakdownNode>();
-    for (const node of tree.nodes.concat(extra)) seen.set(node.id, node);
+    // Fresh root responses are authoritative. Keep older expanded nodes only
+    // when the fresh response does not contain them, so stale rows cannot
+    // overwrite newly-created titles or parents.
+    for (const node of extra.concat(tree.nodes)) seen.set(node.id, node);
     return { ...tree, nodes: [...seen.values()] };
   }, [tree, extra]);
 
   useEffect(() => {
-    if (selectedId) setSelected(selectedId);
-  }, [selectedId]);
+    if (!selectedId || !workspace) return;
+    setSelected(selectedId);
+    setWhy(null);
+    void request<unknown>(
+      "GET",
+      `/v1/workspaces/${workspace.id}/items/${selectedId}/ancestry`,
+    ).then((value) => {
+      const source = value as { ancestors?: { id?: string }[] };
+      const ancestors = (source.ancestors ?? [])
+        .map((entry) => entry.id)
+        .filter((id): id is string => typeof id === "string");
+      if (ancestors[0] && ancestors[0] !== rootId) setRootId(ancestors[0]);
+      setWhy(rationaleFrom(value));
+    }).catch((failure) => say(failure, "理由をたどれませんでした"));
+  }, [selectedId, workspace]);
   useEffect(() => {
     if (
       !workspace ||

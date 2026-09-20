@@ -235,13 +235,13 @@ function MapCanvas({
       // The existing node treatment is deliberately retained for all
       // non-goals so the visual language and spacing do not change.
       kind:
-        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal"
+        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
           ? "goal"
           : "initiative",
       parentId: displayParent(item),
       scope: item.scope,
       goal:
-        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal"
+        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
           ? {
               id: item.id,
               title: item.title,
@@ -256,7 +256,7 @@ function MapCanvas({
             }
           : undefined,
       initiative:
-        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal"
+        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
           ? undefined
           : {
               id: item.id,
@@ -330,6 +330,7 @@ function MapCanvas({
                 ...shared,
                 scope: item.scope,
                 kind: "initiative",
+                active: selected === item.id,
                 onSelect: () => onInitiative(item.id),
                 onAddChild: item.terminal
                   ? undefined
