@@ -2979,6 +2979,29 @@ async fn dispatch_inner(
                 // keeps its id so the structural parent stays single by
                 // construction rather than by a delete landing first, and so
                 // the history refers to one link that moved.
+                let mut siblings: Vec<Relation> = relations
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.relation_type == "part_of"
+                            && candidate.target_id == *parent
+                            && candidate.source_id != item.id
+                    })
+                    .cloned()
+                    .collect();
+                siblings.sort_by_key(|candidate| {
+                    (candidate.position.unwrap_or(i64::MAX), candidate.id.clone())
+                });
+                let mut next_position = siblings
+                    .iter()
+                    .filter_map(|candidate| candidate.position)
+                    .max()
+                    .map_or(0, |position| position.saturating_add(1));
+                for sibling in siblings.iter_mut().filter(|candidate| candidate.position.is_none()) {
+                    sibling.position = Some(next_position);
+                    next_position = next_position.saturating_add(1);
+                    sibling.version += 1;
+                    put(tx, w, "relations", &sibling.id.clone(), &sibling.clone()).await?;
+                }
                 let relation = Relation {
                     id: existing
                         .as_ref()
@@ -2991,7 +3014,7 @@ async fn dispatch_inner(
                     rationale: text(body, "rationale").into(),
                     // Where it sat under the old parent means nothing under
                     // the new one, so it joins the end of that list.
-                    position: None,
+                    position: Some(next_position),
                     created_at: existing
                         .as_ref()
                         .and_then(|old| old.created_at.clone())
