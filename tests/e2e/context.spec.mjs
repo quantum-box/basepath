@@ -24,6 +24,23 @@ async function post(request, path, data) {
   return response.json();
 }
 
+async function archiveItem(request, workspaceId, item) {
+  const response = await request.patch(
+    `/api/v1/workspaces/${workspaceId}/items/${item.id}`,
+    {
+      headers: {
+        "idempotency-key": `e2e-cleanup-${Date.now()}-${Math.random()}`,
+        "content-type": "application/json",
+      },
+      data: {
+        expected_version: item.version,
+        archived_at: new Date().toISOString(),
+      },
+    },
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+}
+
 async function organization(request, name) {
   const created = await post(request, "/v1/workspaces", {
     name,
@@ -149,16 +166,21 @@ test("a non-action conversation target never appears in today's actions", async 
   request,
 }) => {
   const workspaceId = await personalWorkspace(request);
-  const outcome = await post(request, `/v1/workspaces/${workspaceId}/items`, {
-    kind: "outcome",
-    title: `E2E直リンク目標${Date.now()}`,
-  });
+  let outcome;
+  try {
+    outcome = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+      kind: "outcome",
+      title: `E2E直リンク目標${Date.now()}`,
+    });
 
-  await page.goto(
-    `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${outcome.id}`,
-  );
-  await expect(page.getByRole("heading", { name: "今日の行動" })).toBeVisible();
-  await expect(page.getByText(outcome.title, { exact: true })).toHaveCount(0);
+    await page.goto(
+      `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${outcome.id}`,
+    );
+    await expect(page.getByRole("heading", { name: "今日の行動" })).toBeVisible();
+    await expect(page.getByText(outcome.title, { exact: true })).toHaveCount(0);
+  } finally {
+    if (outcome) await archiveItem(request, workspaceId, outcome);
+  }
 });
 
 test("a linked action from another workspace is neither shown nor opened", async ({
@@ -167,21 +189,26 @@ test("a linked action from another workspace is neither shown nor opened", async
 }) => {
   const workspaceId = await personalWorkspace(request);
   const otherWorkspaceId = await organization(request, `E2E別workspace${Date.now()}`);
-  const action = await post(
-    request,
-    `/v1/workspaces/${otherWorkspaceId}/items`,
-    {
-      kind: "action",
-      title: `E2E別workspace行動${Date.now()}`,
-      scheduled_date: "2099-01-01",
-    },
-  );
+  let action;
+  try {
+    action = await post(
+      request,
+      `/v1/workspaces/${otherWorkspaceId}/items`,
+      {
+        kind: "action",
+        title: `E2E別workspace行動${Date.now()}`,
+        scheduled_date: "2099-01-01",
+      },
+    );
 
-  await page.goto(
-    `/personal/today?workspace=${workspaceId}&item=${otherWorkspaceId}~${action.id}`,
-  );
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByText(action.title, { exact: true })).toHaveCount(0);
+    await page.goto(
+      `/personal/today?workspace=${workspaceId}&item=${otherWorkspaceId}~${action.id}`,
+    );
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByText(action.title, { exact: true })).toHaveCount(0);
+  } finally {
+    if (action) await archiveItem(request, otherWorkspaceId, action);
+  }
 });
 
 test("closing a linked action editor does not reopen it", async ({
@@ -189,33 +216,38 @@ test("closing a linked action editor does not reopen it", async ({
   request,
 }) => {
   const workspaceId = await personalWorkspace(request);
-  const action = await post(request, `/v1/workspaces/${workspaceId}/items`, {
-    kind: "action",
-    title: `E2E直リンク行動${Date.now()}`,
-  });
+  let action;
+  try {
+    action = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+      kind: "action",
+      title: `E2E直リンク行動${Date.now()}`,
+    });
 
-  await page.goto(
-    `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${action.id}`,
-  );
-  const dialog = page.getByRole("dialog");
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole("button", { name: "閉じる" }).click();
-  await expect(dialog).not.toBeVisible();
-  await page.waitForTimeout(100);
-  await expect(dialog).not.toBeVisible();
+    await page.goto(
+      `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${action.id}`,
+    );
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "閉じる" }).click();
+    await expect(dialog).not.toBeVisible();
+    await page.waitForTimeout(100);
+    await expect(dialog).not.toBeVisible();
 
-  // Leaving the route clears the dismiss marker. Browser Back is a fresh
-  // entry into the linked Today route, so the conversation target opens once
-  // again.
-  await showMenu(page);
-  await page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "自分の目標", exact: true })
-    .click();
-  await expect(page).toHaveURL(/\/personal\/goals/);
-  await page.goBack();
-  await expect(page).toHaveURL(/\/personal\/today/);
-  await expect(dialog).toBeVisible();
+    // Leaving the route clears the dismiss marker. Browser Back is a fresh
+    // entry into the linked Today route, so the conversation target opens once
+    // again.
+    await showMenu(page);
+    await page
+      .getByRole("navigation", { name: "メインメニュー" })
+      .getByRole("button", { name: "自分の目標", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/personal\/goals/);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/personal\/today/);
+    await expect(dialog).toBeVisible();
+  } finally {
+    if (action) await archiveItem(request, workspaceId, action);
+  }
 });
 
 test("an archived linked action is not opened", async ({ page, request }) => {
