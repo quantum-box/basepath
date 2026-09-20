@@ -62,7 +62,7 @@ pull requestから狭められません。
 
 | 項目 | 状態 | 必要なもの |
 | --- | --- | --- |
-| 実ChatGPTからの接続 | 確認済み（2026-09-20） | ChatGPT Work（GPT-5.6 Sol / Basepath plugin 1.0.0）で本番OAuth再接続、個人ワークスペース読取、変更案の差分・Basepath導線・承認後の再読取まで確認。詳細は `docs/chatgpt-plugin.md` |
+| 実ChatGPTからの接続 | 確認済み（2026-09-20） | ChatGPT Work（GPT-5.6 Sol / Basepath plugin 1.0.0）で本番OAuth再接続、個人ワークスペース読取、変更案の差分・Basepath導線・承認後の再読取、ならびに個人・追加のみ・7日間の事前許可範囲での自動適用を確認。詳細は `docs/chatgpt-plugin.md` |
 | 実claude.ai / Claude Desktopからの接続 | 未実施 | Claudeアカウント |
 | 両hostでのMCP Apps描画 | 一部確認済み | ChatGPT は実機で確認済み。Claude は未実施。harnessの成功は実hostの成功ではない |
 | 対応クライアント・プラン・バージョン | 一部測定済み | ChatGPT Work（GPT-5.6 Sol / Basepath plugin 1.0.0）は実接続で確認済み。その他は未測定 |
