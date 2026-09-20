@@ -32,6 +32,13 @@ async function organization(request, name) {
   return created.id;
 }
 
+async function personalWorkspace(request) {
+  const response = await request.get("/api/v1/workspaces");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const workspaces = await response.json();
+  return workspaces.find((workspace) => workspace.scope === "個人").id;
+}
+
 function menu(page) {
   return page.getByRole("navigation", { name: "メインメニュー" });
 }
@@ -135,6 +142,68 @@ test("a deep link lands in the context the URL names, after a reload", async ({
   await expect(
     page.getByRole("heading", { name: "記憶", exact: true, level: 1 }),
   ).toBeVisible();
+});
+
+test("a non-action conversation target never appears in today's actions", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await personalWorkspace(request);
+  const outcome = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+    kind: "outcome",
+    title: `E2E直リンク目標${Date.now()}`,
+  });
+
+  await page.goto(
+    `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${outcome.id}`,
+  );
+  await expect(page.getByRole("heading", { name: "今日の行動" })).toBeVisible();
+  await expect(page.getByText(outcome.title, { exact: true })).toHaveCount(0);
+});
+
+test("closing a linked action editor does not reopen it", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await personalWorkspace(request);
+  const action = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+    kind: "action",
+    title: `E2E直リンク行動${Date.now()}`,
+  });
+
+  await page.goto(
+    `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${action.id}`,
+  );
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "閉じる" }).click();
+  await expect(dialog).not.toBeVisible();
+  await page.waitForTimeout(100);
+  await expect(dialog).not.toBeVisible();
+});
+
+test("a stale personal deep link is unavailable instead of falling back", async ({
+  page,
+}) => {
+  await page.goto("/personal/home?workspace=personal-workspace-no-longer-available");
+  await expect(
+    page.getByRole("heading", { name: "ワークスペースを開けません" }),
+  ).toBeVisible();
+  await expect(page.locator(".context-breadcrumb")).toHaveCount(0);
+});
+
+test("the unavailable home button switches the rendered state immediately", async ({
+  page,
+}) => {
+  await page.goto("/personal/home?workspace=personal-workspace-no-longer-available");
+  await page
+    .getByRole("button", { name: "ホームへ戻る", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/personal\/home/);
+  await expect(page.locator(".context-breadcrumb")).toContainText("個人");
+  await expect(
+    page.getByRole("heading", { name: "ワークスペースを開けません" }),
+  ).toHaveCount(0);
 });
 
 test("a link to a screen the context does not have lands on its home", async ({
