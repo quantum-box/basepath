@@ -629,7 +629,7 @@ export function App() {
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
-  const canEditMap = !!currentWorkspace && canWrite(currentWorkspace.id);
+  const canEditMapItem = (id: string) => canWrite(raw(id)?.workspace_id);
   const workspaceMatches = (id: string) =>
     scope === "すべて" ||
     (scopeOf(id) === scope &&
@@ -741,6 +741,7 @@ export function App() {
       const parent = partOfTarget(item);
       return {
         id: uiId(item),
+        workspaceId: item.workspace_id,
         title: item.title,
         kind: item.kind,
         parentId: parent ? uiId(parent) : undefined,
@@ -2004,12 +2005,13 @@ export function App() {
                 scope={scope}
                 setScope={changeScope}
                 onInitiative={openInitiative}
-                onAddChild={canEditMap ? (id) => openCreateRelative(id, "child") : undefined}
-                onAddSibling={canEditMap ? (id) => openCreateRelative(id, "sibling") : undefined}
-                onEdit={canEditMap ? editTreeItem : undefined}
-                onMove={canEditMap ? moveTreeItem : undefined}
-                onMoveUp={canEditMap ? (id) => reorderTreeItem(id, -1) : undefined}
-                onMoveDown={canEditMap ? (id) => reorderTreeItem(id, 1) : undefined}
+                canEdit={canEditMapItem}
+                onAddChild={(id) => openCreateRelative(id, "child")}
+                onAddSibling={(id) => openCreateRelative(id, "sibling")}
+                onEdit={editTreeItem}
+                onMove={moveTreeItem}
+                onMoveUp={(id) => reorderTreeItem(id, -1)}
+                onMoveDown={(id) => reorderTreeItem(id, 1)}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">
@@ -2585,12 +2587,13 @@ export function App() {
             }
             onEditGoal={() => setModal({ kind: "editGoal" })}
             onAddInitiative={() => setModal({ kind: "initiative" })}
-            onAddChild={canEditMap ? (id) => openCreateRelative(id, "child") : undefined}
-            onAddSibling={canEditMap ? (id) => openCreateRelative(id, "sibling") : undefined}
-            onEditTreeItem={canEditMap ? editTreeItem : undefined}
-            onMoveTreeItem={canEditMap ? moveTreeItem : undefined}
-            onMoveUpTreeItem={canEditMap ? (id) => reorderTreeItem(id, -1) : undefined}
-            onMoveDownTreeItem={canEditMap ? (id) => reorderTreeItem(id, 1) : undefined}
+            canEditMapItem={canEditMapItem}
+            onAddChild={(id) => openCreateRelative(id, "child")}
+            onAddSibling={(id) => openCreateRelative(id, "sibling")}
+            onEditTreeItem={editTreeItem}
+            onMoveTreeItem={moveTreeItem}
+            onMoveUpTreeItem={(id) => reorderTreeItem(id, -1)}
+            onMoveDownTreeItem={(id) => reorderTreeItem(id, 1)}
             onReflectionChange={(value) => {
               setReflection(value);
               localStorage.setItem(reviewDraftKey, value);
@@ -3175,6 +3178,7 @@ type DedicatedScreenProps = {
   onChooseTemplate: (template: string) => void;
   onEditGoal: () => void;
   onAddInitiative: () => void;
+  canEditMapItem: (id: string) => boolean;
   onAddChild?: (id: string) => void;
   onAddSibling?: (id: string) => void;
   onEditTreeItem?: (id: string) => void;
@@ -3215,6 +3219,7 @@ function DedicatedScreen({
   onChooseTemplate,
   onEditGoal,
   onAddInitiative,
+  canEditMapItem,
   onAddChild,
   onAddSibling,
   onEditTreeItem,
@@ -3245,6 +3250,7 @@ function DedicatedScreen({
             scope={scope}
             setScope={onChangeScope}
             onInitiative={onOpenInitiative}
+            canEdit={canEditMapItem}
             onAddChild={onAddChild}
             onAddSibling={onAddSibling}
             onEdit={onEditTreeItem}

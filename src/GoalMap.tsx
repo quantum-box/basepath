@@ -38,6 +38,7 @@ export type MapItem = {
   id: string;
   title: string;
   kind: string;
+  workspaceId?: string;
   parentId?: string;
   scope: Scope;
   icon?: string;
@@ -190,6 +191,7 @@ type Props = {
   onMove?: (id: string) => void;
   onMoveUp?: (id: string) => void;
   onMoveDown?: (id: string) => void;
+  canEdit?: (id: string) => boolean;
 };
 function MapCanvas({
   goals,
@@ -206,6 +208,7 @@ function MapCanvas({
   onMove,
   onMoveUp,
   onMoveDown,
+  canEdit,
 }: Props) {
   const flow = useReactFlow<MapNode>();
   const [zoom, setZoom] = useState(100);
@@ -258,6 +261,7 @@ function MapCanvas({
         item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
           ? "goal"
           : "initiative",
+      workspaceId: item.workspaceId,
       parentId: displayParent(item),
       scope: item.scope,
       goal:
@@ -334,6 +338,7 @@ function MapCanvas({
         open: isOpen(item),
         onToggle: () => toggleNode(item.id),
       };
+      const editable = canEdit ? canEdit(item.id) : true;
       nodes.push({
         id: item.id,
         type: "goal",
@@ -349,18 +354,18 @@ function MapCanvas({
                 progress: undefined,
                 active: selected === item.id,
                 onSelect: () => onSelect(item.id),
-                onAddChild: onAddChild ? () => onAddChild(item.id) : undefined,
-                onAddSibling: onAddSibling
+                onAddChild: editable && onAddChild ? () => onAddChild(item.id) : undefined,
+                onAddSibling: editable && onAddSibling
                   ? () => onAddSibling(item.id)
                   : undefined,
-                onEdit: onEdit ? () => onEdit(item.id) : undefined,
-                onMove: onMove ? () => onMove(item.id) : undefined,
+                onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
+                onMove: editable && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
-                  item.parentId && onMoveUp
+                  editable && item.parentId && onMoveUp
                     ? () => onMoveUp(item.id)
                     : undefined,
                 onMoveDown:
-                  item.parentId && onMoveDown
+                  editable && item.parentId && onMoveDown
                     ? () => onMoveDown(item.id)
                     : undefined,
               }
@@ -371,22 +376,22 @@ function MapCanvas({
                 kind: "initiative",
                 active: selected === item.id,
                 onSelect: () => onInitiative(item.id),
-                onAddChild: item.terminal
+                onAddChild: item.terminal || !editable
                   ? undefined
                   : onAddChild
                     ? () => onAddChild(item.id)
                     : undefined,
-                onAddSibling: onAddSibling
+                onAddSibling: editable && onAddSibling
                   ? () => onAddSibling(item.id)
                   : undefined,
-                onEdit: onEdit ? () => onEdit(item.id) : undefined,
-                onMove: onMove ? () => onMove(item.id) : undefined,
+                onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
+                onMove: editable && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
-                  item.parentId && onMoveUp
+                  editable && item.parentId && onMoveUp
                     ? () => onMoveUp(item.id)
                     : undefined,
                 onMoveDown:
-                  item.parentId && onMoveDown
+                  editable && item.parentId && onMoveDown
                     ? () => onMoveDown(item.id)
                     : undefined,
               },

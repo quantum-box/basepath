@@ -734,7 +734,8 @@ input[type="checkbox"]:checked::after {
   box-shadow: 0 2px 6px #1c5c9602;
 }
 .map-node:not(.root) {
-  height: calc(100% - 46px);
+  height: 100%;
+  padding-bottom: 44px;
 }
 .map-node:hover {
   box-shadow: 0 4px 14px #829ac21c;
@@ -784,7 +785,7 @@ input[type="checkbox"]:checked::after {
 .map-node.goal.is-selected {
   border: 2px solid #9862ff;
   box-shadow: 0 2px 8px #926bff0d;
-  padding: 10px;
+  padding: 10px 10px 44px;
 }
 .node-toggle {
   pointer-events: all;
@@ -817,7 +818,7 @@ input[type="checkbox"]:checked::after {
   position: absolute;
   left: 2px;
   right: 2px;
-  bottom: -46px;
+  bottom: 3px;
   z-index: 4;
   display: flex;
   justify-content: center;
