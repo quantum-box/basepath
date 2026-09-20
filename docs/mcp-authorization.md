@@ -38,7 +38,9 @@ already approved, by the person who approved it.
    authorize.
 5. The person lands on Basepath's consent screen, signed in, on Basepath's own
    origin. They choose which of `pathbase.read` / `pathbase.propose` /
-   `pathbase.apply` to allow. That decision is the `mcp_connections` row.
+   `pathbase.apply` / `pathbase.context` to allow. The context scope is only
+   for creating or explicitly relinking a conversation-to-workspace pointer;
+   it does not grant plan writes. That decision is the `mcp_connections` row.
 6. The code is exchanged for an access token and a refresh token, both bound to
    this resource and this delegation. The person can narrow the scopes or
    disconnect at any time in settings, and either takes effect on the next

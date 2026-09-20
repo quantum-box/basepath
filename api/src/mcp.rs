@@ -450,11 +450,7 @@ impl Mcp {
                     // address the item. In particular, an action is not a
                     // goal and must never fall through to the first goal in
                     // the map when a host supplies its id.
-                    screen = match item["kind"].as_str() {
-                        Some("action") => "today",
-                        Some("initiative") => "breakdown",
-                        _ => requested_screen,
-                    };
+                    screen = screen_for_item_kind(item["kind"].as_str(), requested_screen);
                 }
                 if !screen_allowed_for_scope(scope, screen) {
                     return Err(crate::model::ApiError::invalid(
@@ -900,6 +896,39 @@ fn screen_allowed_for_scope(scope: &str, screen: &str) -> bool {
                 | "members"
         ),
         _ => false,
+    }
+}
+
+/// Goal-like items belong to the goal map even when a host supplied a generic
+/// or incompatible screen. This prevents a deep link from rendering an empty
+/// Today view and silently losing the selected goal.
+fn screen_for_item_kind<'a>(kind: Option<&str>, requested: &'a str) -> &'a str {
+    match kind {
+        Some("action") => "today",
+        Some("initiative") => "breakdown",
+        Some("outcome") | Some("idea") | Some("milestone") => "goals",
+        _ => requested,
+    }
+}
+
+#[cfg(test)]
+mod screen_link_tests {
+    use super::screen_for_item_kind;
+
+    #[test]
+    fn goal_like_items_use_the_goal_map() {
+        for kind in ["outcome", "idea", "milestone"] {
+            assert_eq!(screen_for_item_kind(Some(kind), "today"), "goals");
+        }
+    }
+
+    #[test]
+    fn action_and_initiative_keep_their_item_screens() {
+        assert_eq!(screen_for_item_kind(Some("action"), "goals"), "today");
+        assert_eq!(
+            screen_for_item_kind(Some("initiative"), "today"),
+            "breakdown"
+        );
     }
 }
 
