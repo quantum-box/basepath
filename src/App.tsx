@@ -1985,10 +1985,6 @@ export function App() {
                 onMove={moveTreeItem}
                 onMoveUp={(id) => reorderTreeItem(id, -1)}
                 onMoveDown={(id) => reorderTreeItem(id, 1)}
-                onEdit={editTreeItem}
-                onMove={moveTreeItem}
-                onMoveUp={(id) => reorderTreeItem(id, -1)}
-                onMoveDown={(id) => reorderTreeItem(id, 1)}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">
