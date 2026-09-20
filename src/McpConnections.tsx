@@ -174,7 +174,10 @@ export function McpConnections({ store }: { store: WorkspaceStore }) {
                 </small>
                 <small>
                   承認したアカウント：
-                  {connection.display_name || "Tachyonアカウント"}（
+                  {connection.display_name ||
+                    (store.me.mode === "local-preview"
+                      ? "ローカルプレビュー"
+                      : "Tachyonアカウント")}（
                   {connection.actor}）
                 </small>
               </div>
