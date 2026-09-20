@@ -2566,6 +2566,10 @@ export function App() {
             onAddInitiative={() => setModal({ kind: "initiative" })}
             onAddChild={(id) => openCreateRelative(id, "child")}
             onAddSibling={(id) => openCreateRelative(id, "sibling")}
+            onEditTreeItem={editTreeItem}
+            onMoveTreeItem={moveTreeItem}
+            onMoveUpTreeItem={(id) => reorderTreeItem(id, -1)}
+            onMoveDownTreeItem={(id) => reorderTreeItem(id, 1)}
             onReflectionChange={(value) => {
               setReflection(value);
               localStorage.setItem(reviewDraftKey, value);
@@ -3152,6 +3156,10 @@ type DedicatedScreenProps = {
   onAddInitiative: () => void;
   onAddChild: (id: string) => void;
   onAddSibling: (id: string) => void;
+  onEditTreeItem: (id: string) => void;
+  onMoveTreeItem: (id: string) => void;
+  onMoveUpTreeItem: (id: string) => void;
+  onMoveDownTreeItem: (id: string) => void;
   onReflectionChange: (value: string) => void;
   onSaveReflection: () => void;
 };
@@ -3188,6 +3196,10 @@ function DedicatedScreen({
   onAddInitiative,
   onAddChild,
   onAddSibling,
+  onEditTreeItem,
+  onMoveTreeItem,
+  onMoveUpTreeItem,
+  onMoveDownTreeItem,
   onReflectionChange,
   onSaveReflection,
 }: DedicatedScreenProps) {
@@ -3214,6 +3226,10 @@ function DedicatedScreen({
             onInitiative={onOpenInitiative}
             onAddChild={onAddChild}
             onAddSibling={onAddSibling}
+            onEdit={onEditTreeItem}
+            onMove={onMoveTreeItem}
+            onMoveUp={onMoveUpTreeItem}
+            onMoveDown={onMoveDownTreeItem}
           />
           {selected ? (
             <section
