@@ -629,7 +629,17 @@ export function App() {
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
-  const canEditMapItem = (id: string) => canWrite(raw(id)?.workspace_id);
+  const canEditItem = (item?: Item) => {
+    if (!item || !canWrite(item.workspace_id)) return false;
+    const owner = item.fields.owner;
+    if (owner?.kind !== "person" || !owner.id || owner.id === store.me.id) {
+      return true;
+    }
+    return store.workspaces.some(
+      (entry) => entry.id === item.workspace_id && entry.role === "owner",
+    );
+  };
+  const canEditMapItem = (id: string) => canEditItem(raw(id));
   const workspaceMatches = (id: string) =>
     scope === "すべて" ||
     (scopeOf(id) === scope &&
@@ -947,8 +957,8 @@ export function App() {
     if (!parent) return;
     const siblings = allItems.filter((entry) => entry.workspace_id === item.workspace_id && partOfTarget(entry)?.id === parent.id && ["outcome", "idea", "initiative", "milestone", "action"].includes(entry.kind));
     siblings.sort((a, b) => {
-      const pa = allRelations.find((relation) => relation.source_id === a.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
-      const pb = allRelations.find((relation) => relation.source_id === b.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
+      const pa = allRelations.find((relation) => relation.workspace_id === item.workspace_id && relation.source_id === a.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
+      const pb = allRelations.find((relation) => relation.workspace_id === item.workspace_id && relation.source_id === b.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
       return pa - pb || a.created_at.localeCompare(b.created_at);
     });
     const index = siblings.findIndex((entry) => entry.id === item.id);
