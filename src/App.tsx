@@ -572,13 +572,25 @@ export function App() {
   const requestedRoute = parsePath(window.location.pathname);
   const requestedOrganizationId =
     requestedRoute?.kind === "organization" ? requestedRoute.orgId : "";
+  const requestedPersonalWorkspaceId =
+    requestedRoute?.kind === "personal"
+      ? new URLSearchParams(window.location.search).get("workspace") || ""
+      : "";
+  const requestedPersonalRoute = requestedRoute?.kind === "personal";
   const currentWorkspace =
-    (requestedOrganizationId
+    requestedOrganizationId
       ? store.workspaces.find((w) => w.id === requestedOrganizationId)
-      : store.workspaces.find((w) => w.id === workspaceId)) ||
-    (requestedOrganizationId ? undefined : store.workspaces[0]);
+      : requestedPersonalRoute && requestedPersonalWorkspaceId
+        ? store.workspaces.find(
+            (w) =>
+              w.id === requestedPersonalWorkspaceId && w.scope === "個人",
+          )
+        : store.workspaces.find((w) => w.id === workspaceId) ||
+          store.workspaces[0];
   const contextUnavailable =
-    !store.loading && !!requestedOrganizationId && !currentWorkspace;
+    !store.loading &&
+    ((!!requestedOrganizationId && !currentWorkspace) ||
+      (!!requestedPersonalWorkspaceId && !currentWorkspace));
   /**
    * Where the person is: their own Basepath, or an organization's.
    *
@@ -631,15 +643,18 @@ export function App() {
     (i) => !i.archived_at && workspaceMatches(i.workspace_id),
   );
   const linkedItem = raw(selectedId);
+  const autoOpenedActionRef = useRef<string | null>(null);
   useEffect(() => {
     if (
       shownScreen === "today" &&
       linkedItem?.kind === "action" &&
-      !modal
+      !modal &&
+      autoOpenedActionRef.current !== selectedId
     ) {
+      autoOpenedActionRef.current = selectedId;
       setModal({ kind: "initiativeDetail", id: selectedId });
     }
-  }, [linkedItem?.id, modal, selectedId, shownScreen]);
+  }, [linkedItem?.kind, modal, selectedId, shownScreen]);
   const isGoalKind = (item: Item) =>
     ["outcome", "idea", "milestone"].includes(item.kind);
   const partOfTarget = (item: Item) => {
@@ -743,17 +758,17 @@ export function App() {
       (i) =>
         i.kind === "action" &&
         !["paused", "abandoned", "draft"].includes(i.state) &&
-        (linkedItem?.kind === "action" && i.id === linkedItem.id) ||
-        (i.fields.recurrence
-          ? (!i.start_date || i.start_date <= today) &&
-            (!i.due_date || i.due_date >= today) &&
-            (i.fields.recurrence.mode === "period_quota" ||
-              i.fields.recurrence.weekdays.includes(
-                (new Date(today + "T12:00:00").getDay() + 6) % 7,
-              ))
-          : !i.scheduled_date ||
-            i.scheduled_date === today ||
-            (!!i.due_date && i.due_date <= sevenDaysFromToday)),
+        ((linkedItem?.kind === "action" && i.id === linkedItem.id) ||
+          (i.fields.recurrence
+            ? (!i.start_date || i.start_date <= today) &&
+              (!i.due_date || i.due_date >= today) &&
+              (i.fields.recurrence.mode === "period_quota" ||
+                i.fields.recurrence.weekdays.includes(
+                  (new Date(today + "T12:00:00").getDay() + 6) % 7,
+                ))
+            : !i.scheduled_date ||
+              i.scheduled_date === today ||
+              (!!i.due_date && i.due_date <= sevenDaysFromToday))),
     )
     .map((i) => ({
       id: uiId(i),
@@ -1037,7 +1052,8 @@ export function App() {
       store.loading ||
       store.workspaces.length === 0 ||
       !context ||
-      requestedOrganizationId
+      requestedOrganizationId ||
+      (requestedPersonalRoute && requestedPersonalWorkspaceId)
     )
       return;
     if (stillAvailable(context, store.workspaces)) return;
@@ -1062,7 +1078,12 @@ export function App() {
     const requested = new URLSearchParams(window.location.search).get(
       "workspace",
     );
-    const target = resolvePersonalWorkspace(requested || "", store.workspaces) || own;
+    const target = requested
+      ? store.workspaces.find(
+          (workspace) =>
+            workspace.id === requested && workspace.scope === "個人",
+        )?.id
+      : own;
     if (target && target !== workspaceId) setWorkspaceId(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.workspaces.length]);
@@ -1458,7 +1479,16 @@ export function App() {
         <div className="panel auth-card">
           <h1>ワークスペースを開けません</h1>
           <p>このリンクのワークスペースは、現在のテナントでは利用できません。</p>
-          <button className="primary-button" onClick={() => replaceScreenUrl("/", tenantId)}>
+          <button
+            className="primary-button"
+            onClick={() => {
+              const own = personalWorkspaceId();
+              if (own) setWorkspaceId(own);
+              setSelectedId("");
+              setScreen("home");
+              replaceScreenUrl("/", tenantId);
+            }}
+          >
             ホームへ戻る
           </button>
         </div>
