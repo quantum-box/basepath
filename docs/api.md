@@ -19,7 +19,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 
 | パス | 内容 |
 | --- | --- |
-| `GET /v1/me` | 正規ユーザーID、表示名（`name`/`display_name`）、実行モード、identity_source |
+| `GET /v1/me` | 正規ユーザーID、表示名（`name`/`display_name`）、実行モード、identity_source。MCPでは接続同意時のTachyon表示名を返す |
 | `GET /v1/tenants` | ログインユーザーが所属するTachyonテナントと現在の選択 |
 | `POST /v1/tenant-selection` | `{tenant_id}`で利用する所属テナントを選択 |
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |

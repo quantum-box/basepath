@@ -478,9 +478,12 @@ async fn endpoint(
                 ApiError::new(400, "INVALID_JSON", "接続の許可内容を確認してください")
             })?;
             return Ok(Json(
-                oauth::decide(
+                oauth::decide_with_display_name(
                     &state.service,
                     &actor,
+                    session
+                        .as_ref()
+                        .and_then(|session| session.identity.name.as_deref()),
                     &resource.issuer,
                     &decision.request_id,
                     &decision.scopes,
