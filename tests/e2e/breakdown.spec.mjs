@@ -153,7 +153,9 @@ test("an action says why it exists, in the words that were recorded", async ({
   await openBreakdown(page);
   await pick(page, name);
   const tree = page.locator(".breakdown-tree");
-  await tree.getByRole("button", { name: "行動: 初週に面談する" }).click();
+  await tree
+    .getByRole("button", { name: "行動: 初週に面談する", exact: true })
+    .click();
 
   const why = page.locator(".breakdown-why");
   // Top first, with the reasons someone actually wrote on each link.
@@ -176,7 +178,7 @@ test("a link with no recorded reason says so instead of inventing one", async ({
   await pick(page, name);
   await page
     .locator(".breakdown-tree")
-    .getByRole("button", { name: "理由なし: 行動" })
+    .getByRole("button", { name: "理由なし: 行動", exact: true })
     .click();
   await expect(
     page.locator(".breakdown-why").getByText("理由は記録されていません"),
