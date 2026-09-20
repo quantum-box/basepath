@@ -755,6 +755,7 @@ export function App() {
         title: item.title,
         kind: item.kind,
         parentId: parent ? uiId(parent) : undefined,
+        actualParentId: parent ? uiId(parent) : undefined,
         position:
           allRelations.find(
             (relation) =>

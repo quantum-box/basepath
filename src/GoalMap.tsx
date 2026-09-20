@@ -41,6 +41,8 @@ export type MapItem = {
   kind: string;
   workspaceId?: string;
   parentId?: string;
+  /** The persisted parent, retained for permissions when that parent is archived. */
+  actualParentId?: string;
   scope: Scope;
   icon?: string;
   subtitle?: string;
@@ -157,6 +159,7 @@ type TreeItem = {
   id: string;
   kind: "goal" | "initiative";
   parentId?: string;
+  actualParentId?: string;
   scope: Scope;
   goal?: Goal;
   initiative?: Initiative;
@@ -266,6 +269,7 @@ function MapCanvas({
           : "initiative",
       workspaceId: item.workspaceId,
       parentId: displayParent(item),
+      actualParentId: item.actualParentId ?? item.parentId,
       scope: item.scope,
       goal:
         item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
@@ -324,12 +328,13 @@ function MapCanvas({
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
     const actionState = (item: TreeItem, siblingIndex: number, siblingCount: number) => {
       const editable = canEdit ? canEdit(item.id) : true;
-      const parentEditable = item.parentId
+      const persistedParentId = item.actualParentId ?? item.parentId;
+      const parentEditable = persistedParentId
         ? canEdit
-          ? canEdit(item.parentId)
+          ? canEdit(persistedParentId)
           : true
-        : false;
-      const canMove = editable && (!item.parentId || parentEditable);
+        : true;
+      const canMove = editable && parentEditable;
       const canMoveUp = editable && parentEditable && siblingIndex > 0 && !!onMoveUp;
       const canMoveDown = editable && parentEditable && siblingIndex < siblingCount - 1 && !!onMoveDown;
       const hasActions = editable && Boolean(
