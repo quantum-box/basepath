@@ -619,7 +619,7 @@ export function ItemEditor({
   const [record, setRecord] = useState("");
   const [recordType, setRecordType] = useState("note");
   const [day, setDay] = useState(localDate(store.settings.timezone));
-  const [members, setMembers] = useState<string[]>([]);
+  const [members, setMembers] = useState<Memberships["members"]>([]);
   useEffect(() => {
     let active = true;
     void request<Memberships>(
@@ -627,7 +627,7 @@ export function ItemEditor({
       `/v1/workspaces/${encodeURIComponent(item.workspace_id)}/members`,
     ).then(
       (result) =>
-        active && setMembers(result.members.map((member) => member.actor)),
+        active && setMembers(result.members),
       () => active && setMembers([]),
     );
     return () => {
@@ -777,10 +777,10 @@ export function ItemEditor({
               >
                 <option value="">担当者なし</option>
                 {members.map((member) => (
-                  <option key={member} value={member}>
-                    {member === store.me.id
+                  <option key={member.actor} value={member.actor}>
+                    {member.actor === store.me.id
                       ? `${store.me.name}（あなた）`
-                      : member}
+                      : `${member.display_name || "Tachyonアカウント"}（${member.actor}）`}
                   </option>
                 ))}
               </select>

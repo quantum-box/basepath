@@ -175,7 +175,25 @@ async fn management(tx: &mut Tx, actor: &Actor, w: &str) -> Result<Value> {
         .await?;
     let members = rows
         .iter()
-        .map(|row| Ok(json!({"actor":row.text(0)?,"role":row.text(1)?})))
+        .map(|row| {
+            let actor_id = row.text(0)?;
+            // PathBase does not copy a person's profile into its own
+            // database.  The authenticated person's actual Tachyon name is
+            // available to the browser through /v1/me; other members may be
+            // named by the Tachyon/Field directory in a later integration.
+            // Still return a stable, human-readable kind now so consumers do
+            // not have to render a bare opaque actor id as if it were a name.
+            let display_name = if actor_id == actor.id {
+                "あなたのTachyonアカウント"
+            } else {
+                "Tachyonアカウント"
+            };
+            Ok(json!({
+                "actor": actor_id,
+                "display_name": display_name,
+                "role": row.text(1)?
+            }))
+        })
         .collect::<Result<Vec<_>>>()?;
     let invites = if ws.role == "owner" && !actor.agent {
         let rows = tx

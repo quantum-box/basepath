@@ -691,6 +691,14 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     .await;
     assert_eq!(bob_context["isError"], false);
     assert_eq!(bob_context["structuredContent"]["me"]["id"], "us_bob");
+    assert_eq!(
+        bob_context["structuredContent"]["me"]["display_name"],
+        "Tachyonアカウント（us_bob）"
+    );
+    assert_eq!(
+        bob_context["structuredContent"]["me"]["identity_source"],
+        "tachyon"
+    );
     let bob_workspaces = bob_context["structuredContent"]["workspaces"]
         .as_array()
         .unwrap()
