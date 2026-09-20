@@ -160,16 +160,22 @@ function screenFromUrl(): Screen | null {
 }
 
 const screenPaths = new Set(["/login", "/tenants"]);
-function replaceScreenUrl(pathname: string, tenantId = "") {
+function replaceScreenUrl(
+  pathname: string,
+  tenantId = "",
+  clearContext = pathname !== "/",
+) {
   const url = new URL(window.location.href);
   url.pathname = pathname;
   if (tenantId && pathname !== "/login")
     url.searchParams.set("tenant_id", tenantId);
   else url.searchParams.delete("tenant_id");
-  // A home transition is a context reset too. Keeping an old item/workspace
-  // pointer in the root URL would restore the unavailable deep link on reload.
-  for (const key of ["item", "scope", "view", "workspace"])
-    url.searchParams.delete(key);
+  // The unavailable-home action opts into clearing stale pointers. Normal
+  // tenant selection briefly uses `/` before the authenticated route effect
+  // canonicalizes it, so preserve its transition state until then.
+  if (clearContext)
+    for (const key of ["item", "scope", "view", "workspace"])
+      url.searchParams.delete(key);
   window.history.replaceState({}, "", url);
 }
 function tenantReturnUrl(): string | null {
@@ -1034,7 +1040,7 @@ export function App() {
           );
           return;
         }
-        replaceScreenUrl("/", result.selected_tenant_id);
+        replaceScreenUrl("/personal/home", result.selected_tenant_id);
       },
       () => {},
     );
@@ -1420,7 +1426,7 @@ export function App() {
             setSelectedId(restored.searchParams.get("item") || "");
             window.history.replaceState({}, "", restored);
           } else {
-            replaceScreenUrl("/", id);
+            replaceScreenUrl("/personal/home", id);
           }
         }}
         onBack={async () => {
@@ -1480,7 +1486,7 @@ export function App() {
             setSelectedId(restored.searchParams.get("item") || "");
             window.history.replaceState({}, "", restored);
           } else {
-            replaceScreenUrl("/", id);
+            replaceScreenUrl("/personal/home", id);
           }
         }}
         onBack={() => {
@@ -1509,7 +1515,7 @@ export function App() {
               if (own) setWorkspaceId(own);
               setSelectedId("");
               setScreen("home");
-              replaceScreenUrl("/", tenantId);
+              replaceScreenUrl("/", tenantId, true);
             }}
           >
             ホームへ戻る

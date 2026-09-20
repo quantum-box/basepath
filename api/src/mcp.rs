@@ -543,6 +543,22 @@ impl Mcp {
                         json!({"status":link.status,"conversation_id":link.conversation_id,"link_id":link.id,"permission":"read","plan_mutation":"none","disconnect":"revoke_the_mcp_connection"}),
                     );
                 }
+                if let Some(item_id) = link.item_id.as_deref() {
+                    let item = self
+                        .service
+                        .handle(
+                            &actor,
+                            "GET",
+                            &format!("/v1/workspaces/{}/items/{item_id}", link.workspace_id),
+                            &q,
+                            json!({}),
+                            None,
+                        )
+                        .await?;
+                    if !item["archived_at"].is_null() {
+                        return Err(crate::model::ApiError::missing());
+                    }
+                }
                 self.service
                     .handle(
                         &actor,
