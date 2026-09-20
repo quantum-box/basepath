@@ -139,10 +139,18 @@ test("creates, edits, and completes an eight-level plan through the UI", async (
 
     await page.getByRole("button", { name: "UI深掘り: 完了する一歩", exact: true }).click();
     const edited = page.getByRole("dialog");
+    const completionResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes(`/api/v1/workspaces/${workspaceId}/actions/`) &&
+        response.ok(),
+    );
     await edited.getByRole("button", { name: "この日の完了を記録", exact: true }).click();
+    await completionResponse;
 
     // The editor keeps the same action button after recording. Verify the
-    // persisted completion record instead of matching unchanged button text.
+    // persisted completion record after the write has been acknowledged,
+    // instead of matching unchanged button text or racing the database.
     const snapshotResponse = await request.get(
       `/api/v1/workspaces/${workspaceId}/snapshot`,
     );
