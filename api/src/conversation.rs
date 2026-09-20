@@ -46,36 +46,7 @@ fn row(row: &crate::db::Row) -> Result<ConversationLink> {
     })
 }
 
-pub async fn upsert(
-    tx: &mut Tx,
-    actor: &Actor,
-    connection_id: &str,
-    conversation_id: &str,
-    workspace_id: &str,
-    item_id: Option<&str>,
-    screen: Option<&str>,
-    idempotency_key: &str,
-) -> Result<ConversationLink> {
-    upsert_input(
-        tx,
-        actor,
-        LinkInput {
-            connection_id,
-            conversation_id,
-            workspace_id,
-            item_id,
-            screen,
-            idempotency_key,
-        },
-    )
-    .await
-}
-
-pub async fn upsert_input(
-    tx: &mut Tx,
-    actor: &Actor,
-    input: LinkInput<'_>,
-) -> Result<ConversationLink> {
+pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<ConversationLink> {
     let existing = tx
         .fetch_optional(
             &format!(
@@ -154,7 +125,7 @@ pub async fn upsert_input(
             let link = row(&winner)?;
             if link.workspace_id == input.workspace_id && link.item_id.as_deref() == input.item_id { return Ok(link); }
         }
-        return Err(insert_error.into());
+        return Err(insert_error);
     }
     let saved = tx
         .fetch_one(

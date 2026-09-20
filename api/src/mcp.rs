@@ -471,11 +471,12 @@ impl Mcp {
                     format!("{basepath}{path}?{}", query.finish())
                 };
                 let mut tx = self.service.db.begin_write().await?;
-                let link = crate::conversation::upsert_input(
+                let connection_id = actor.connection.clone().unwrap_or_default();
+                let link = crate::conversation::upsert(
                     &mut tx,
                     &actor,
                     crate::conversation::LinkInput {
-                        connection_id: &actor.connection.clone().unwrap_or_default(),
+                        connection_id: &connection_id,
                         conversation_id,
                         workspace_id: w,
                         item_id: args["item_id"].as_str(),

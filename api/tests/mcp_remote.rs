@@ -408,12 +408,14 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
         let value = conversation::upsert(
             &mut tx,
             &actor,
-            "connection-a",
-            "chat-1",
-            "personal",
-            Some("item-1"),
-            Some("alignment"),
-            "retry-1",
+            conversation::LinkInput {
+                connection_id: "connection-a",
+                conversation_id: "chat-1",
+                workspace_id: "personal",
+                item_id: Some("item-1"),
+                screen: Some("alignment"),
+                idempotency_key: "retry-1",
+            },
         )
         .await
         .unwrap();
@@ -441,12 +443,14 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let retry = conversation::upsert(
         &mut tx,
         &actor,
-        "connection-a",
-        "chat-1",
-        "personal",
-        Some("item-1"),
-        Some("alignment"),
-        "retry-1",
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-1",
+            workspace_id: "personal",
+            item_id: Some("item-1"),
+            screen: Some("alignment"),
+            idempotency_key: "retry-1",
+        },
     )
     .await
     .unwrap();
@@ -454,12 +458,14 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let conflict = conversation::upsert(
         &mut tx,
         &actor,
-        "connection-a",
-        "chat-1",
-        "personal",
-        Some("item-2"),
-        None,
-        "retry-2",
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-1",
+            workspace_id: "personal",
+            item_id: Some("item-2"),
+            screen: None,
+            idempotency_key: "retry-2",
+        },
     )
     .await
     .unwrap_err();
@@ -467,12 +473,14 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let collision = conversation::upsert(
         &mut tx,
         &actor,
-        "connection-a",
-        "chat-2",
-        "personal",
-        None,
-        None,
-        "retry-1",
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-2",
+            workspace_id: "personal",
+            item_id: None,
+            screen: None,
+            idempotency_key: "retry-1",
+        },
     )
     .await
     .unwrap_err();
@@ -497,12 +505,14 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let relinked = conversation::upsert(
         &mut tx,
         &actor,
-        "connection-b",
-        "chat-1",
-        "personal",
-        Some("item-1"),
-        Some("alignment"),
-        "retry-3",
+        conversation::LinkInput {
+            connection_id: "connection-b",
+            conversation_id: "chat-1",
+            workspace_id: "personal",
+            item_id: Some("item-1"),
+            screen: Some("alignment"),
+            idempotency_key: "retry-3",
+        },
     )
     .await
     .unwrap();
