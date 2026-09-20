@@ -92,7 +92,8 @@ test("creates, edits, and completes an eight-level plan through the UI", async (
     tree.getByRole("button", { name: "UI深掘り: 次の一歩の兄弟項目を追加", exact: true }),
   ).toBeVisible();
 
-  await openScreen(page, "目標マップ");
+  // Organization contexts expose the same Goal Map as 「組織の目標」.
+  await openScreen(page, "組織の目標", "目標マップ");
   const action = page.getByRole("button", {
     name: "UI深掘り: 次の一歩",
     exact: true,
