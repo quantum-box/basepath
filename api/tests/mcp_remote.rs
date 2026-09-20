@@ -771,6 +771,11 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         link_schema["inputSchema"]["properties"]["idempotency_key"]["maxLength"],
         200
     );
+    let preview_schema = listed
+        .iter()
+        .find(|tool| tool["name"] == "pathbase_preview_changes")
+        .unwrap();
+    assert!(preview_schema["inputSchema"]["properties"]["idempotency_key"]["pattern"].is_null());
     let (too_long_conversation, _) = request(
         &client,
         &url,

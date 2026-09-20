@@ -818,18 +818,18 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
             "conversation_id must be at most 191 characters",
         ));
     }
-    if object
-        .get("idempotency_key")
-        .and_then(Value::as_str)
-        .is_some_and(|key| {
-            key.len() > crate::conversation::MAX_IDEMPOTENCY_KEY_BYTES || !key.is_ascii()
-        })
-    {
-        return Err(crate::model::ApiError::invalid(
-            "idempotency_key must be at most 200 ASCII bytes",
-        ));
-    }
     if name == "pathbase_link_context" {
+        if object
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .is_some_and(|key| {
+                key.len() > crate::conversation::MAX_IDEMPOTENCY_KEY_BYTES || !key.is_ascii()
+            })
+        {
+            return Err(crate::model::ApiError::invalid(
+                "idempotency_key must be at most 200 ASCII bytes",
+            ));
+        }
         if let Some(screen) = object.get("screen").and_then(Value::as_str) {
             const SCREENS: &[&str] = &[
                 "home",
@@ -1162,7 +1162,7 @@ fn tools() -> Vec<Tool> {
     defs.into_iter().map(|shape| {
         let (required, allowed) = argument_contract(shape.name).unwrap();
         let mut props=json!({});
-        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key"=>json!({"type":"string","minLength":1,"maxLength":200,"pattern":"^[\\x20-\\x7E]+$","description":"1-200 ASCII bytes; storage is VARBINARY(200)."}),_=>json!({"type":"string"})};}
+        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key" if shape.name == "pathbase_link_context"=>json!({"type":"string","minLength":1,"maxLength":200,"pattern":"^[\\x20-\\x7E]+$","description":"1-200 ASCII bytes; storage is VARBINARY(200)."}),"idempotency_key"=>json!({"type":"string","minLength":1}),_=>json!({"type":"string"})};}
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
         if let Some(uri) = ui_resource(shape.name) {
             // Both conventions, for the same document. MCP Apps reads

@@ -47,7 +47,7 @@ fn row(row: &crate::db::Row) -> Result<ConversationLink> {
         status: row.text(5)?,
         source: row.text(6)?,
         source_version: row.text(7)?,
-        idempotency_key: row.text(8)?,
+        idempotency_key: row.binary_text(8)?,
         created_at: row.text(9)?,
         updated_at: row.text(10)?,
     })

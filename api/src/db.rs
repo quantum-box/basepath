@@ -150,6 +150,19 @@ impl Row {
             RowKind::MySql(row) => row.try_get(index).map_err(decode_error),
         }
     }
+    /// Text stored in a binary MySQL column. MySQL returns VARBINARY as bytes,
+    /// while SQLite's compatible TEXT column remains a string.
+    pub fn binary_text(&self, index: usize) -> Result<String> {
+        match &self.0 {
+            RowKind::Sqlite(row) => row.try_get(index).map_err(decode_error),
+            RowKind::MySql(row) => {
+                let bytes: Vec<u8> = row.try_get(index).map_err(decode_error)?;
+                String::from_utf8(bytes).map_err(|_| {
+                    ApiError::new(500, "STORAGE_ERROR", "保存内容を読み取れませんでした")
+                })
+            }
+        }
+    }
     pub fn int(&self, index: usize) -> Result<i64> {
         match &self.0 {
             RowKind::Sqlite(row) => row.try_get(index).map_err(decode_error),
