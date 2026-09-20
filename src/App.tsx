@@ -83,6 +83,7 @@ type ModalState =
       siblingTitle?: string;
       parentKind?: string;
     }
+  | { kind: "moveItem"; id: string; workspaceId: string; parentId: string | null }
   | { kind: "members" }
   | { kind: "settings" }
   | { kind: "learnings" }
@@ -934,23 +935,16 @@ export function App() {
   }, [allItems]);
   const moveTreeItem = useCallback((id: string) => {
     const item = raw(id);
-    if (!item || !canWrite(item.workspace_id)) return;
+    if (!item || !canEditItem(item)) return;
     const current = partOfTarget(item);
-    const parentId = window.prompt(
-      "新しい親（表示ID workspace~item または項目ID。ルートに戻す場合は空欄）",
-      current ? uiId(current) : "",
-    );
-    if (parentId === null) return;
-    const target = parentId
-      ? allItems.find(
-          (entry) =>
-            entry.workspace_id === item.workspace_id &&
-            (entry.id === parentId || uiId(entry) === parentId),
-        )
-      : undefined;
-    if (parentId && !target) { notify("同じワークスペースの項目IDを指定してください"); return; }
-    void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${item.id}/reparent`, { parent_id: target?.id ?? null, expected_version: item.version }), () => notify("親を変更しました"));
-  }, [allItems, canWrite, notify, raw, store]);
+    if (current && !canEditItem(current)) return;
+    setModal({
+      kind: "moveItem",
+      id: item.id,
+      workspaceId: item.workspace_id,
+      parentId: current?.id ?? null,
+    });
+  }, [canEditItem, raw]);
   const reorderTreeItem = useCallback((id: string, delta: -1 | 1) => {
     const item = raw(id);
     if (!item || !canWrite(item.workspace_id)) return;
@@ -1346,6 +1340,31 @@ export function App() {
   async function saveForm(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
+    if (modal?.kind === "moveItem") {
+      const parentId = String(data.get("parent_id") || "");
+      const item = allItems.find(
+        (entry) => entry.workspace_id === modal.workspaceId && entry.id === modal.id,
+      );
+      const parent = parentId
+        ? allItems.find(
+            (entry) => entry.workspace_id === modal.workspaceId && entry.id === parentId,
+          )
+        : undefined;
+      if (!item || (parent && !canEditItem(parent))) return;
+      await store.run(
+        () =>
+          store.write(
+            "POST",
+            `/v1/workspaces/${modal.workspaceId}/items/${modal.id}/reparent`,
+            { parent_id: parent?.id ?? null, expected_version: item.version },
+          ),
+        () => {
+          setModal(null);
+          notify("親を変更しました");
+        },
+      );
+      return;
+    }
     const title = String(data.get("title") || "").trim();
     if (!title) return;
     const w = String(data.get("workspace_id") || currentWorkspace?.id || "");
@@ -2657,6 +2676,8 @@ export function App() {
               ? "新しい目標をつくる"
               : modal.kind === "task"
                 ? "今日の行動を追加"
+                : modal.kind === "moveItem"
+                  ? "親を変更"
                 : modal.kind === "initiative" || modal.kind === "createItem"
                   ? "取り組みを追加"
                   : modal.kind === "members"
@@ -2684,6 +2705,65 @@ export function App() {
               <button onClick={() => void store.refresh()}>最新を確認</button>
             </p>
           )}
+          {modal.kind === "moveItem" && (() => {
+            const moving = allItems.find(
+              (item) => item.workspace_id === modal.workspaceId && item.id === modal.id,
+            );
+            if (!moving) return null;
+            const descendants = new Set<string>();
+            const collect = (parentId: string) => {
+              allItems
+                .filter(
+                  (item) =>
+                    item.workspace_id === modal.workspaceId &&
+                    partOfTarget(item)?.id === parentId,
+                )
+                .forEach((child) => {
+                  if (!descendants.has(child.id)) {
+                    descendants.add(child.id);
+                    collect(child.id);
+                  }
+                });
+            };
+            collect(moving.id);
+            const parents = allItems
+              .filter(
+                (item) =>
+                  item.workspace_id === modal.workspaceId &&
+                  !item.archived_at &&
+                  item.id !== moving.id &&
+                  item.kind !== "action" &&
+                  !descendants.has(item.id) &&
+                  canEditItem(item),
+              )
+              .sort((a, b) => a.title.localeCompare(b.title, "ja"));
+            return (
+              <form onSubmit={saveForm} className="editor-form">
+                <p className="modal-intro">
+                  「{moving.title}」を移動する先を選択してください。ルートに戻すこともできます。
+                </p>
+                <label>
+                  新しい親
+                  <select name="parent_id" defaultValue={modal.parentId ?? ""}>
+                    <option value="">ルート（親なし）</option>
+                    {parents.map((parent) => (
+                      <option value={parent.id} key={parent.id}>
+                        {parent.title}（{parent.kind}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="modal-actions">
+                  <button type="button" className="secondary-button" onClick={() => setModal(null)}>
+                    キャンセル
+                  </button>
+                  <button type="submit" className="primary-button" disabled={store.pending}>
+                    保存
+                  </button>
+                </div>
+              </form>
+            );
+          })()}
           {modal.kind === "editGoal" &&
             editBase !== null &&
             editBase !== selectedRaw?.version && (

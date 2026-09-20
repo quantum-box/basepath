@@ -315,7 +315,16 @@ function MapCanvas({
       return pa - pb || a.sourceIndex - b.sourceIndex;
     };
     for (const item of treeItems) item.children.sort(compare);
-    roots.sort(compare);
+    roots.sort((a, b) => {
+      // A child promoted past an archived parent is visually a root, but its
+      // persisted position belongs to the hidden parent's sibling list. Do
+      // not compare that position with true roots; source order is stable for
+      // the mixed promoted/root list.
+      const aPromoted = !!a.actualParentId && !a.parentId;
+      const bPromoted = !!b.actualParentId && !b.parentId;
+      if (aPromoted || bPromoted) return a.sourceIndex - b.sourceIndex;
+      return compare(a, b);
+    });
     return roots;
   }, [goals, initiatives, items, scope]);
   const { nodes, edges } = useMemo(() => {
