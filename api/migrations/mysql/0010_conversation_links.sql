@@ -11,11 +11,11 @@ CREATE TABLE IF NOT EXISTS conversation_links(
   status VARCHAR(32) NOT NULL,
   source VARCHAR(80) NOT NULL,
   source_version VARCHAR(80) NOT NULL,
-  idempotency_key VARCHAR(191) NOT NULL,
+  idempotency_key VARCHAR(200) NOT NULL,
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL,
   PRIMARY KEY(id),
-  UNIQUE KEY conversation_links_conversation(actor, tenant, conversation_id),
-  UNIQUE KEY conversation_links_idempotency(actor, tenant, idempotency_key),
+  UNIQUE KEY conversation_links_conversation(actor, tenant, connection_id, conversation_id),
+  UNIQUE KEY conversation_links_idempotency(actor, tenant, connection_id, idempotency_key),
   KEY conversation_links_connection(connection_id, status)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;

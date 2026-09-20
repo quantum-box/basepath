@@ -46,14 +46,48 @@ fn row(row: &crate::db::Row) -> Result<ConversationLink> {
     })
 }
 
-pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<ConversationLink> {
+pub async fn upsert(
+    tx: &mut Tx,
+    actor: &Actor,
+    connection_id: &str,
+    conversation_id: &str,
+    workspace_id: &str,
+    item_id: Option<&str>,
+    screen: Option<&str>,
+    idempotency_key: &str,
+) -> Result<ConversationLink> {
+    upsert_input(
+        tx,
+        actor,
+        LinkInput {
+            connection_id,
+            conversation_id,
+            workspace_id,
+            item_id,
+            screen,
+            idempotency_key,
+        },
+    )
+    .await
+}
+
+pub async fn upsert_input(
+    tx: &mut Tx,
+    actor: &Actor,
+    input: LinkInput<'_>,
+) -> Result<ConversationLink> {
     let existing = tx
         .fetch_optional(
             &format!(
-                "{SELECT} WHERE actor=? AND tenant=? AND conversation_id=?{}",
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND conversation_id=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, input.conversation_id],
+            &params![
+                &actor.id,
+                &actor.tenant,
+                input.connection_id,
+                input.conversation_id
+            ],
         )
         .await?;
     if let Some(existing) = existing {
@@ -84,10 +118,15 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
     if let Some(existing) = tx
         .fetch_optional(
             &format!(
-                "{SELECT} WHERE actor=? AND tenant=? AND idempotency_key=?{}",
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND idempotency_key=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, input.idempotency_key],
+            &params![
+                &actor.id,
+                &actor.tenant,
+                input.connection_id,
+                input.idempotency_key
+            ],
         )
         .await?
     {
@@ -105,18 +144,30 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
         return Ok(link);
     }
     let timestamp = now();
-    tx.execute(
+    if let Err(insert_error) = tx.execute(
         "INSERT INTO conversation_links(id,actor,tenant,connection_id,conversation_id,workspace_id,item_id,screen,status,source,source_version,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         &params![new_id("clink"), &actor.id, &actor.tenant, input.connection_id, input.conversation_id, input.workspace_id, input.item_id, input.screen, "active", "mcp", "1", input.idempotency_key, &timestamp, &timestamp],
-    )
-    .await?;
+    ).await {
+        // A concurrent Lambda may have won the unique insert. Read the
+        // winner and make a retry idempotent instead of leaking STORAGE_CONFLICT.
+        if let Some(winner) = tx.fetch_optional(&format!("{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND conversation_id=?{}", tx.lock_reads()), &params![&actor.id, &actor.tenant, input.connection_id, input.conversation_id]).await? {
+            let link = row(&winner)?;
+            if link.workspace_id == input.workspace_id && link.item_id.as_deref() == input.item_id { return Ok(link); }
+        }
+        return Err(insert_error.into());
+    }
     let saved = tx
         .fetch_one(
             &format!(
-                "{SELECT} WHERE actor=? AND tenant=? AND conversation_id=?{}",
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND conversation_id=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, input.conversation_id],
+            &params![
+                &actor.id,
+                &actor.tenant,
+                input.connection_id,
+                input.conversation_id
+            ],
         )
         .await?;
     row(&saved)
@@ -125,15 +176,16 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
 pub async fn get(
     tx: &mut Tx,
     actor: &Actor,
+    connection_id: &str,
     conversation_id: &str,
 ) -> Result<Option<ConversationLink>> {
     let found = tx
         .fetch_optional(
             &format!(
-                "{SELECT} WHERE actor=? AND tenant=? AND conversation_id=?{}",
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND conversation_id=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, conversation_id],
+            &params![&actor.id, &actor.tenant, connection_id, conversation_id],
         )
         .await?;
     found.map(|value| row(&value)).transpose()

@@ -359,10 +359,13 @@ MCP接続は会話本文を保存しません。ホストが渡した`conversati
 アクセスできる1つのワークスペース（任意で項目）だけをリンク情報として保存します。
 リンクは計画を変更せず、`pathbase.read`だけで利用できます。
 
-- `pathbase_link_context`：`workspace_id`、`conversation_id`、`idempotency_key`が必須。
+- `pathbase_link_context`：`workspace_id`が必須。対応hostでは`conversation_id`と`idempotency_key`も指定します。
   `item_id`と`screen`は任意です。対象は通常のtenant/workspace membershipで再検証され、同じ
   会話への再試行は同じリンクを返します。作成・明示的な再リンクの返却`status`は`active`です。
   別の対象への再リンクは409です。
+- `pathbase_link_context`には`pathbase.context`権限が必要です。これは計画のread権限とは別の、
+  会話リンクの保存権限です。conversation IDはMCP client namespace内で解決され、別clientの
+  同名IDとは混ざりません。
 - `pathbase_get_linked_context`：`conversation_id`で現在のリンクを解決します。`active`、
   `stopped`、`not_linked`を区別します。別tenantのリンクは返しません。
 - 接続解除はリンクを`stopped`にし、トークンも同じトランザクションで無効化します。

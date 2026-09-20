@@ -51,6 +51,11 @@ const SCOPES: { id: string; label: string; detail: string }[] = [
     detail:
       "あなたが承認した変更案だけを適用できます。承認していない案は適用できません。",
   },
+  {
+    id: "pathbase.context",
+    label: "会話を業務コンテキストにリンクする",
+    detail: "会話の対象ワークスペースを記憶し、次のターンから同じ業務コンテキストを開けるようにします。",
+  },
 ];
 
 function statusLabel(status: McpConnection["status"]) {

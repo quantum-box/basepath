@@ -423,6 +423,15 @@ impl Mcp {
                         None,
                     )
                     .await?;
+                let workspaces = self
+                    .service
+                    .handle(&actor, "GET", "/v1/workspaces", &q, json!({}), None)
+                    .await?;
+                let scope = workspaces
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["id"] == w))
+                    .and_then(|row| row["scope"].as_str())
+                    .unwrap_or("組織");
                 if let Some(item_id) = args["item_id"].as_str() {
                     self.service
                         .handle(
@@ -449,21 +458,24 @@ impl Mcp {
                 let url = {
                     let mut query = url::form_urlencoded::Serializer::new(String::new());
                     query.append_pair("workspace", w);
+                    query.append_pair("tenant_id", &actor.tenant);
                     if let Some(item_id) = args["item_id"].as_str() {
-                        query.append_pair("item", item_id);
+                        query.append_pair("item", &format!("{w}~{item_id}"));
                     }
-                    if let Some(screen) = args["screen"].as_str() {
-                        query.append_pair("screen", screen);
-                    }
-                    format!("{basepath}/?{}", query.finish())
+                    let screen = args["screen"].as_str().unwrap_or("home");
+                    let path = if scope == "個人" {
+                        format!("/personal/{screen}")
+                    } else {
+                        format!("/org/{w}/{screen}")
+                    };
+                    format!("{basepath}{path}?{}", query.finish())
                 };
                 let mut tx = self.service.db.begin_write().await?;
-                let connection_id = actor.connection.clone().unwrap_or_default();
-                let link = crate::conversation::upsert(
+                let link = crate::conversation::upsert_input(
                     &mut tx,
                     &actor,
                     crate::conversation::LinkInput {
-                        connection_id: &connection_id,
+                        connection_id: &actor.connection.clone().unwrap_or_default(),
                         conversation_id,
                         workspace_id: w,
                         item_id: args["item_id"].as_str(),
@@ -498,15 +510,18 @@ impl Mcp {
                         json!({"status":"unsupported_host","reason":"host_did_not_provide_conversation_id","retry":"safe_to_retry"}),
                     );
                 };
-                let mut tx = self.service.db.begin_write().await?;
-                let Some(link) = crate::conversation::get(&mut tx, &actor, conversation_id).await?
+                let mut tx = self.service.db.begin_read().await?;
+                let connection_id = actor.connection.clone().unwrap_or_default();
+                let Some(link) =
+                    crate::conversation::get(&mut tx, &actor, &connection_id, conversation_id)
+                        .await?
                 else {
-                    tx.commit().await?;
+                    drop(tx);
                     return Ok(
                         json!({"status":"not_linked","conversation_id":conversation_id,"permission":"read","plan_mutation":"none"}),
                     );
                 };
-                tx.commit().await?;
+                drop(tx);
                 if link.status != "active" {
                     return Ok(
                         json!({"status":link.status,"conversation_id":link.conversation_id,"link_id":link.id,"permission":"read","plan_mutation":"none","disconnect":"revoke_the_mcp_connection"}),
@@ -523,7 +538,7 @@ impl Mcp {
                     )
                     .await?;
                 return Ok(
-                    json!({"status":"linked","conversation_id":link.conversation_id,"link_id":link.id,"target":{"workspace_id":link.workspace_id,"item_id":link.item_id},"screen":link.screen,"source":link.source,"source_version":link.source_version,"permission":"read","plan_mutation":"none","retry":"safe_to_retry","disconnect":"revoke_the_mcp_connection"}),
+                    json!({"status":"active","conversation_id":link.conversation_id,"link_id":link.id,"target":{"workspace_id":link.workspace_id,"item_id":link.item_id},"screen":link.screen,"source":link.source,"source_version":link.source_version,"permission":"read","plan_mutation":"none","retry":"safe_to_retry","disconnect":"revoke_the_mcp_connection"}),
                 );
             }
             "pathbase_search_items" => ("GET", format!("{base}/items"), json!({})),
@@ -787,6 +802,43 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
             "idempotency_key must be at most 200 characters",
         ));
     }
+    if name == "pathbase_link_context" {
+        if let Some(screen) = object.get("screen").and_then(Value::as_str) {
+            const SCREENS: &[&str] = &[
+                "home",
+                "today",
+                "goals",
+                "breakdown",
+                "timeline",
+                "memory",
+                "reflection",
+                "cycles",
+                "alignment",
+                "dashboard",
+                "goal-review",
+                "templates",
+                "members",
+            ];
+            if !SCREENS.contains(&screen) {
+                return Err(crate::model::ApiError::invalid(
+                    "screen is not a recognized PathBase route",
+                ));
+            }
+        }
+        if object
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .is_some()
+            && object
+                .get("idempotency_key")
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            return Err(crate::model::ApiError::invalid(
+                "idempotency_key is required when conversation_id is provided",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -794,7 +846,7 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
     Some(match name {
         "pathbase_get_context" | "pathbase_list_templates" => (&[], &[]),
         "pathbase_link_context" => (
-            &["workspace_id", "conversation_id", "idempotency_key"],
+            &["workspace_id"],
             &[
                 "workspace_id",
                 "item_id",
@@ -999,7 +1051,7 @@ const fn write(name: &'static str, description: &'static str, destructive: bool)
 fn tools() -> Vec<Tool> {
     let defs = [
         read("pathbase_get_context", "Get the authenticated actor and authorized workspaces."),
-        read("pathbase_link_context", "Return a read-only link from the conversation to one authorized PathBase workspace or item. This never changes a confirmed plan; if the public URL is unavailable, report that the host cannot provide a link instead of inventing one."),
+        write("pathbase_link_context", "Persist a conversation-to-workspace link using the separately granted pathbase.context permission. This never changes a confirmed plan; if the public URL is unavailable, report unsupported_host.", false),
         read("pathbase_get_linked_context", "Resolve the workspace and business context previously linked to this conversation. Returns stopped or not_linked honestly; it never mutates the plan."),
         read("pathbase_search_items", "Search a single authorized workspace, with cursor paging."),
         read("pathbase_get_item", "Get an item including its version, dates, and evaluation settings."),

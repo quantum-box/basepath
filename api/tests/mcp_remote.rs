@@ -408,14 +408,12 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
         let value = conversation::upsert(
             &mut tx,
             &actor,
-            conversation::LinkInput {
-                connection_id: "connection-a",
-                conversation_id: "chat-1",
-                workspace_id: "personal",
-                item_id: Some("item-1"),
-                screen: Some("alignment"),
-                idempotency_key: "retry-1",
-            },
+            "connection-a",
+            "chat-1",
+            "personal",
+            Some("item-1"),
+            Some("alignment"),
+            "retry-1",
         )
         .await
         .unwrap();
@@ -424,7 +422,7 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     };
     let resolved = {
         let mut tx = service.db.begin_read().await.unwrap();
-        conversation::get(&mut tx, &actor, "chat-1")
+        conversation::get(&mut tx, &actor, "connection-a", "chat-1")
             .await
             .unwrap()
             .unwrap()
@@ -434,7 +432,7 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     assert_eq!(resolved.source_version, "1");
     let other = Actor::person("local-owner", "another-tenant");
     let mut tx = service.db.begin_read().await.unwrap();
-    assert!(conversation::get(&mut tx, &other, "chat-1")
+    assert!(conversation::get(&mut tx, &other, "connection-a", "chat-1")
         .await
         .unwrap()
         .is_none());
@@ -443,14 +441,12 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let retry = conversation::upsert(
         &mut tx,
         &actor,
-        conversation::LinkInput {
-            connection_id: "connection-a",
-            conversation_id: "chat-1",
-            workspace_id: "personal",
-            item_id: Some("item-1"),
-            screen: Some("alignment"),
-            idempotency_key: "retry-1",
-        },
+        "connection-a",
+        "chat-1",
+        "personal",
+        Some("item-1"),
+        Some("alignment"),
+        "retry-1",
     )
     .await
     .unwrap();
@@ -458,14 +454,12 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let conflict = conversation::upsert(
         &mut tx,
         &actor,
-        conversation::LinkInput {
-            connection_id: "connection-a",
-            conversation_id: "chat-1",
-            workspace_id: "personal",
-            item_id: Some("item-2"),
-            screen: None,
-            idempotency_key: "retry-2",
-        },
+        "connection-a",
+        "chat-1",
+        "personal",
+        Some("item-2"),
+        None,
+        "retry-2",
     )
     .await
     .unwrap_err();
@@ -473,14 +467,12 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let collision = conversation::upsert(
         &mut tx,
         &actor,
-        conversation::LinkInput {
-            connection_id: "connection-a",
-            conversation_id: "chat-2",
-            workspace_id: "personal",
-            item_id: None,
-            screen: None,
-            idempotency_key: "retry-1",
-        },
+        "connection-a",
+        "chat-2",
+        "personal",
+        None,
+        None,
+        "retry-1",
     )
     .await
     .unwrap_err();
@@ -491,7 +483,7 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     tx.commit().await.unwrap();
     let mut tx = service.db.begin_read().await.unwrap();
     assert_eq!(
-        conversation::get(&mut tx, &actor, "chat-1")
+        conversation::get(&mut tx, &actor, "connection-a", "chat-1")
             .await
             .unwrap()
             .unwrap()
@@ -505,14 +497,12 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     let relinked = conversation::upsert(
         &mut tx,
         &actor,
-        conversation::LinkInput {
-            connection_id: "connection-b",
-            conversation_id: "chat-1",
-            workspace_id: "personal",
-            item_id: Some("item-1"),
-            screen: Some("alignment"),
-            idempotency_key: "retry-3",
-        },
+        "connection-b",
+        "chat-1",
+        "personal",
+        Some("item-1"),
+        Some("alignment"),
+        "retry-3",
     )
     .await
     .unwrap();
@@ -620,7 +610,14 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
 
     // --- connected for reading only --------------------------------------
-    let alice = connect(&client, &service, &public, "us_alice", &["pathbase.read"]).await;
+    let alice = connect(
+        &client,
+        &service,
+        &public,
+        "us_alice",
+        &["pathbase.read", "pathbase.context"],
+    )
+    .await;
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
@@ -722,7 +719,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         json!({"name":"pathbase_get_linked_context","arguments":{"conversation_id":"chat-alice-1"}}),
     )
     .await;
-    assert_eq!(resolved["structuredContent"]["status"], "linked");
+    assert_eq!(resolved["structuredContent"]["status"], "active");
     assert_eq!(
         resolved["structuredContent"]["target"]["workspace_id"],
         alice_personal
@@ -956,7 +953,7 @@ async fn consecutive_requests_may_reach_different_instances() {
         json!({}),
     )
     .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 36);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 34);
     assert!(headers.get("mcp-session-id").is_none());
     // Nothing the endpoint returns may be cached by a proxy in between.
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");

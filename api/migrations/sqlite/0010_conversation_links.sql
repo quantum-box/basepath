@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS conversation_links(
   idempotency_key TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(actor, tenant, conversation_id),
-  UNIQUE(actor, tenant, idempotency_key)
+  UNIQUE(actor, tenant, connection_id, conversation_id),
+  UNIQUE(actor, tenant, connection_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS conversation_links_connection
   ON conversation_links(connection_id, status);
