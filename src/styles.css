@@ -735,6 +735,9 @@ input[type="checkbox"]:checked::after {
 }
 .map-node:not(.root) {
   height: 100%;
+  padding-bottom: 11px;
+}
+.map-node:not(.root).has-actions {
   padding-bottom: 44px;
 }
 .map-node:hover {
@@ -785,6 +788,9 @@ input[type="checkbox"]:checked::after {
 .map-node.goal.is-selected {
   border: 2px solid #9862ff;
   box-shadow: 0 2px 8px #926bff0d;
+  padding: 10px;
+}
+.map-node.goal.is-selected.has-actions {
   padding: 10px 10px 44px;
 }
 .node-toggle {

@@ -21,6 +21,7 @@ type MapData = {
   kind: "root" | "goal" | "initiative";
   hasChildren?: boolean;
   childCount?: number;
+  hasActions?: boolean;
   open?: boolean;
   active?: boolean;
   onSelect?: () => void;
@@ -53,7 +54,7 @@ function GoalNode({ data }: NodeProps<MapNode>) {
   return (
     <>
       <button
-        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""}`}
+        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""} ${data.hasActions ? "has-actions" : ""}`}
         onClick={data.onSelect}
         aria-pressed={data.active}
         tabIndex={data.kind === "root" ? -1 : 0}
@@ -165,10 +166,14 @@ type TreeItem = {
   sourceIndex: number;
 };
 const GAP = 22;
-const nodeSize = (item: TreeItem) =>
-  item.kind === "goal"
-    ? { width: 214, height: 116 }
-    : { width: 148, height: 121 };
+const nodeSize = (item: TreeItem, hasActions: boolean) => {
+  const compact = item.kind === "goal"
+    ? { width: 214, height: 65 }
+    : { width: 148, height: 70 };
+  return hasActions
+    ? { ...compact, height: compact.height + 51 }
+    : compact;
+};
 const rowY = (depth: number) =>
   depth === 0 ? 8 : depth === 1 ? 160 : 300 + (depth - 2) * 135;
 const strokeColor = (scope: Scope) =>
@@ -320,7 +325,7 @@ function MapCanvas({
     const isOpen = (item: TreeItem) => !closedIds.has(item.id);
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
     const measure = (item: TreeItem): number => {
-      const own = nodeSize(item).width;
+      const own = nodeSize(item, false).width;
       const kids = childrenOf(item);
       if (!kids.length) return own;
       const width =
@@ -328,9 +333,14 @@ function MapCanvas({
         GAP * (kids.length - 1);
       return Math.max(own, width);
     };
-    const place = (item: TreeItem, left: number, depth: number) => {
+    const place = (
+      item: TreeItem,
+      left: number,
+      depth: number,
+      siblingIndex = 0,
+      siblingCount = 1,
+    ) => {
       const width = measure(item);
-      const size = nodeSize(item);
       const kids = childrenOf(item);
       const shared = {
         hasChildren: kids.length > 0,
@@ -339,6 +349,17 @@ function MapCanvas({
         onToggle: () => toggleNode(item.id),
       };
       const editable = canEdit ? canEdit(item.id) : true;
+      const canMoveUp = editable && item.parentId && siblingIndex > 0 && onMoveUp;
+      const canMoveDown = editable && item.parentId && siblingIndex < siblingCount - 1 && onMoveDown;
+      const hasActions = editable && Boolean(
+        onEdit ||
+          onMove ||
+          onAddChild ||
+          onAddSibling ||
+          canMoveUp ||
+          canMoveDown,
+      );
+      const size = nodeSize(item, hasActions);
       nodes.push({
         id: item.id,
         type: "goal",
@@ -349,6 +370,7 @@ function MapCanvas({
             ? {
                 ...item.goal!,
                 ...shared,
+                hasActions,
                 kind: "goal",
                 subtitle: item.goal!.subtitle,
                 progress: undefined,
@@ -361,17 +383,18 @@ function MapCanvas({
                 onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
                 onMove: editable && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
-                  editable && item.parentId && onMoveUp
+                  canMoveUp
                     ? () => onMoveUp(item.id)
                     : undefined,
                 onMoveDown:
-                  editable && item.parentId && onMoveDown
+                  canMoveDown
                     ? () => onMoveDown(item.id)
                     : undefined,
               }
             : {
                 ...item.initiative!,
                 ...shared,
+                hasActions,
                 scope: item.scope,
                 kind: "initiative",
                 active: selected === item.id,
@@ -387,11 +410,11 @@ function MapCanvas({
                 onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
                 onMove: editable && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
-                  editable && item.parentId && onMoveUp
+                  canMoveUp
                     ? () => onMoveUp(item.id)
                     : undefined,
                 onMoveDown:
-                  editable && item.parentId && onMoveDown
+                  canMoveDown
                     ? () => onMoveDown(item.id)
                     : undefined,
               },
@@ -409,14 +432,14 @@ function MapCanvas({
         kids.reduce((total, child) => total + measure(child), 0) +
         GAP * (kids.length - 1);
       let cursor = left + (width - childrenWidth) / 2;
-      kids.forEach((child) => {
-        place(child, cursor, depth + 1);
+      kids.forEach((child, index) => {
+        place(child, cursor, depth + 1, index, kids.length);
         cursor += measure(child) + GAP;
       });
     };
     let cursor = 0;
-    tree.forEach((root) => {
-      place(root, cursor, offset);
+    tree.forEach((root, index) => {
+      place(root, cursor, offset, index, tree.length);
       cursor += measure(root) + GAP;
     });
     if (heading) {
@@ -447,6 +470,7 @@ function MapCanvas({
     onMove,
     onMoveUp,
     onMoveDown,
+    canEdit,
   ]);
   const resetView = useCallback(() => {
     // Establish the baseline after fitting async-loaded data, before animation
