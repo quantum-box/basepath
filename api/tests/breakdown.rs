@@ -690,15 +690,7 @@ async fn reparent_appends_after_unplaced_siblings() {
     let old_parent = item(&service, &who, &w, "outcome", "旧親", None).await;
     let new_parent = item(&service, &who, &w, "outcome", "新親", None).await;
     let moved = item(&service, &who, &w, "milestone", "移動", Some(&old_parent)).await;
-    let existing = item(
-        &service,
-        &who,
-        &w,
-        "milestone",
-        "既存",
-        Some(&new_parent),
-    )
-    .await;
+    let existing = item(&service, &who, &w, "milestone", "既存", Some(&new_parent)).await;
 
     call(
         &service,

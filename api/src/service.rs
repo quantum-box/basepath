@@ -2996,7 +2996,10 @@ async fn dispatch_inner(
                     .filter_map(|candidate| candidate.position)
                     .max()
                     .map_or(0, |position| position.saturating_add(1));
-                for sibling in siblings.iter_mut().filter(|candidate| candidate.position.is_none()) {
+                for sibling in siblings
+                    .iter_mut()
+                    .filter(|candidate| candidate.position.is_none())
+                {
                     sibling.position = Some(next_position);
                     next_position = next_position.saturating_add(1);
                     sibling.version += 1;
