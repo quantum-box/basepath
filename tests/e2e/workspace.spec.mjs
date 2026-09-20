@@ -306,6 +306,18 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
   await expect(switcher).toBeVisible();
   await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
   expect(logoutRequests).toBe(0);
+
+  // A deep link may name a different tenant than the active session. If the
+  // person cancels that selector, the candidate must not be sent back into
+  // the gate; the server-selected tenant (or no tenant query) is safe.
+  selectedTenant = "tn_first";
+  await page.goto("/personal/home?tenant_id=tn_second");
+  await expect(
+    page.getByRole("heading", { name: "利用するテナント", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "ホームに戻る", exact: true }).click();
+  await expect(page).not.toHaveURL(/tenant_id=tn_second/);
+  await expect(page.locator(".context-breadcrumb")).toContainText("個人");
 });
 
 for (const failure of [

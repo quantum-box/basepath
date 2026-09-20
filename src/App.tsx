@@ -644,17 +644,21 @@ export function App() {
   );
   const linkedItem = raw(selectedId);
   const autoOpenedActionRef = useRef<string | null>(null);
+  const autoOpenRouteKey = `${window.location.pathname}${window.location.search}`;
   useEffect(() => {
+    if (shownScreen !== "today") {
+      autoOpenedActionRef.current = null;
+      return;
+    }
     if (
-      shownScreen === "today" &&
       linkedItem?.kind === "action" &&
       !modal &&
-      autoOpenedActionRef.current !== selectedId
+      autoOpenedActionRef.current !== autoOpenRouteKey
     ) {
-      autoOpenedActionRef.current = selectedId;
+      autoOpenedActionRef.current = autoOpenRouteKey;
       setModal({ kind: "initiativeDetail", id: selectedId });
     }
-  }, [linkedItem?.kind, modal, selectedId, shownScreen]);
+  }, [autoOpenRouteKey, linkedItem?.kind, modal, selectedId, shownScreen]);
   const isGoalKind = (item: Item) =>
     ["outcome", "idea", "milestone"].includes(item.kind);
   const partOfTarget = (item: Item) => {
@@ -1467,7 +1471,11 @@ export function App() {
         onBack={() => {
           tenantReturnRef.current = null;
           setSelectingTenant(false);
-          replaceScreenUrl("/", tenantId);
+          // The URL may still carry a candidate tenant from a deep link. Do
+          // not send that unselected candidate back into the tenant gate;
+          // omitting it lets the server-selected session tenant be restored.
+          setTenantId("");
+          replaceScreenUrl("/");
         }}
         backLabel="ホームに戻る"
         backPendingLabel="戻っています…"

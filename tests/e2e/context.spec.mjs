@@ -180,6 +180,19 @@ test("closing a linked action editor does not reopen it", async ({
   await expect(dialog).not.toBeVisible();
   await page.waitForTimeout(100);
   await expect(dialog).not.toBeVisible();
+
+  // Leaving the route clears the dismiss marker. Browser Back is a fresh
+  // entry into the linked Today route, so the conversation target opens once
+  // again.
+  await page.getByRole("button", { name: "メニューを開く", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "メインメニュー" })
+    .getByRole("button", { name: "自分の目標", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/personal\/goals/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/personal\/today/);
+  await expect(dialog).toBeVisible();
 });
 
 test("a stale personal deep link is unavailable instead of falling back", async ({
