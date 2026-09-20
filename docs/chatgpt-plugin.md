@@ -230,6 +230,7 @@ them from documentation or from the harness.
 | --- | --- | --- | --- | --- |
 | 2026-09-19 | ChatGPT, Developer Mode | **no** | **no** — expired unread | Before this change. No view in either convention on the change tools, and only the MCP Apps spelling anywhere. PLT-4943 |
 | 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — `ui://basepath/personal/plan.html` rendered in the conversation | **yes** — one `outcome` named `ChatGPT 実機受入` was proposed, then explicitly approved in Basepath and appeared in the personal goal map | The proposal's text diff and `Basepathで変更案を確認` link were visible in the conversation. The applied change contained one create, zero updates, and zero deletes. |
+| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — the conversation displayed the proposal diff and the Basepath review link | **yes** — `ChatGPT 会話内適用テスト` was approved and applied in Basepath, then a fresh conversation read returned `タイトル: ChatGPT 会話内適用テスト` and `状態: active` | This is an out-of-range change: the conversation led to Basepath for the person's approval, rather than treating an in-conversation click as evidence of approval. |
 
 Submission to a public directory is out of scope and has not been prepared for
 review. The privacy and support material a directory requires is not written.
