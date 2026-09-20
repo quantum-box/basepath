@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "./icons";
-import { GoalMap } from "./GoalMap";
+import { GoalMap, type MapItem } from "./GoalMap";
 import {
   templates,
   scopeClass,
@@ -40,6 +40,7 @@ import { WeeklyReviewScreen } from "./WeeklyReview";
 import { PlanningScreen } from "./PlanningScreen";
 import { AlignmentScreen } from "./AlignmentScreen";
 import { BreakdownScreen } from "./BreakdownScreen";
+import type { BreakdownNode } from "./shared/breakdownView";
 import {
   contextLabel,
   contextOf,
@@ -71,6 +72,15 @@ type ModalState =
   | { kind: "template"; template: string }
   | { kind: "task" }
   | { kind: "initiative" }
+  | {
+      kind: "createItem";
+      workspaceId: string;
+      parentId: string | null;
+      relation: "child" | "sibling";
+      parentTitle: string;
+      siblingTitle?: string;
+      parentKind?: string;
+    }
   | { kind: "members" }
   | { kind: "settings" }
   | { kind: "learnings" }
@@ -626,6 +636,36 @@ export function App() {
         progress: i.fields.self_assessment ?? null,
       };
     });
+  // Goal Map is a projection of the complete `part_of` graph.  Do not infer
+  // hierarchy from item kinds: milestones and actions can be children of any
+  // item, and their direct parent is the only structural authority.
+  const mapItems: MapItem[] = visibleItems
+    .filter((item) =>
+      ["outcome", "idea", "initiative", "milestone", "action"].includes(
+        item.kind,
+      ),
+    )
+    .map((item) => {
+      const parent = partOfTarget(item);
+      return {
+        id: uiId(item),
+        title: item.title,
+        kind: item.kind,
+        parentId: parent ? uiId(parent) : undefined,
+        scope: scopeOf(item.workspace_id),
+        icon:
+          item.fields.icon ||
+          (item.kind === "action"
+            ? "rocket"
+            : item.kind === "milestone"
+              ? "flag"
+              : item.kind === "initiative"
+                ? "flag"
+                : "target"),
+        subtitle: item.fields.subtitle || undefined,
+        progress: item.fields.self_assessment ?? null,
+      };
+    });
   const doneFor = (item: Item, date = today) =>
     item.fields.recurrence
       ? [...allRecords]
@@ -743,6 +783,23 @@ export function App() {
   const openInitiative = useCallback(
     (id: string) => setModal({ kind: "initiativeDetail", id }),
     [],
+  );
+  const openCreateRelative = useCallback(
+    (id: string, relation: "child" | "sibling") => {
+      const item = raw(id);
+      if (!item) return;
+      const parent = relation === "child" ? item : partOfTarget(item);
+      setModal({
+        kind: "createItem",
+        workspaceId: item.workspace_id,
+        parentId: parent?.id ?? null,
+        relation,
+        parentTitle: parent?.title ?? "ルート",
+        siblingTitle: relation === "sibling" ? item.title : undefined,
+        parentKind: parent?.kind,
+      });
+    },
+    [allItems],
   );
   useEffect(() => {
     if (!toast) return;
@@ -1088,6 +1145,31 @@ export function App() {
               fields: { icon: "flag" },
             },
           );
+        } else if (modal?.kind === "createItem") {
+          const kind = String(data.get("kind") || "initiative");
+          if (kind === "action" && modal.parentId) {
+            // Actions are terminal in the UI; this guard also protects callers
+            // that keep a stale create dialog open while changing selection.
+            const parent = allItems.find(
+              (item) =>
+                item.workspace_id === modal.workspaceId &&
+                item.id === modal.parentId,
+            );
+            if (parent?.kind === "action") return;
+          }
+          const created = await store.write<Item>(
+            "POST",
+            `/v1/workspaces/${modal.workspaceId}/items`,
+            {
+              title,
+              kind,
+              parent_id: modal.parentId,
+              fields: kind === "action" ? {} : { icon: "flag" },
+            },
+          );
+          setSelectedId(uiId(created));
+          setScope("すべて");
+          routeTo({ item: uiId(created), scope: "すべて" });
         } else if (modal?.kind === "editGoal" && selectedRaw) {
           const assessment = String(data.get("progress") || "");
           await store.write("PATCH", itemPath(selectedRaw), {
@@ -1614,11 +1696,14 @@ export function App() {
               <GoalMap
                 goals={goals}
                 initiatives={initiatives}
+                items={mapItems}
                 selected={selectedId}
                 onSelect={selectGoal}
                 scope={scope}
                 setScope={changeScope}
                 onInitiative={openInitiative}
+                onAddChild={(id) => openCreateRelative(id, "child")}
+                onAddSibling={(id) => openCreateRelative(id, "sibling")}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">
@@ -2047,7 +2132,50 @@ export function App() {
             }}
           />
         ) : activeNav === "分解" ? (
-          <BreakdownScreen store={store} workspace={currentWorkspace} />
+          <BreakdownScreen
+            store={store}
+            workspace={currentWorkspace}
+            refreshKey={`${allItems.length}:${allRelations.length}`}
+            selectedId={
+              raw(selectedId)?.workspace_id === currentWorkspace?.id
+                ? raw(selectedId)?.id
+                : ""
+            }
+            onAddChild={(node: BreakdownNode) => {
+              const item = allItems.find(
+                (entry) =>
+                  entry.workspace_id === currentWorkspace?.id &&
+                  entry.id === node.id,
+              );
+              if (!item || item.kind === "action") return;
+              setModal({
+                kind: "createItem",
+                workspaceId: item.workspace_id,
+                parentId: item.id,
+                relation: "child",
+                parentTitle: item.title,
+                parentKind: item.kind,
+              });
+            }}
+            onAddSibling={(node: BreakdownNode) => {
+              const item = allItems.find(
+                (entry) =>
+                  entry.workspace_id === currentWorkspace?.id &&
+                  entry.id === node.id,
+              );
+              if (!item) return;
+              const parent = partOfTarget(item);
+              setModal({
+                kind: "createItem",
+                workspaceId: item.workspace_id,
+                parentId: parent?.id ?? null,
+                relation: "sibling",
+                parentTitle: parent?.title ?? "ルート",
+                siblingTitle: item.title,
+                parentKind: parent?.kind,
+              });
+            }}
+          />
         ) : activeNav === "アラインメント" ? (
           <AlignmentScreen
             workspace={currentWorkspace}
@@ -2109,6 +2237,7 @@ export function App() {
           <DedicatedScreen
             page={activeNav}
             goals={goals}
+            mapItems={mapItems}
             tasks={tasks}
             initiatives={initiatives}
             selected={selected}
@@ -2150,6 +2279,8 @@ export function App() {
             }
             onEditGoal={() => setModal({ kind: "editGoal" })}
             onAddInitiative={() => setModal({ kind: "initiative" })}
+            onAddChild={(id) => openCreateRelative(id, "child")}
+            onAddSibling={(id) => openCreateRelative(id, "sibling")}
             onReflectionChange={(value) => {
               setReflection(value);
               localStorage.setItem(reviewDraftKey, value);
@@ -2196,7 +2327,7 @@ export function App() {
               ? "新しい目標をつくる"
               : modal.kind === "task"
                 ? "今日の行動を追加"
-                : modal.kind === "initiative"
+                : modal.kind === "initiative" || modal.kind === "createItem"
                   ? "取り組みを追加"
                   : modal.kind === "members"
                     ? "ワークスペースのメンバー"
@@ -2240,6 +2371,7 @@ export function App() {
           {(modal.kind === "template" ||
             modal.kind === "task" ||
             modal.kind === "initiative" ||
+            modal.kind === "createItem" ||
             modal.kind === "editGoal") && (
             <form onSubmit={saveForm} className="editor-form">
               <fieldset
@@ -2247,6 +2379,8 @@ export function App() {
                   store.pending ||
                   ((modal.kind === "editGoal" || modal.kind === "initiative") &&
                     !canWrite(selectedRaw?.workspace_id)) ||
+                  (modal.kind === "createItem" &&
+                    !canWrite(modal.workspaceId)) ||
                   (modal.kind === "editGoal" &&
                     editBase !== null &&
                     editBase !== selectedRaw?.version)
@@ -2275,10 +2409,42 @@ export function App() {
                     </div>
                   </>
                 )}
+                {modal.kind === "createItem" && (
+                  <>
+                    <p className="modal-intro">
+                      {modal.relation === "child" ? "子項目" : "兄弟項目"}として
+                      「{modal.parentTitle}」に追加します。
+                      {modal.siblingTitle && `（基準: ${modal.siblingTitle}）`}
+                    </p>
+                    <label>
+                      種類
+                      <select
+                        name="kind"
+                        defaultValue={
+                          modal.parentKind === "action"
+                            ? "action"
+                            : "initiative"
+                        }
+                      >
+                        {modal.parentKind !== "action" && (
+                          <>
+                            <option value="outcome">目標</option>
+                            <option value="initiative">取り組み</option>
+                            <option value="milestone">節目</option>
+                            <option value="action">行動（最後の階層）</option>
+                          </>
+                        )}
+                        {modal.parentKind === "action" && (
+                          <option value="action">行動</option>
+                        )}
+                      </select>
+                    </label>
+                  </>
+                )}
                 <label>
                   {modal.kind === "task"
                     ? "どんな行動をしますか？"
-                    : modal.kind === "initiative"
+                    : modal.kind === "initiative" || modal.kind === "createItem"
                       ? "取り組みの名前"
                       : "目標の名前"}
                   <input
@@ -2634,6 +2800,32 @@ export function App() {
                 item={raw(modal.id)!}
                 store={store}
                 onClose={() => setModal(null)}
+                onAddChild={() => {
+                  const item = raw(modal.id);
+                  if (!item || item.kind === "action") return;
+                  setModal({
+                    kind: "createItem",
+                    workspaceId: item.workspace_id,
+                    parentId: item.id,
+                    relation: "child",
+                    parentTitle: item.title,
+                    parentKind: item.kind,
+                  });
+                }}
+                onAddSibling={() => {
+                  const item = raw(modal.id);
+                  if (!item) return;
+                  const parent = partOfTarget(item);
+                  setModal({
+                    kind: "createItem",
+                    workspaceId: item.workspace_id,
+                    parentId: parent?.id ?? null,
+                    relation: "sibling",
+                    parentTitle: parent?.title ?? "ルート",
+                    siblingTitle: item.title,
+                    parentKind: parent?.kind,
+                  });
+                }}
               />
             </fieldset>
           )}
@@ -2646,6 +2838,7 @@ export function App() {
 type DedicatedScreenProps = {
   page: NavigationLabel;
   goals: Goal[];
+  mapItems: MapItem[];
   tasks: Task[];
   initiatives: Initiative[];
   selected?: Goal;
@@ -2672,6 +2865,8 @@ type DedicatedScreenProps = {
   onChooseTemplate: (template: string) => void;
   onEditGoal: () => void;
   onAddInitiative: () => void;
+  onAddChild: (id: string) => void;
+  onAddSibling: (id: string) => void;
   onReflectionChange: (value: string) => void;
   onSaveReflection: () => void;
 };
@@ -2679,6 +2874,7 @@ type DedicatedScreenProps = {
 function DedicatedScreen({
   page,
   goals,
+  mapItems,
   tasks,
   initiatives,
   selected,
@@ -2705,6 +2901,8 @@ function DedicatedScreen({
   onChooseTemplate,
   onEditGoal,
   onAddInitiative,
+  onAddChild,
+  onAddSibling,
   onReflectionChange,
   onSaveReflection,
 }: DedicatedScreenProps) {
@@ -2723,11 +2921,14 @@ function DedicatedScreen({
           <GoalMap
             goals={goals}
             initiatives={initiatives}
+            items={mapItems}
             selected={selectedId}
             onSelect={onSelectGoal}
             scope={scope}
             setScope={onChangeScope}
             onInitiative={onOpenInitiative}
+            onAddChild={onAddChild}
+            onAddSibling={onAddSibling}
           />
           {selected ? (
             <section

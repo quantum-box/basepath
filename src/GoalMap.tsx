@@ -25,6 +25,20 @@ type MapData = {
   active?: boolean;
   onSelect?: () => void;
   onToggle?: () => void;
+  onAddChild?: () => void;
+  onAddSibling?: () => void;
+};
+/** A node in the generic part_of tree.  The map intentionally does not
+ * encode a Goal -> Initiative hierarchy: every item kind can have a parent. */
+export type MapItem = {
+  id: string;
+  title: string;
+  kind: string;
+  parentId?: string;
+  scope: Scope;
+  icon?: string;
+  subtitle?: string;
+  progress?: number | null;
 };
 type MapNode = Node<MapData, "goal">;
 function GoalNode({ data }: NodeProps<MapNode>) {
@@ -99,6 +113,30 @@ function GoalNode({ data }: NodeProps<MapNode>) {
           )}
         </button>
       )}
+      {data.kind !== "root" && (data.onAddChild || data.onAddSibling) && (
+        <span className="map-node-actions">
+          {data.onAddChild && (
+            <button
+              type="button"
+              className="map-node-action nodrag nopan"
+              onClick={data.onAddChild}
+              aria-label={`${data.title}に子項目を追加`}
+            >
+              子を追加
+            </button>
+          )}
+          {data.onAddSibling && (
+            <button
+              type="button"
+              className="map-node-action nodrag nopan"
+              onClick={data.onAddSibling}
+              aria-label={`${data.title}の兄弟項目を追加`}
+            >
+              兄弟を追加
+            </button>
+          )}
+        </span>
+      )}
     </>
   );
 }
@@ -111,6 +149,7 @@ type TreeItem = {
   goal?: Goal;
   initiative?: Initiative;
   children: TreeItem[];
+  terminal?: boolean;
 };
 const GAP = 22;
 const nodeSize = (item: TreeItem) =>
@@ -124,20 +163,29 @@ const strokeColor = (scope: Scope) =>
 type Props = {
   goals: Goal[];
   initiatives: Initiative[];
+  /** Optional complete graph projection. When supplied it is the source of
+   * truth, including milestones and actions; the legacy props remain for
+   * callers that only have the original two collections. */
+  items?: MapItem[];
   selected: string;
   onSelect: (id: string) => void;
   scope: Scope | "すべて";
   setScope: (scope: Scope | "すべて") => void;
   onInitiative: (id: string) => void;
+  onAddChild?: (id: string) => void;
+  onAddSibling?: (id: string) => void;
 };
 function MapCanvas({
   goals,
   initiatives,
+  items,
   selected,
   onSelect,
   scope,
   setScope,
   onInitiative,
+  onAddChild,
+  onAddSibling,
 }: Props) {
   const flow = useReactFlow<MapNode>();
   const [zoom, setZoom] = useState(100);
@@ -154,49 +202,82 @@ function MapCanvas({
   }, []);
   const container = useRef<HTMLDivElement>(null);
   const tree = useMemo(() => {
-    const matched = goals.filter(
-      (g) => scope === "すべて" || g.scope === scope,
+    const source: MapItem[] = items ?? [
+      ...goals.map((goal) => ({
+        ...goal,
+        kind: "goal",
+        parentId: goal.parentId,
+      })),
+      ...initiatives.map((initiative) => ({
+        ...initiative,
+        kind: "initiative",
+        scope:
+          goals.find((goal) => goal.id === initiative.goalId)?.scope ?? "個人",
+        parentId: initiative.parentId ?? initiative.goalId,
+      })),
+    ];
+    const matched = source.filter(
+      (item) => scope === "すべて" || item.scope === scope,
     );
-    const byId = new Map(goals.map((g) => [g.id, g]));
-    const shown = new Set(matched.map((g) => g.id));
-    const displayParent = (goal: Goal) => {
+    const byId = new Map(source.map((item) => [item.id, item]));
+    const shown = new Set(matched.map((item) => item.id));
+    const displayParent = (item: MapItem) => {
       const seen = new Set<string>();
-      let current = goal.parentId ? byId.get(goal.parentId) : undefined;
+      let current = item.parentId ? byId.get(item.parentId) : undefined;
       while (current && !shown.has(current.id) && !seen.has(current.id)) {
         seen.add(current.id);
         current = current.parentId ? byId.get(current.parentId) : undefined;
       }
       return current && shown.has(current.id) ? current.id : undefined;
     };
-    const items: TreeItem[] = matched.map((goal) => ({
-      id: goal.id,
-      kind: "goal",
-      parentId: displayParent(goal),
-      scope: goal.scope,
-      goal,
+    const treeItems: TreeItem[] = matched.map((item) => ({
+      id: item.id,
+      // The existing node treatment is deliberately retained for all
+      // non-goals so the visual language and spacing do not change.
+      kind:
+        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal"
+          ? "goal"
+          : "initiative",
+      parentId: displayParent(item),
+      scope: item.scope,
+      goal:
+        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal"
+          ? {
+              id: item.id,
+              title: item.title,
+              parentId: item.parentId,
+              subtitle: item.subtitle ?? "",
+              scope: item.scope,
+              icon: item.icon ?? "target",
+              purpose: "",
+              progress: item.progress ?? null,
+              next: "",
+              memo: "",
+            }
+          : undefined,
+      initiative:
+        item.kind === "outcome" || item.kind === "idea" || item.kind === "goal"
+          ? undefined
+          : {
+              id: item.id,
+              goalId: item.parentId ?? "",
+              parentId: item.parentId,
+              title: item.title,
+              icon: item.icon ?? (item.kind === "action" ? "rocket" : "flag"),
+              progress: item.progress ?? null,
+            },
       children: [],
+      terminal: item.kind === "action",
     }));
-    initiatives.forEach((initiative) => {
-      const goal = byId.get(initiative.goalId);
-      if (!goal || !shown.has(goal.id)) return;
-      items.push({
-        id: initiative.id,
-        kind: "initiative",
-        parentId: initiative.parentId ?? initiative.goalId,
-        scope: goal.scope,
-        initiative,
-        children: [],
-      });
-    });
-    const index = new Map(items.map((item) => [item.id, item]));
+    const index = new Map(treeItems.map((item) => [item.id, item]));
     const roots: TreeItem[] = [];
-    items.forEach((item) => {
+    treeItems.forEach((item) => {
       const parent = item.parentId ? index.get(item.parentId) : undefined;
       if (parent && parent !== item) parent.children.push(item);
       else roots.push(item);
     });
     return roots;
-  }, [goals, initiatives, scope]);
+  }, [goals, initiatives, items, scope]);
   const { nodes, edges } = useMemo(() => {
     const nodes: MapNode[] = [];
     const edges: Edge[] = [];
@@ -239,6 +320,10 @@ function MapCanvas({
                 progress: undefined,
                 active: selected === item.id,
                 onSelect: () => onSelect(item.id),
+                onAddChild: onAddChild ? () => onAddChild(item.id) : undefined,
+                onAddSibling: onAddSibling
+                  ? () => onAddSibling(item.id)
+                  : undefined,
               }
             : {
                 ...item.initiative!,
@@ -246,6 +331,14 @@ function MapCanvas({
                 scope: item.scope,
                 kind: "initiative",
                 onSelect: () => onInitiative(item.id),
+                onAddChild: item.terminal
+                  ? undefined
+                  : onAddChild
+                    ? () => onAddChild(item.id)
+                    : undefined,
+                onAddSibling: onAddSibling
+                  ? () => onAddSibling(item.id)
+                  : undefined,
               },
       });
       if (item.parentId && depth > offset) {
@@ -286,7 +379,16 @@ function MapCanvas({
       });
     }
     return { nodes, edges };
-  }, [tree, selected, closedIds, toggleNode, onSelect, onInitiative]);
+  }, [
+    tree,
+    selected,
+    closedIds,
+    toggleNode,
+    onSelect,
+    onInitiative,
+    onAddChild,
+    onAddSibling,
+  ]);
   const resetView = useCallback(() => {
     // Establish the baseline after fitting async-loaded data, before animation
     // callbacks can report a percentage relative to an earlier empty graph.
