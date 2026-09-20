@@ -2963,6 +2963,14 @@ async fn dispatch_inner(
             // without becoming part of something else, and without being
             // deleted for the privilege.
             let to = body["parent_id"].as_str().map(str::to_owned);
+            if let Some(old_parent) = &from {
+                let old_parent: Item = get(tx, w, "items", old_parent).await?;
+                guard_personal_goal(tx, actor, w, &old_parent).await?;
+            }
+            if let Some(new_parent) = &to {
+                let new_parent: Item = get(tx, w, "items", new_parent).await?;
+                guard_personal_goal(tx, actor, w, &new_parent).await?;
+            }
             if to == from {
                 return Err(ApiError::invalid("すでにその位置にあります"));
             }

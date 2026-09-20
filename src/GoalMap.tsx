@@ -329,12 +329,13 @@ function MapCanvas({
           ? canEdit(item.parentId)
           : true
         : false;
+      const canMove = editable && (!item.parentId || parentEditable);
       const canMoveUp = editable && parentEditable && siblingIndex > 0 && !!onMoveUp;
       const canMoveDown = editable && parentEditable && siblingIndex < siblingCount - 1 && !!onMoveDown;
       const hasActions = editable && Boolean(
-        onEdit || onMove || onAddChild || onAddSibling || canMoveUp || canMoveDown,
+          onEdit || (canMove && onMove) || onAddChild || onAddSibling || canMoveUp || canMoveDown,
       );
-      return { editable, canMoveUp, canMoveDown, hasActions };
+      return { editable, canMove, canMoveUp, canMoveDown, hasActions };
     };
     const depthHeights = new Map<number, number>();
     const measureDepth = (itemsAtDepth: TreeItem[], depth: number) => {
@@ -382,7 +383,7 @@ function MapCanvas({
         open: isOpen(item),
         onToggle: () => toggleNode(item.id),
       };
-      const { editable, canMoveUp, canMoveDown, hasActions } = actionState(
+      const { editable, canMove, canMoveUp, canMoveDown, hasActions } = actionState(
         item,
         siblingIndex,
         siblingCount,
@@ -409,7 +410,7 @@ function MapCanvas({
                   ? () => onAddSibling(item.id)
                   : undefined,
                 onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
-                onMove: editable && onMove ? () => onMove(item.id) : undefined,
+                onMove: canMove && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
                   canMoveUp
                     ? () => onMoveUp!(item.id)
@@ -436,7 +437,7 @@ function MapCanvas({
                   ? () => onAddSibling(item.id)
                   : undefined,
                 onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
-                onMove: editable && onMove ? () => onMove(item.id) : undefined,
+                onMove: canMove && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
                   canMoveUp
                     ? () => onMoveUp!(item.id)
