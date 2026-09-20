@@ -532,10 +532,10 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         include_str!("../migrations/mysql/0010_conversation_links.sql"),
     ),
     (
-        10,
+        11,
         "conversation link idempotency ownership",
-        include_str!("../migrations/sqlite/0010_conversation_link_idempotency.sql"),
-        include_str!("../migrations/mysql/0010_conversation_link_idempotency.sql"),
+        include_str!("../migrations/sqlite/0011_conversation_link_idempotency.sql"),
+        include_str!("../migrations/mysql/0011_conversation_link_idempotency.sql"),
     ),
 ];
 
