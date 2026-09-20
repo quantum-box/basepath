@@ -455,6 +455,36 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     .await
     .unwrap();
     assert_eq!(retry.id, link.id);
+    let retry_with_new_key = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-1",
+            workspace_id: "personal",
+            item_id: Some("item-1"),
+            screen: Some("alignment"),
+            idempotency_key: "retry-new-key",
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry_with_new_key.id, link.id);
+    let later_key_collision = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-later",
+            workspace_id: "personal",
+            item_id: None,
+            screen: None,
+            idempotency_key: "retry-new-key",
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(later_key_collision.status, 409);
     let screen_conflict = conversation::upsert(
         &mut tx,
         &actor,

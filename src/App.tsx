@@ -179,7 +179,7 @@ function replaceTenantSelectionUrl(tenantId: string, returnTo?: string | null) {
   const url = new URL(window.location.href);
   url.pathname = "/tenants";
   url.search = "";
-  url.searchParams.set("tenant_id", tenantId);
+  if (tenantId) url.searchParams.set("tenant_id", tenantId);
   if (returnTo) url.searchParams.set("return_to", returnTo);
   url.hash = "";
   window.history.replaceState({}, "", url);
@@ -883,7 +883,13 @@ export function App() {
       return;
     }
     if (store.error?.code === "TENANT_SELECTION_REQUIRED") {
-      replaceScreenUrl("/tenants", tenantId);
+      const requestedTenantId =
+        tenantId ||
+        new URLSearchParams(window.location.search).get("tenant_id") ||
+        "";
+      tenantReturnRef.current = tenantReturnRef.current ?? tenantReturnUrl();
+      setSelectingTenant(true);
+      replaceTenantSelectionUrl(requestedTenantId, tenantReturnRef.current);
       return;
     }
     if (
@@ -934,6 +940,15 @@ export function App() {
         }
         if (!result.selected_tenant_id) return;
         setTenantId(result.selected_tenant_id);
+        const route = parsePath(window.location.pathname);
+        if (route) {
+          setWorkspaceId(route.kind === "organization" ? route.orgId : "");
+          setScreen(route.screen);
+          setSelectedId(
+            new URLSearchParams(window.location.search).get("item") || "",
+          );
+          return;
+        }
         replaceScreenUrl("/", result.selected_tenant_id);
       },
       () => {},
@@ -1300,6 +1315,7 @@ export function App() {
           await request("POST", "/auth/logout", {});
           await store.refresh();
           setTenantId("");
+          tenantReturnRef.current = null;
           replaceScreenUrl("/login");
         }}
         backLabel="ログイン画面に戻る"
