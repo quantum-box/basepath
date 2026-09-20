@@ -580,11 +580,13 @@ export function App() {
   const currentWorkspace =
     requestedOrganizationId
       ? store.workspaces.find((w) => w.id === requestedOrganizationId)
-      : requestedPersonalRoute && requestedPersonalWorkspaceId
-        ? store.workspaces.find(
-            (w) =>
-              w.id === requestedPersonalWorkspaceId && w.scope === "個人",
-          )
+      : requestedPersonalRoute
+        ? requestedPersonalWorkspaceId
+          ? store.workspaces.find(
+              (w) =>
+                w.id === requestedPersonalWorkspaceId && w.scope === "個人",
+            )
+          : store.workspaces.find((w) => w.scope === "個人")
         : store.workspaces.find((w) => w.id === workspaceId) ||
           store.workspaces[0];
   const contextUnavailable =
@@ -652,6 +654,7 @@ export function App() {
     }
     if (
       linkedItem?.kind === "action" &&
+      linkedItem.workspace_id === currentWorkspace?.id &&
       !modal &&
       autoOpenedActionRef.current !== autoOpenRouteKey
     ) {
@@ -762,7 +765,9 @@ export function App() {
       (i) =>
         i.kind === "action" &&
         !["paused", "abandoned", "draft"].includes(i.state) &&
-        ((linkedItem?.kind === "action" && i.id === linkedItem.id) ||
+        ((linkedItem?.kind === "action" &&
+          linkedItem.workspace_id === currentWorkspace?.id &&
+          i.id === linkedItem.id) ||
           (i.fields.recurrence
             ? (!i.start_date || i.start_date <= today) &&
               (!i.due_date || i.due_date >= today) &&

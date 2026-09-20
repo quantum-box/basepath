@@ -311,7 +311,9 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
   // person cancels that selector, the candidate must not be sent back into
   // the gate; the server-selected tenant (or no tenant query) is safe.
   selectedTenant = "tn_first";
-  await page.goto("/personal/home?tenant_id=tn_second");
+  await page.goto(
+    "/tenants?tenant_id=tn_second&return_to=%2Fpersonal%2Fhome%3Ftenant_id%3Dtn_second",
+  );
   await expect(
     page.getByRole("heading", { name: "利用するテナント", exact: true }),
   ).toBeVisible();

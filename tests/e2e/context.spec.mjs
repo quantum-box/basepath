@@ -161,6 +161,29 @@ test("a non-action conversation target never appears in today's actions", async 
   await expect(page.getByText(outcome.title, { exact: true })).toHaveCount(0);
 });
 
+test("a linked action from another workspace is neither shown nor opened", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await personalWorkspace(request);
+  const otherWorkspaceId = await organization(request, `E2E別workspace${Date.now()}`);
+  const action = await post(
+    request,
+    `/v1/workspaces/${otherWorkspaceId}/items`,
+    {
+      kind: "action",
+      title: `E2E別workspace行動${Date.now()}`,
+      scheduled_date: "2099-01-01",
+    },
+  );
+
+  await page.goto(
+    `/personal/today?workspace=${workspaceId}&item=${otherWorkspaceId}~${action.id}`,
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText(action.title, { exact: true })).toHaveCount(0);
+});
+
 test("closing a linked action editor does not reopen it", async ({
   page,
   request,
@@ -184,7 +207,7 @@ test("closing a linked action editor does not reopen it", async ({
   // Leaving the route clears the dismiss marker. Browser Back is a fresh
   // entry into the linked Today route, so the conversation target opens once
   // again.
-  await page.getByRole("button", { name: "メニューを開く", exact: true }).click();
+  await showMenu(page);
   await page
     .getByRole("navigation", { name: "メインメニュー" })
     .getByRole("button", { name: "自分の目標", exact: true })
