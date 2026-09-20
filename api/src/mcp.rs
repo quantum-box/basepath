@@ -911,27 +911,6 @@ fn screen_for_item_kind<'a>(kind: Option<&str>, requested: &'a str) -> &'a str {
     }
 }
 
-#[cfg(test)]
-mod screen_link_tests {
-    use super::screen_for_item_kind;
-
-    #[test]
-    fn goal_like_items_use_the_goal_map() {
-        for kind in ["outcome", "idea", "milestone"] {
-            assert_eq!(screen_for_item_kind(Some(kind), "today"), "goals");
-        }
-    }
-
-    #[test]
-    fn action_and_initiative_keep_their_item_screens() {
-        assert_eq!(screen_for_item_kind(Some("action"), "goals"), "today");
-        assert_eq!(
-            screen_for_item_kind(Some("initiative"), "today"),
-            "breakdown"
-        );
-    }
-}
-
 fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
     Some(match name {
         "pathbase_get_context" | "pathbase_list_templates" => (&[], &[]),
@@ -1448,5 +1427,26 @@ impl ServerHandler for Mcp {
             return Err(ErrorData::invalid_params("Unknown prompt", None));
         }
         Ok(serde_json::from_value(json!({"messages":[{"role":"user","content":{"type":"text","text":format!("{}: Get my PathBase context and ask which workspace and period to use. Use records as evidence, separate completed actions from outcomes, and propose changes for my review. Say separately what you observed, what you infer, and what you need to ask. An unmeasured value stays unmeasured: do not report it as zero or as a guess. Do not invent missing measurements, dates, or approval.",r.name)}}]})).unwrap())
+    }
+}
+
+#[cfg(test)]
+mod screen_link_tests {
+    use super::screen_for_item_kind;
+
+    #[test]
+    fn goal_like_items_use_the_goal_map() {
+        for kind in ["outcome", "idea", "milestone"] {
+            assert_eq!(screen_for_item_kind(Some(kind), "today"), "goals");
+        }
+    }
+
+    #[test]
+    fn action_and_initiative_keep_their_item_screens() {
+        assert_eq!(screen_for_item_kind(Some("action"), "goals"), "today");
+        assert_eq!(
+            screen_for_item_kind(Some("initiative"), "today"),
+            "breakdown"
+        );
     }
 }
