@@ -174,8 +174,6 @@ const nodeSize = (item: TreeItem, hasActions: boolean) => {
     ? { ...compact, height: compact.height + 51 }
     : compact;
 };
-const rowY = (depth: number) =>
-  depth === 0 ? 8 : depth === 1 ? 160 : 300 + (depth - 2) * 135;
 const strokeColor = (scope: Scope) =>
   scope === "チーム" ? "#c4adf5" : scope === "組織" ? "#bdcce0" : "#abcaf6";
 type Props = {
@@ -324,6 +322,37 @@ function MapCanvas({
     const offset = heading ? 1 : 0;
     const isOpen = (item: TreeItem) => !closedIds.has(item.id);
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
+    const actionState = (item: TreeItem, siblingIndex: number, siblingCount: number) => {
+      const editable = canEdit ? canEdit(item.id) : true;
+      const canMoveUp = editable && !!item.parentId && siblingIndex > 0 && !!onMoveUp;
+      const canMoveDown = editable && !!item.parentId && siblingIndex < siblingCount - 1 && !!onMoveDown;
+      const hasActions = editable && Boolean(
+        onEdit || onMove || onAddChild || onAddSibling || canMoveUp || canMoveDown,
+      );
+      return { editable, canMoveUp, canMoveDown, hasActions };
+    };
+    const depthHeights = new Map<number, number>();
+    const measureDepth = (itemsAtDepth: TreeItem[], depth: number) => {
+      itemsAtDepth.forEach((item, index) => {
+        const state = actionState(item, index, itemsAtDepth.length);
+        depthHeights.set(
+          depth,
+          Math.max(depthHeights.get(depth) ?? 0, nodeSize(item, state.hasActions).height),
+        );
+        measureDepth(childrenOf(item), depth + 1);
+      });
+    };
+    measureDepth(tree, offset);
+    const rowY = (depth: number) => {
+      let y = 8;
+      for (let current = 0; current < depth; current += 1) {
+        const height = current === 0 && heading
+          ? 62
+          : depthHeights.get(current) ?? 70;
+        y += height + (current === 0 ? (heading ? 48 : 45) : 38);
+      }
+      return y;
+    };
     const measure = (item: TreeItem): number => {
       const own = nodeSize(item, false).width;
       const kids = childrenOf(item);
@@ -348,16 +377,10 @@ function MapCanvas({
         open: isOpen(item),
         onToggle: () => toggleNode(item.id),
       };
-      const editable = canEdit ? canEdit(item.id) : true;
-      const canMoveUp = editable && item.parentId && siblingIndex > 0 && onMoveUp;
-      const canMoveDown = editable && item.parentId && siblingIndex < siblingCount - 1 && onMoveDown;
-      const hasActions = editable && Boolean(
-        onEdit ||
-          onMove ||
-          onAddChild ||
-          onAddSibling ||
-          canMoveUp ||
-          canMoveDown,
+      const { editable, canMoveUp, canMoveDown, hasActions } = actionState(
+        item,
+        siblingIndex,
+        siblingCount,
       );
       const size = nodeSize(item, hasActions);
       nodes.push({
@@ -384,11 +407,11 @@ function MapCanvas({
                 onMove: editable && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
                   canMoveUp
-                    ? () => onMoveUp(item.id)
+                    ? () => onMoveUp!(item.id)
                     : undefined,
                 onMoveDown:
                   canMoveDown
-                    ? () => onMoveDown(item.id)
+                    ? () => onMoveDown!(item.id)
                     : undefined,
               }
             : {
@@ -411,11 +434,11 @@ function MapCanvas({
                 onMove: editable && onMove ? () => onMove(item.id) : undefined,
                 onMoveUp:
                   canMoveUp
-                    ? () => onMoveUp(item.id)
+                    ? () => onMoveUp!(item.id)
                     : undefined,
                 onMoveDown:
                   canMoveDown
-                    ? () => onMoveDown(item.id)
+                    ? () => onMoveDown!(item.id)
                     : undefined,
               },
       });

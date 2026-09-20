@@ -820,6 +820,9 @@ input[type="checkbox"]:checked::after {
   color: var(--ink);
   border-color: #c3d2e6;
 }
+.map-node.has-actions ~ .node-toggle {
+  bottom: 45px;
+}
 .map-node-actions {
   position: absolute;
   left: 2px;
