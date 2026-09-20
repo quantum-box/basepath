@@ -166,10 +166,10 @@ function replaceScreenUrl(pathname: string, tenantId = "") {
   if (tenantId && pathname !== "/login")
     url.searchParams.set("tenant_id", tenantId);
   else url.searchParams.delete("tenant_id");
-  if (pathname !== "/") {
-    for (const key of ["item", "scope", "view", "workspace"])
-      url.searchParams.delete(key);
-  }
+  // A home transition is a context reset too. Keeping an old item/workspace
+  // pointer in the root URL would restore the unavailable deep link on reload.
+  for (const key of ["item", "scope", "view", "workspace"])
+    url.searchParams.delete(key);
   window.history.replaceState({}, "", url);
 }
 function tenantReturnUrl(): string | null {
@@ -655,6 +655,7 @@ export function App() {
     if (
       linkedItem?.kind === "action" &&
       linkedItem.workspace_id === currentWorkspace?.id &&
+      !linkedItem.archived_at &&
       !modal &&
       autoOpenedActionRef.current !== autoOpenRouteKey
     ) {

@@ -218,6 +218,34 @@ test("closing a linked action editor does not reopen it", async ({
   await expect(dialog).toBeVisible();
 });
 
+test("an archived linked action is not opened", async ({ page, request }) => {
+  const workspaceId = await personalWorkspace(request);
+  const action = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+    kind: "action",
+    title: `E2Eアーカイブ直リンク行動${Date.now()}`,
+  });
+  const archived = await request.patch(
+    `/api/v1/workspaces/${workspaceId}/items/${action.id}`,
+    {
+      headers: {
+        "idempotency-key": `e2e-archive-${Date.now()}`,
+        "content-type": "application/json",
+      },
+      data: {
+        expected_version: action.version,
+        archived_at: new Date().toISOString(),
+      },
+    },
+  );
+  expect(archived.ok(), await archived.text()).toBeTruthy();
+
+  await page.goto(
+    `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${action.id}`,
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText(action.title, { exact: true })).toHaveCount(0);
+});
+
 test("a stale personal deep link is unavailable instead of falling back", async ({
   page,
 }) => {
@@ -236,6 +264,7 @@ test("the unavailable home button switches the rendered state immediately", asyn
     .getByRole("button", { name: "ホームへ戻る", exact: true })
     .click();
   await expect(page).toHaveURL(/\/personal\/home/);
+  await expect(page).not.toHaveURL(/workspace=|item=/);
   await expect(page.locator(".context-breadcrumb")).toContainText("個人");
   await expect(
     page.getByRole("heading", { name: "ワークスペースを開けません" }),
