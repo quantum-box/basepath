@@ -335,8 +335,15 @@ function MapCanvas({
           : true
         : true;
       const canMove = editable && parentEditable;
-      const canMoveUp = editable && parentEditable && siblingIndex > 0 && !!onMoveUp;
-      const canMoveDown = editable && parentEditable && siblingIndex < siblingCount - 1 && !!onMoveDown;
+      // A promoted child whose archived parent is hidden is not actually a
+      // sibling of the displayed roots. Hide reorder controls rather than
+      // calculating an adjacent item from the wrong visual group.
+      const visibleParentMatchesPersisted =
+        !!item.parentId && item.parentId === persistedParentId;
+      const canMoveUp =
+        editable && parentEditable && visibleParentMatchesPersisted && siblingIndex > 0 && !!onMoveUp;
+      const canMoveDown =
+        editable && parentEditable && visibleParentMatchesPersisted && siblingIndex < siblingCount - 1 && !!onMoveDown;
       const hasActions = editable && Boolean(
           onEdit || (canMove && onMove) || onAddChild || onAddSibling || canMoveUp || canMoveDown,
       );
