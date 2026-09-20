@@ -52,6 +52,7 @@ import {
   pathFor,
   screenBelongs,
   stillAvailable,
+  tenantReturnWithSelection,
   type AppContext,
   type Screen,
 } from "./shared/appContext";
@@ -194,6 +195,12 @@ function safeTenantReturn(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+function restoreTenantReturn(value: string, tenantId: string): URL {
+  return new URL(
+    tenantReturnWithSelection(value, tenantId),
+    window.location.origin,
+  );
 }
 function Badge({ scope }: { scope: Scope }) {
   return <span className={`scope-badge ${scopeClass[scope]}`}>{scope}</span>;
@@ -1301,7 +1308,7 @@ export function App() {
           const returnTo = tenantReturnRef.current;
           tenantReturnRef.current = null;
           if (returnTo) {
-            const restored = new URL(returnTo, window.location.origin);
+            const restored = restoreTenantReturn(returnTo, id);
             const route = parsePath(restored.pathname);
             setScreen(route?.screen ?? "home");
             setWorkspaceId(route?.orgId ?? "");
@@ -1361,7 +1368,7 @@ export function App() {
           const returnTo = tenantReturnRef.current;
           tenantReturnRef.current = null;
           if (returnTo) {
-            const restored = new URL(returnTo, window.location.origin);
+            const restored = restoreTenantReturn(returnTo, id);
             const route = parsePath(restored.pathname);
             setScreen(route?.screen ?? "home");
             setWorkspaceId(route?.orgId ?? "");

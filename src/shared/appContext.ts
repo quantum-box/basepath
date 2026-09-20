@@ -214,6 +214,19 @@ export function parsePath(pathname: string): ParsedRoute | null {
 }
 
 /**
+ * Preserve a context deep link after explicit tenant selection, replacing the
+ * stale tenant query value captured before the switch.
+ */
+export function tenantReturnWithSelection(
+  value: string,
+  tenantId: string,
+): string {
+  const url = new URL(value, "https://pathbase.invalid");
+  url.searchParams.set("tenant_id", tenantId);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+/**
  * Is this screen part of this context at all?
  *
  * Asked on every render rather than trusted from the URL: a deep link into
