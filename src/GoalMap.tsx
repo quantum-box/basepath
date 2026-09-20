@@ -43,6 +43,8 @@ export type MapItem = {
   icon?: string;
   subtitle?: string;
   progress?: number | null;
+  /** Persisted sibling order from the part_of relation. */
+  position?: number | null;
 };
 type MapNode = Node<MapData, "goal">;
 function GoalNode({ data }: NodeProps<MapNode>) {
@@ -158,6 +160,8 @@ type TreeItem = {
   initiative?: Initiative;
   children: TreeItem[];
   terminal?: boolean;
+  position?: number | null;
+  sourceIndex: number;
 };
 const GAP = 22;
 const nodeSize = (item: TreeItem) =>
@@ -246,7 +250,7 @@ function MapCanvas({
       }
       return current && shown.has(current.id) ? current.id : undefined;
     };
-    const treeItems: TreeItem[] = matched.map((item) => ({
+    const treeItems: TreeItem[] = matched.map((item, sourceIndex) => ({
       id: item.id,
       // The existing node treatment is deliberately retained for all
       // non-goals so the visual language and spacing do not change.
@@ -284,6 +288,8 @@ function MapCanvas({
             },
       children: [],
       terminal: item.kind === "action",
+      position: item.position,
+      sourceIndex,
     }));
     const index = new Map(treeItems.map((item) => [item.id, item]));
     const roots: TreeItem[] = [];
@@ -292,6 +298,13 @@ function MapCanvas({
       if (parent && parent !== item) parent.children.push(item);
       else roots.push(item);
     });
+    const compare = (a: TreeItem, b: TreeItem) => {
+      const pa = a.position ?? Number.MAX_SAFE_INTEGER;
+      const pb = b.position ?? Number.MAX_SAFE_INTEGER;
+      return pa - pb || a.sourceIndex - b.sourceIndex;
+    };
+    for (const item of treeItems) item.children.sort(compare);
+    roots.sort(compare);
     return roots;
   }, [goals, initiatives, items, scope]);
   const { nodes, edges } = useMemo(() => {
@@ -342,8 +355,14 @@ function MapCanvas({
                   : undefined,
                 onEdit: onEdit ? () => onEdit(item.id) : undefined,
                 onMove: onMove ? () => onMove(item.id) : undefined,
-                onMoveUp: onMoveUp ? () => onMoveUp(item.id) : undefined,
-                onMoveDown: onMoveDown ? () => onMoveDown(item.id) : undefined,
+                onMoveUp:
+                  item.parentId && onMoveUp
+                    ? () => onMoveUp(item.id)
+                    : undefined,
+                onMoveDown:
+                  item.parentId && onMoveDown
+                    ? () => onMoveDown(item.id)
+                    : undefined,
               }
             : {
                 ...item.initiative!,
@@ -362,8 +381,14 @@ function MapCanvas({
                   : undefined,
                 onEdit: onEdit ? () => onEdit(item.id) : undefined,
                 onMove: onMove ? () => onMove(item.id) : undefined,
-                onMoveUp: onMoveUp ? () => onMoveUp(item.id) : undefined,
-                onMoveDown: onMoveDown ? () => onMoveDown(item.id) : undefined,
+                onMoveUp:
+                  item.parentId && onMoveUp
+                    ? () => onMoveUp(item.id)
+                    : undefined,
+                onMoveDown:
+                  item.parentId && onMoveDown
+                    ? () => onMoveDown(item.id)
+                    : undefined,
               },
       });
       if (item.parentId && depth > offset) {

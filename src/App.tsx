@@ -743,6 +743,14 @@ export function App() {
         title: item.title,
         kind: item.kind,
         parentId: parent ? uiId(parent) : undefined,
+        position:
+          allRelations.find(
+            (relation) =>
+              relation.workspace_id === item.workspace_id &&
+              relation.source_id === item.id &&
+              relation.target_id === parent?.id &&
+              relation.type === "part_of",
+          )?.position ?? null,
         scope: scopeOf(item.workspace_id),
         icon:
           item.fields.icon ||
@@ -915,9 +923,18 @@ export function App() {
     const item = raw(id);
     if (!item || !canWrite(item.workspace_id)) return;
     const current = partOfTarget(item);
-    const parentId = window.prompt("新しい親の項目ID（ルートに戻す場合は空欄）", current?.id ?? "");
+    const parentId = window.prompt(
+      "新しい親（表示ID workspace~item または項目ID。ルートに戻す場合は空欄）",
+      current ? uiId(current) : "",
+    );
     if (parentId === null) return;
-    const target = parentId ? allItems.find((entry) => entry.id === parentId && entry.workspace_id === item.workspace_id) : undefined;
+    const target = parentId
+      ? allItems.find(
+          (entry) =>
+            entry.workspace_id === item.workspace_id &&
+            (entry.id === parentId || uiId(entry) === parentId),
+        )
+      : undefined;
     if (parentId && !target) { notify("同じワークスペースの項目IDを指定してください"); return; }
     void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${item.id}/reparent`, { parent_id: target?.id ?? null, expected_version: item.version }), () => notify("親を変更しました"));
   }, [allItems, canWrite, notify, raw, store]);
@@ -933,8 +950,15 @@ export function App() {
       return pa - pb || a.created_at.localeCompare(b.created_at);
     });
     const index = siblings.findIndex((entry) => entry.id === item.id);
-    const next = index + delta;
-    if (index < 0 || next < 0 || next >= siblings.length) return;
+    if (index < 0) return;
+    // Archived children remain part of the persisted order, but are not
+    // visible siblings in the map. Move to the nearest visible sibling and
+    // swap those two slots so hidden entries keep their relative position.
+    const visible = siblings.filter((entry) => !entry.archived_at);
+    const visibleIndex = visible.findIndex((entry) => entry.id === item.id);
+    const adjacent = visible[visibleIndex + delta];
+    if (!adjacent) return;
+    const next = siblings.findIndex((entry) => entry.id === adjacent.id);
     [siblings[index], siblings[next]] = [siblings[next], siblings[index]];
     void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${parent.id}/children`, { order: siblings.map((entry) => entry.id) }), () => notify("並び順を変更しました"));
   }, [allItems, allRelations, canWrite, notify, raw, store]);
