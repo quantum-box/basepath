@@ -183,7 +183,12 @@ async fn management(tx: &mut Tx, actor: &Actor, w: &str) -> Result<Value> {
             // named by the Tachyon/Field directory in a later integration.
             // Still return a stable, human-readable kind now so consumers do
             // not have to render a bare opaque actor id as if it were a name.
-            let display_name = if actor_id == actor.id {
+            let local_preview = actor.id == Actor::local().id;
+            let display_name = if actor_id == actor.id && local_preview {
+                "ローカルプレビュー（あなた）"
+            } else if local_preview {
+                "ローカルプレビュー"
+            } else if actor_id == actor.id {
                 "あなたのTachyonアカウント"
             } else {
                 "Tachyonアカウント"
