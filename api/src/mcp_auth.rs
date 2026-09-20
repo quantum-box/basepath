@@ -32,11 +32,13 @@ use serde_json::{json, Value};
 pub const SCOPE_READ: &str = "pathbase.read";
 pub const SCOPE_PROPOSE: &str = "pathbase.propose";
 pub const SCOPE_APPLY: &str = "pathbase.apply";
-pub const GRANTABLE_SCOPES: [&str; 3] = [SCOPE_READ, SCOPE_PROPOSE, SCOPE_APPLY];
+pub const SCOPE_CONTEXT: &str = "pathbase.context";
+pub const GRANTABLE_SCOPES: [&str; 4] = [SCOPE_READ, SCOPE_PROPOSE, SCOPE_APPLY, SCOPE_CONTEXT];
 
 /// Which scope each MCP tool needs.
 pub fn required_scope(tool: &str) -> &'static str {
     match tool {
+        "pathbase_link_context" => SCOPE_CONTEXT,
         "pathbase_apply_changes" => SCOPE_APPLY,
         "pathbase_preview_changes"
         | "pathbase_propose_plan"
@@ -376,6 +378,7 @@ pub async fn revoke(tx: &mut Tx, actor: &Actor, id: &str) -> Result<Connection> 
     // have expired. They are in the same transaction as the status change, so
     // there is no window where one is true and the other is not.
     crate::oauth::revoke_connection(tx, id).await?;
+    crate::conversation::stop_for_connection(tx, id).await?;
     get_connection(tx, actor, id).await
 }
 

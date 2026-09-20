@@ -23,6 +23,9 @@ const {
   pathFor,
   screenBelongs,
   stillAvailable,
+  tenantReturnWithSelection,
+  resolvePersonalWorkspace,
+  routeWorkspaceAvailable,
 } = await import("../src/shared/appContext.ts");
 
 const personal = contextOf({ id: "ws_me", name: "個人", scope: "個人" });
@@ -117,6 +120,29 @@ test("a deep link to a screen the context does not have is refused", () => {
   // And the landing is home, not the nearest equivalent: guessing would carry
   // the person's place across the boundary.
   assert.equal(landingFor(), "home");
+});
+
+test("tenant selection replaces stale tenant context in a return URL", () => {
+  assert.equal(
+    tenantReturnWithSelection(
+      "/org/ws_acme/goals?tenant_id=tenant_a&item=ws_acme~goal_1",
+      "tenant_b",
+    ),
+    "/org/ws_acme/goals?tenant_id=tenant_b&item=ws_acme~goal_1",
+  );
+});
+
+test("personal deep links resolve the requested personal workspace only", () => {
+  const workspaces = [
+    { id: "ws_me", name: "個人", scope: "個人" },
+    { id: "ws_other", name: "Other", scope: "組織" },
+  ];
+  assert.equal(resolvePersonalWorkspace("ws_me", workspaces), "ws_me");
+  assert.equal(resolvePersonalWorkspace("ws_other", workspaces), "ws_me");
+  assert.equal(
+    routeWorkspaceAvailable(parsePath("/org/ws_missing/goals"), workspaces),
+    false,
+  );
 });
 
 test("nothing is carried across a switch", () => {

@@ -2,6 +2,7 @@ pub mod auth;
 pub mod auto_apply;
 pub mod breakdown;
 pub mod collaboration;
+pub mod conversation;
 pub mod copilot;
 pub mod db;
 pub mod field;

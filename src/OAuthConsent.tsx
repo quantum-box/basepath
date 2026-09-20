@@ -41,6 +41,10 @@ const SCOPE_LABELS: Record<string, { title: string; detail: string }> = {
     detail:
       "あなたがBasepathで承認した内容だけを反映できます。承認そのものはここでは行えません。",
   },
+  "pathbase.context": {
+    title: "会話を業務コンテキストにリンクする",
+    detail: "会話の対象ワークスペースをリンクします。計画そのものは変更しません。",
+  },
 };
 
 function describe(scope: string) {

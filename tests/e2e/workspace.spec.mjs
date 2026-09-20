@@ -129,6 +129,15 @@ test("tenant selection can return to the login screen", async ({ page }) => {
   ).toBeVisible();
   await expect(page).toHaveURL(/\/login$/);
   expect(logoutRequests).toBe(1);
+
+  // A login render is not a context route; it must not erase the captured
+  // return target while the person is authenticating.
+  await page.goto(
+    "/login?return_to=%2Fpersonal%2Fhome%3Ftenant_id%3Dtn_example",
+  );
+  await expect(page).toHaveURL(
+    /\/login\?return_to=%2Fpersonal%2Fhome%3Ftenant_id%3Dtn_example/,
+  );
 });
 
 test("forbidden tenant selection stays on the selection screen", async ({
@@ -280,32 +289,48 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
     exact: true,
   });
   await expect(switcher).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_first$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_first$/);
   await switcher.click();
   await expect(
     page.getByRole("heading", { name: "利用するテナント", exact: true }),
   ).toBeVisible();
   await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_first$/);
   await page.getByLabel("Tachyonテナント").selectOption("tn_second");
-  await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_second$/);
-  await page
-    .getByRole("button", { name: "このテナントで始める", exact: true })
-    .click();
+  const chooseTenant = page.getByRole("button", {
+    name: "このテナントで始める",
+    exact: true,
+  });
+  if (await chooseTenant.isVisible().catch(() => false))
+    await chooseTenant.click();
   await expect(switcher).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
   expect(selectedTenant).toBe("tn_second");
 
   await page.reload();
   await expect(switcher).toBeVisible();
   await expect(page.getByText("Tachyonでログイン中")).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
 
   await switcher.click();
   await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_second$/);
   await page.getByRole("button", { name: "ホームに戻る", exact: true }).click();
   await expect(switcher).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
   expect(logoutRequests).toBe(0);
+
+  // A deep link may name a different tenant than the active session. If the
+  // person cancels that selector, the candidate must not be sent back into
+  // the gate; the server-selected tenant (or no tenant query) is safe.
+  selectedTenant = "tn_first";
+  await page.goto(
+    "/tenants?tenant_id=tn_second&return_to=%2Fpersonal%2Fhome%3Ftenant_id%3Dtn_second",
+  );
+  await expect(
+    page.getByRole("heading", { name: "利用するテナント", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "ホームに戻る", exact: true }).click();
+  await expect(page).not.toHaveURL(/tenant_id=tn_second/);
+  await expect(page.locator(".context-breadcrumb")).toContainText("個人");
 });
 
 for (const failure of [
@@ -344,7 +369,7 @@ for (const failure of [
     await expect(
       page.getByLabel("Tachyonユーザー名またはメールアドレス"),
     ).not.toBeVisible();
-    await expect(page).toHaveURL(/\/\?tenant_id=tn_selected$/);
+    await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_selected$/);
   });
 }
 

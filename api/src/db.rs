@@ -150,6 +150,19 @@ impl Row {
             RowKind::MySql(row) => row.try_get(index).map_err(decode_error),
         }
     }
+    /// Text stored in a binary MySQL column. MySQL returns VARBINARY as bytes,
+    /// while SQLite's compatible TEXT column remains a string.
+    pub fn binary_text(&self, index: usize) -> Result<String> {
+        match &self.0 {
+            RowKind::Sqlite(row) => row.try_get(index).map_err(decode_error),
+            RowKind::MySql(row) => {
+                let bytes: Vec<u8> = row.try_get(index).map_err(decode_error)?;
+                String::from_utf8(bytes).map_err(|_| {
+                    ApiError::new(500, "STORAGE_ERROR", "保存内容を読み取れませんでした")
+                })
+            }
+        }
+    }
     pub fn int(&self, index: usize) -> Result<i64> {
         match &self.0 {
             RowKind::Sqlite(row) => row.try_get(index).map_err(decode_error),
@@ -524,6 +537,18 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         "MCP connection identity",
         include_str!("../migrations/sqlite/0009_mcp_connection_identity.sql"),
         include_str!("../migrations/mysql/0009_mcp_connection_identity.sql"),
+    ),
+    (
+        10,
+        "conversation links",
+        include_str!("../migrations/sqlite/0010_conversation_links.sql"),
+        include_str!("../migrations/mysql/0010_conversation_links.sql"),
+    ),
+    (
+        11,
+        "conversation link idempotency ownership",
+        include_str!("../migrations/sqlite/0011_conversation_link_idempotency.sql"),
+        include_str!("../migrations/mysql/0011_conversation_link_idempotency.sql"),
     ),
 ];
 

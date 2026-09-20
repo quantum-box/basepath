@@ -397,6 +397,182 @@ impl Mcp {
                     json!({"me":me,"workspaces":workspaces,"delegation":"proposal_only","basepath_url":basepath_url,"approval":"Approve a change set in Basepath; an app-initiated call is never accepted as approval"}),
                 );
             }
+            "pathbase_link_context" => {
+                // A context link is deliberately not a plan write.  First
+                // authorize the target through the normal workspace service,
+                // then return a URL that the person can open in their own
+                // session.  A model cannot use this to mutate a confirmed
+                // plan, and a link never carries an MCP credential.
+                let Some(conversation_id) = args["conversation_id"].as_str() else {
+                    return Ok(json!({
+                        "status": "unsupported_host",
+                        "reason": "host_did_not_provide_conversation_id",
+                        "permission": "read",
+                        "plan_mutation": "none",
+                        "retry": "safe_to_retry",
+                        "disconnect": "revoke_the_mcp_connection"
+                    }));
+                };
+                self.service
+                    .handle(
+                        &actor,
+                        "GET",
+                        &format!("{base}/snapshot"),
+                        &q,
+                        json!({}),
+                        None,
+                    )
+                    .await?;
+                let workspaces = self
+                    .service
+                    .handle(&actor, "GET", "/v1/workspaces", &q, json!({}), None)
+                    .await?;
+                let scope = workspaces
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["id"] == w))
+                    .and_then(|row| row["scope"].as_str())
+                    .unwrap_or("組織");
+                let requested_screen = args["screen"].as_str().unwrap_or("home");
+                let mut screen = requested_screen;
+                if let Some(item_id) = args["item_id"].as_str() {
+                    let item = self
+                        .service
+                        .handle(
+                            &actor,
+                            "GET",
+                            &format!("{base}/items/{item_id}"),
+                            &q,
+                            json!({}),
+                            None,
+                        )
+                        .await?;
+                    if !item["archived_at"].is_null() {
+                        return Err(crate::model::ApiError::missing());
+                    }
+                    // A deep link must open the screen that can actually
+                    // address the item. In particular, an action is not a
+                    // goal and must never fall through to the first goal in
+                    // the map when a host supplies its id.
+                    screen = screen_for_item_kind(item["kind"].as_str(), requested_screen);
+                }
+                if !screen_allowed_for_scope(scope, screen) {
+                    return Err(crate::model::ApiError::invalid(
+                        "screen is not available in this workspace scope",
+                    ));
+                }
+                let Some(basepath) = basepath_url() else {
+                    return Ok(json!({
+                        "status": "unsupported_host",
+                        "reason": "PATHBASE_PUBLIC_URL is not configured",
+                        "permission": "read",
+                        "target": {"workspace_id": w, "item_id": args["item_id"]},
+                        "plan_mutation": "none",
+                        "retry": "safe_to_retry",
+                        "disconnect": "revoke_the_mcp_connection"
+                    }));
+                };
+                let url = {
+                    let mut query = url::form_urlencoded::Serializer::new(String::new());
+                    query.append_pair("workspace", w);
+                    query.append_pair("tenant_id", &actor.tenant);
+                    if let Some(item_id) = args["item_id"].as_str() {
+                        query.append_pair("item", &format!("{w}~{item_id}"));
+                    }
+                    let path = if scope == "個人" {
+                        format!("/personal/{screen}")
+                    } else {
+                        format!("/org/{w}/{screen}")
+                    };
+                    format!("{basepath}{path}?{}", query.finish())
+                };
+                let mut tx = self.service.db.begin_write().await?;
+                let connection_id = actor.connection.clone().unwrap_or_default();
+                let link = crate::conversation::upsert(
+                    &mut tx,
+                    &actor,
+                    crate::conversation::LinkInput {
+                        connection_id: &connection_id,
+                        conversation_id,
+                        workspace_id: w,
+                        item_id: args["item_id"].as_str(),
+                        screen: Some(screen),
+                        idempotency_key: args["idempotency_key"]
+                            .as_str()
+                            .unwrap_or(conversation_id),
+                    },
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(json!({
+                    "status": link.status,
+                    "url": url,
+                    "conversation_id": link.conversation_id,
+                    "target": {"workspace_id": w, "item_id": args["item_id"]},
+                    "link_id": link.id,
+                    "source": link.source,
+                    "source_version": link.source_version,
+                    "created_at": link.created_at,
+                    "updated_at": link.updated_at,
+                    "permission": "read",
+                    "plan_mutation": "none",
+                    "retry": "safe_to_retry",
+                    "disconnect": "revoke_the_mcp_connection",
+                    "host_support": "plain_link_only"
+                }));
+            }
+            "pathbase_get_linked_context" => {
+                let Some(conversation_id) = args["conversation_id"].as_str() else {
+                    return Ok(
+                        json!({"status":"unsupported_host","reason":"host_did_not_provide_conversation_id","retry":"safe_to_retry"}),
+                    );
+                };
+                let mut tx = self.service.db.begin_read().await?;
+                let connection_id = actor.connection.clone().unwrap_or_default();
+                let Some(link) =
+                    crate::conversation::get(&mut tx, &actor, &connection_id, conversation_id)
+                        .await?
+                else {
+                    drop(tx);
+                    return Ok(
+                        json!({"status":"not_linked","conversation_id":conversation_id,"permission":"read","plan_mutation":"none"}),
+                    );
+                };
+                drop(tx);
+                if link.status != "active" {
+                    return Ok(
+                        json!({"status":link.status,"conversation_id":link.conversation_id,"link_id":link.id,"permission":"read","plan_mutation":"none","disconnect":"revoke_the_mcp_connection"}),
+                    );
+                }
+                if let Some(item_id) = link.item_id.as_deref() {
+                    let item = self
+                        .service
+                        .handle(
+                            &actor,
+                            "GET",
+                            &format!("/v1/workspaces/{}/items/{item_id}", link.workspace_id),
+                            &q,
+                            json!({}),
+                            None,
+                        )
+                        .await?;
+                    if !item["archived_at"].is_null() {
+                        return Err(crate::model::ApiError::missing());
+                    }
+                }
+                self.service
+                    .handle(
+                        &actor,
+                        "GET",
+                        &format!("/v1/workspaces/{}/snapshot", link.workspace_id),
+                        &q,
+                        json!({}),
+                        None,
+                    )
+                    .await?;
+                return Ok(
+                    json!({"status":"active","conversation_id":link.conversation_id,"link_id":link.id,"target":{"workspace_id":link.workspace_id,"item_id":link.item_id},"screen":link.screen,"source":link.source,"source_version":link.source_version,"permission":"read","plan_mutation":"none","retry":"safe_to_retry","disconnect":"revoke_the_mcp_connection"}),
+                );
+            }
             "pathbase_search_items" => ("GET", format!("{base}/items"), json!({})),
             "pathbase_get_item" => ("GET", format!("{base}/items/{id}"), json!({})),
             "pathbase_get_graph" => ("GET", format!("{base}/graph"), json!({})),
@@ -650,20 +826,124 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
         }
     }
     if object
-        .get("idempotency_key")
+        .get("conversation_id")
         .and_then(Value::as_str)
-        .is_some_and(|key| key.len() > 200)
+        .is_some_and(|id| id.chars().count() > crate::conversation::MAX_CONVERSATION_ID_LENGTH)
     {
         return Err(crate::model::ApiError::invalid(
-            "idempotency_key must be at most 200 characters",
+            "conversation_id must be at most 191 characters",
         ));
     }
+    if name == "pathbase_link_context" {
+        if object
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .is_some_and(|key| {
+                key.len() > crate::conversation::MAX_IDEMPOTENCY_KEY_BYTES || !key.is_ascii()
+            })
+        {
+            return Err(crate::model::ApiError::invalid(
+                "idempotency_key must be at most 200 ASCII bytes",
+            ));
+        }
+        if let Some(screen) = object.get("screen").and_then(Value::as_str) {
+            const SCREENS: &[&str] = &[
+                "home",
+                "today",
+                "goals",
+                "breakdown",
+                "timeline",
+                "memory",
+                "reflection",
+                "cycles",
+                "alignment",
+                "dashboard",
+                "goal-review",
+                "templates",
+                "members",
+            ];
+            if !SCREENS.contains(&screen) {
+                return Err(crate::model::ApiError::invalid(
+                    "screen is not a recognized PathBase route",
+                ));
+            }
+        }
+        if object.get("idempotency_key").is_none()
+            && object
+                .get("conversation_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    id.len() > crate::conversation::MAX_IDEMPOTENCY_KEY_BYTES || !id.is_ascii()
+                })
+        {
+            return Err(crate::model::ApiError::invalid(
+                "conversation_id cannot be used as an idempotency fallback unless it is 1-200 ASCII bytes",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn screen_allowed_for_scope(scope: &str, screen: &str) -> bool {
+    match scope {
+        "個人" => matches!(
+            screen,
+            "home"
+                | "today"
+                | "goals"
+                | "breakdown"
+                | "timeline"
+                | "memory"
+                | "reflection"
+                | "cycles"
+                | "templates"
+                | "members"
+        ),
+        "組織" | "チーム" => matches!(
+            screen,
+            "home"
+                | "goals"
+                | "breakdown"
+                | "alignment"
+                | "dashboard"
+                | "goal-review"
+                | "cycles"
+                | "timeline"
+                | "today"
+                | "reflection"
+                | "templates"
+                | "members"
+        ),
+        _ => false,
+    }
+}
+
+/// Goal-like items belong to the goal map even when a host supplied a generic
+/// or incompatible screen. This prevents a deep link from rendering an empty
+/// Today view and silently losing the selected goal.
+fn screen_for_item_kind<'a>(kind: Option<&str>, requested: &'a str) -> &'a str {
+    match kind {
+        Some("action") => "today",
+        Some("initiative") => "breakdown",
+        Some("outcome") | Some("idea") | Some("milestone") => "goals",
+        _ => requested,
+    }
 }
 
 fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
     Some(match name {
         "pathbase_get_context" | "pathbase_list_templates" => (&[], &[]),
+        "pathbase_link_context" => (
+            &["workspace_id"],
+            &[
+                "workspace_id",
+                "item_id",
+                "screen",
+                "conversation_id",
+                "idempotency_key",
+            ],
+        ),
+        "pathbase_get_linked_context" => (&["conversation_id"], &["conversation_id"]),
         "pathbase_search_items" => (
             &["workspace_id"],
             &["workspace_id", "query", "kind", "state", "cursor", "limit"],
@@ -859,6 +1139,8 @@ const fn write(name: &'static str, description: &'static str, destructive: bool)
 fn tools() -> Vec<Tool> {
     let defs = [
         read("pathbase_get_context", "Get the authenticated actor and authorized workspaces."),
+        write("pathbase_link_context", "Create or explicitly relink a conversation-to-workspace context using pathbase.context. conversation_id is at most 191 characters; idempotency_key is optional (1-200 ASCII bytes) and falls back to conversation_id only when that fallback fits the same byte contract. This never changes a confirmed plan; if the public URL is unavailable, report unsupported_host.", false),
+        read("pathbase_get_linked_context", "Resolve the workspace and business context previously linked to this conversation using pathbase.read. Returns stopped or not_linked honestly; it never mutates the plan."),
         read("pathbase_search_items", "Search a single authorized workspace, with cursor paging."),
         read("pathbase_get_item", "Get an item including its version, dates, and evaluation settings."),
         read("pathbase_get_graph", "Get the goal graph for one workspace. Returns at most `limit` nodes (default and maximum 200) with the relations between them, plus `truncated` and the `limit` that was applied. When `truncated` is true the graph is a slice, not the plan: narrow the request or read the missing subtree with pathbase_get_item."),
@@ -896,7 +1178,7 @@ fn tools() -> Vec<Tool> {
     defs.into_iter().map(|shape| {
         let (required, allowed) = argument_contract(shape.name).unwrap();
         let mut props=json!({});
-        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),_=>json!({"type":"string"})};}
+        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key" if shape.name == "pathbase_link_context"=>json!({"type":"string","minLength":1,"maxLength":200,"pattern":"^[\\x20-\\x7E]+$","description":"1-200 ASCII bytes; storage is VARBINARY(200)."}),"idempotency_key"=>json!({"type":"string","minLength":1}),_=>json!({"type":"string"})};}
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
         if let Some(uri) = ui_resource(shape.name) {
             // Both conventions, for the same document. MCP Apps reads
@@ -1164,5 +1446,32 @@ impl ServerHandler for Mcp {
             return Err(ErrorData::invalid_params("Unknown prompt", None));
         }
         Ok(serde_json::from_value(json!({"messages":[{"role":"user","content":{"type":"text","text":format!("{}: Get my PathBase context and ask which workspace and period to use. Use records as evidence, separate completed actions from outcomes, and propose changes for my review. Say separately what you observed, what you infer, and what you need to ask. An unmeasured value stays unmeasured: do not report it as zero or as a guess. Do not invent missing measurements, dates, or approval.",r.name)}}]})).unwrap())
+    }
+}
+
+#[cfg(test)]
+mod screen_link_tests {
+    use super::{screen_allowed_for_scope, screen_for_item_kind};
+
+    #[test]
+    fn goal_like_items_use_the_goal_map() {
+        for kind in ["outcome", "idea", "milestone"] {
+            assert_eq!(screen_for_item_kind(Some(kind), "today"), "goals");
+        }
+    }
+
+    #[test]
+    fn action_and_initiative_keep_their_item_screens() {
+        assert_eq!(screen_for_item_kind(Some("action"), "goals"), "today");
+        assert_eq!(
+            screen_for_item_kind(Some("initiative"), "today"),
+            "breakdown"
+        );
+    }
+
+    #[test]
+    fn team_workspaces_use_organization_routes() {
+        assert!(screen_allowed_for_scope("チーム", "dashboard"));
+        assert!(!screen_allowed_for_scope("チーム", "memory"));
     }
 }

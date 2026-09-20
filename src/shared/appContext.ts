@@ -164,6 +164,27 @@ export function emptyStateFor(kind: ContextKind): string {
 /** A workspace, as far as this module needs to know. */
 export type WorkspaceLike = { id: string; name: string; scope: string };
 
+export function resolvePersonalWorkspace(
+  requestedId: string,
+  workspaces: WorkspaceLike[],
+): string {
+  return (
+    workspaces.find(
+      (workspace) =>
+        workspace.id === requestedId && workspace.scope === "個人",
+    )?.id || workspaces.find((workspace) => workspace.scope === "個人")?.id || ""
+  );
+}
+
+export function routeWorkspaceAvailable(
+  route: ParsedRoute,
+  workspaces: WorkspaceLike[],
+): boolean {
+  return route.kind === "personal"
+    ? workspaces.some((workspace) => workspace.scope === "個人")
+    : workspaces.some((workspace) => workspace.id === route.orgId);
+}
+
 export function contextOf(workspace: WorkspaceLike): AppContext {
   return {
     kind: workspace.scope === "個人" ? "personal" : "organization",
@@ -211,6 +232,19 @@ export function parsePath(pathname: string): ParsedRoute | null {
     return { kind: "organization", orgId: parts[1], screen: screen as Screen };
   }
   return null;
+}
+
+/**
+ * Preserve a context deep link after explicit tenant selection, replacing the
+ * stale tenant query value captured before the switch.
+ */
+export function tenantReturnWithSelection(
+  value: string,
+  tenantId: string,
+): string {
+  const url = new URL(value, "https://pathbase.invalid");
+  url.searchParams.set("tenant_id", tenantId);
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 /**

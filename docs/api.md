@@ -129,6 +129,7 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 * 文字で分かります。パンくず（`個人` / `組織・{名前}`）、タブのタイトル、空状態の文面。色やアイコンだけには依存しません。
 * 切替時に何も持ち越しません。選択中の項目、検索語、開いていたパネルはすべて、去るcontextへのポインタです。
 * 画面の中からワークスペースを選ぶ操作も同じ経路を通ります。境界を越える道が2本あって片方が古い選択を残すなら、2つはやがて分かれていません。
+* deep linkの`tenant_id`が現在の選択と違う場合は、`/tenants?tenant_id=...&return_to=...`で明示選択を挟みます。return先は同一originのPathBase routeだけを許可し、refreshや共有後もworkspace/item/screenを復元します。
 * 権限を失った組織は即座に使えなくなります。ワークスペース一覧が正で、そこに無いcontextはその人にとって存在しません。
 * そのcontextに無い画面へのdeep linkは、空の画面ではなくそのcontextのホームに着きます。空の記憶画面は「ここに記憶はあるのか」に「たぶん」と答えてしまいます。
 
@@ -352,3 +353,33 @@ Tachyonセッションを使用し、Field側の権限を毎回確認します�
 - `POST /v1/workspaces/{w}/field/refresh-task`：tenant_id、item_id。保存済みのField参照とテナント境界を検証し、Fieldからタイトル・状態・更新日時を明示的に再取得します。Field側のデータは変更しません。
 
 Fieldへの変更操作・バックグラウンド同期はありません。詳しい上流契約と権限の分離は[integration-contracts.md](integration-contracts.md)を参照してください。
+
+## 会話と業務コンテキストのリンク
+
+MCP接続は会話本文を保存しません。ホストが渡した`conversation_id`と、本人が
+アクセスできる1つのワークスペース（任意で項目）だけをリンク情報として保存します。
+リンクは計画を変更せず、解決は`pathbase.read`で利用できます。
+
+- `pathbase_link_context`：`workspace_id`が必須。対応hostでは`conversation_id`（最大191文字）を
+  指定します。`idempotency_key`は任意で、conversation IDが1〜200 ASCII bytesならそれを
+  fallback keyとして安全に再試行できます。明示したkeyも1〜200 ASCII bytesです。
+  同じキーに別の会話・対象・画面を割り当てると409です。
+  `item_id`と`screen`は任意ですが、画面はworkspaceのscopeに適合するものだけ指定できます。
+  `item_id`が行動なら`today`、取り組みなら`breakdown`へ正規化し、目標画面へ誤ってfallbackしません。
+  対象は通常のtenant/workspace membershipで再検証され、同じ会話への再試行は同じリンクを返します。
+  作成・明示的な再リンクの返却`status`は`active`です。別の対象や画面への再リンクは409です。
+- `pathbase_link_context`（リンクの作成・明示的な再リンク）には`pathbase.context`権限が必要です。
+  `pathbase_get_linked_context`（既存リンクの解決・読み取り）には`pathbase.read`権限が必要です。
+  conversation IDはMCP client namespace内で解決され、別clientの同名IDとは混ざりません。
+- `pathbase_get_linked_context`：`conversation_id`で現在のリンクを解決します。`active`、
+  `stopped`、`not_linked`を区別します。別tenantのリンクは返しません。
+- 接続解除はリンクを`stopped`にし、トークンも同じトランザクションで無効化します。
+  `stopped`リンクは自動では`active`に戻りません。新しい許可済みMCP接続から、同じ対象を
+  `pathbase_link_context`で明示的に再リンクした場合だけ`active`に戻ります。
+- `conversation_id`を提供しないホスト、または`PATHBASE_PUBLIC_URL`未設定の環境は
+  `unsupported_host`を返します。存在しない自動トリガーやURLを推測しません。
+
+`source`は認証済みMCP transport自身が付ける`mcp`固定値、`source_version`はこの保存契約の
+バージョン`1`固定値です。モデルやホストがこれらを任意に名乗る入力欄は提供しません。
+リンクの`source`と`source_version`は、どの契約で作られたかを示す監査用メタデータです。
+承認済みの変更案・目標・行動をこの機能から直接変更することはありません。

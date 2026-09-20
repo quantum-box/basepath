@@ -24,12 +24,36 @@ async function post(request, path, data) {
   return response.json();
 }
 
+async function archiveItem(request, workspaceId, item) {
+  const response = await request.patch(
+    `/api/v1/workspaces/${workspaceId}/items/${item.id}`,
+    {
+      headers: {
+        "idempotency-key": `e2e-cleanup-${Date.now()}-${Math.random()}`,
+        "content-type": "application/json",
+      },
+      data: {
+        expected_version: item.version,
+        archived_at: new Date().toISOString(),
+      },
+    },
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+}
+
 async function organization(request, name) {
   const created = await post(request, "/v1/workspaces", {
     name,
     scope: "組織",
   });
   return created.id;
+}
+
+async function personalWorkspace(request) {
+  const response = await request.get("/api/v1/workspaces");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const workspaces = await response.json();
+  return workspaces.find((workspace) => workspace.scope === "個人").id;
 }
 
 function menu(page) {
@@ -135,6 +159,148 @@ test("a deep link lands in the context the URL names, after a reload", async ({
   await expect(
     page.getByRole("heading", { name: "記憶", exact: true, level: 1 }),
   ).toBeVisible();
+});
+
+test("a non-action conversation target never appears in today's actions", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await personalWorkspace(request);
+  let outcome;
+  try {
+    outcome = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+      kind: "outcome",
+      title: `E2E直リンク目標${Date.now()}`,
+    });
+
+    await page.goto(
+      `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${outcome.id}`,
+    );
+    await expect(page.getByRole("heading", { name: "今日の行動" })).toBeVisible();
+    await expect(page.getByText(outcome.title, { exact: true })).toHaveCount(0);
+  } finally {
+    if (outcome) await archiveItem(request, workspaceId, outcome);
+  }
+});
+
+test("a linked action from another workspace is neither shown nor opened", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await personalWorkspace(request);
+  const otherWorkspaceId = await organization(request, `E2E別workspace${Date.now()}`);
+  let action;
+  try {
+    action = await post(
+      request,
+      `/v1/workspaces/${otherWorkspaceId}/items`,
+      {
+        kind: "action",
+        title: `E2E別workspace行動${Date.now()}`,
+        scheduled_date: "2099-01-01",
+      },
+    );
+
+    await page.goto(
+      `/personal/today?workspace=${workspaceId}&item=${otherWorkspaceId}~${action.id}`,
+    );
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByText(action.title, { exact: true })).toHaveCount(0);
+  } finally {
+    if (action) await archiveItem(request, otherWorkspaceId, action);
+  }
+});
+
+test("closing a linked action editor does not reopen it", async ({
+  page,
+  request,
+}) => {
+  const workspaceId = await personalWorkspace(request);
+  let action;
+  try {
+    action = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+      kind: "action",
+      title: `E2E直リンク行動${Date.now()}`,
+    });
+
+    await page.goto(
+      `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${action.id}`,
+    );
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "閉じる" }).click();
+    await expect(dialog).not.toBeVisible();
+    await page.waitForTimeout(100);
+    await expect(dialog).not.toBeVisible();
+
+    // Leaving the route clears the dismiss marker. Browser Back is a fresh
+    // entry into the linked Today route, so the conversation target opens once
+    // again.
+    await showMenu(page);
+    await page
+      .getByRole("navigation", { name: "メインメニュー" })
+      .getByRole("button", { name: "自分の目標", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/personal\/goals/);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/personal\/today/);
+    await expect(dialog).toBeVisible();
+  } finally {
+    if (action) await archiveItem(request, workspaceId, action);
+  }
+});
+
+test("an archived linked action is not opened", async ({ page, request }) => {
+  const workspaceId = await personalWorkspace(request);
+  const action = await post(request, `/v1/workspaces/${workspaceId}/items`, {
+    kind: "action",
+    title: `E2Eアーカイブ直リンク行動${Date.now()}`,
+  });
+  const archived = await request.patch(
+    `/api/v1/workspaces/${workspaceId}/items/${action.id}`,
+    {
+      headers: {
+        "idempotency-key": `e2e-archive-${Date.now()}`,
+        "content-type": "application/json",
+      },
+      data: {
+        expected_version: action.version,
+        archived_at: new Date().toISOString(),
+      },
+    },
+  );
+  expect(archived.ok(), await archived.text()).toBeTruthy();
+
+  await page.goto(
+    `/personal/today?workspace=${workspaceId}&item=${workspaceId}~${action.id}`,
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByText(action.title, { exact: true })).toHaveCount(0);
+});
+
+test("a stale personal deep link is unavailable instead of falling back", async ({
+  page,
+}) => {
+  await page.goto("/personal/home?workspace=personal-workspace-no-longer-available");
+  await expect(
+    page.getByRole("heading", { name: "ワークスペースを開けません" }),
+  ).toBeVisible();
+  await expect(page.locator(".context-breadcrumb")).toHaveCount(0);
+});
+
+test("the unavailable home button switches the rendered state immediately", async ({
+  page,
+}) => {
+  await page.goto("/personal/home?workspace=personal-workspace-no-longer-available");
+  await page
+    .getByRole("button", { name: "ホームへ戻る", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/personal\/home/);
+  await expect(page).not.toHaveURL(/workspace=|item=/);
+  await expect(page.locator(".context-breadcrumb")).toContainText("個人");
+  await expect(
+    page.getByRole("heading", { name: "ワークスペースを開けません" }),
+  ).toHaveCount(0);
 });
 
 test("a link to a screen the context does not have lands on its home", async ({
