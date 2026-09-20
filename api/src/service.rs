@@ -2988,8 +2988,17 @@ async fn dispatch_inner(
                     })
                     .cloned()
                     .collect();
+                let items: Vec<Item> = list(tx, w, "items").await?;
                 siblings.sort_by_key(|candidate| {
-                    (candidate.position.unwrap_or(i64::MAX), candidate.id.clone())
+                    let source_index = items
+                        .iter()
+                        .position(|item| item.id == candidate.source_id)
+                        .unwrap_or(usize::MAX);
+                    (
+                        candidate.position.unwrap_or(i64::MAX),
+                        source_index,
+                        candidate.id.clone(),
+                    )
                 });
                 let mut next_position = siblings
                     .iter()

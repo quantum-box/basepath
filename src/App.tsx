@@ -929,10 +929,10 @@ export function App() {
     if (item.kind === "action" || item.kind === "initiative" || item.kind === "milestone") {
       setModal({ kind: "initiativeDetail", id });
     } else {
-      setSelectedId(id);
+      selectGoal(id);
       setModal({ kind: "editGoal" });
     }
-  }, [allItems]);
+  }, [allItems, selectGoal]);
   const moveTreeItem = useCallback((id: string) => {
     const item = raw(id);
     if (!item || !canEditItem(item)) return;
