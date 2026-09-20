@@ -12,6 +12,7 @@
 //! registration, the token exchange, and every MCP call — goes over HTTP.
 use axum::{extract::State, http::HeaderMap, response::IntoResponse, routing::any, Json, Router};
 use pathbase_api::{
+    conversation,
     mcp_auth::ResourceConfig,
     oauth,
     service::{Actor, Service},
@@ -391,6 +392,124 @@ async fn connection_of(service: &Service, actor: &str) -> Value {
 }
 
 #[tokio::test]
+async fn conversation_context_link_persists_resolves_isolates_and_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Service::open(
+        &dir.path()
+            .join("conversation-links.sqlite")
+            .to_string_lossy(),
+    )
+    .await
+    .unwrap();
+    service.initialize(false).await.unwrap();
+    let actor = Actor::local();
+    let link = {
+        let mut tx = service.db.begin_write().await.unwrap();
+        let value = conversation::upsert(
+            &mut tx,
+            &actor,
+            "connection-a",
+            "chat-1",
+            "personal",
+            Some("item-1"),
+            Some("alignment"),
+            "retry-1",
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        value
+    };
+    let resolved = {
+        let mut tx = service.db.begin_read().await.unwrap();
+        conversation::get(&mut tx, &actor, "chat-1")
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(resolved.id, link.id);
+    assert_eq!(resolved.source, "mcp");
+    assert_eq!(resolved.source_version, "1");
+    let other = Actor::person("local-owner", "another-tenant");
+    let mut tx = service.db.begin_read().await.unwrap();
+    assert!(conversation::get(&mut tx, &other, "chat-1")
+        .await
+        .unwrap()
+        .is_none());
+    drop(tx);
+    let mut tx = service.db.begin_write().await.unwrap();
+    let retry = conversation::upsert(
+        &mut tx,
+        &actor,
+        "connection-a",
+        "chat-1",
+        "personal",
+        Some("item-1"),
+        Some("alignment"),
+        "retry-1",
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry.id, link.id);
+    let conflict = conversation::upsert(
+        &mut tx,
+        &actor,
+        "connection-a",
+        "chat-1",
+        "personal",
+        Some("item-2"),
+        None,
+        "retry-2",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.status, 409);
+    let collision = conversation::upsert(
+        &mut tx,
+        &actor,
+        "connection-a",
+        "chat-2",
+        "personal",
+        None,
+        None,
+        "retry-1",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(collision.status, 409);
+    conversation::stop_for_connection(&mut tx, "connection-a")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = service.db.begin_read().await.unwrap();
+    assert_eq!(
+        conversation::get(&mut tx, &actor, "chat-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "stopped"
+    );
+    drop(tx);
+    // A new approved connection may explicitly relink the same target; a
+    // stale stopped link is never reported as active by itself.
+    let mut tx = service.db.begin_write().await.unwrap();
+    let relinked = conversation::upsert(
+        &mut tx,
+        &actor,
+        "connection-b",
+        "chat-1",
+        "personal",
+        Some("item-1"),
+        Some("alignment"),
+        "retry-3",
+    )
+    .await
+    .unwrap();
+    assert_eq!(relinked.status, "active");
+}
+
+#[tokio::test]
 async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("remote-mcp.sqlite3");
@@ -495,7 +614,13 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
-    assert_eq!(listed.len(), 34);
+    assert_eq!(listed.len(), 36);
+    assert!(listed
+        .iter()
+        .any(|tool| tool["name"] == "pathbase_link_context"));
+    assert!(listed
+        .iter()
+        .any(|tool| tool["name"] == "pathbase_get_linked_context"));
     // Annotations describe the real effect: a change set can contain DELETE
     // operations, so proposing and applying one are not "non-destructive".
     let shape = |name: &str| {
@@ -561,6 +686,48 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         .as_str()
         .unwrap()
         .to_owned();
+
+    let (linked, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        32,
+        "tools/call",
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":alice_personal,"conversation_id":"chat-alice-1","idempotency_key":"chat-alice-1-v1","screen":"alignment"}}),
+    )
+    .await;
+    assert_eq!(linked["structuredContent"]["status"], "active");
+    assert_eq!(
+        linked["structuredContent"]["target"]["workspace_id"],
+        alice_personal
+    );
+    let (resolved, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        33,
+        "tools/call",
+        json!({"name":"pathbase_get_linked_context","arguments":{"conversation_id":"chat-alice-1"}}),
+    )
+    .await;
+    assert_eq!(resolved["structuredContent"]["status"], "linked");
+    assert_eq!(
+        resolved["structuredContent"]["target"]["workspace_id"],
+        alice_personal
+    );
+    let (other_workspace, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        34,
+        "tools/call",
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":"someone-elses-workspace","conversation_id":"chat-alice-2","idempotency_key":"chat-alice-2-v1"}}),
+    )
+    .await;
+    assert_eq!(other_workspace["isError"], true);
 
     // Retrieval reaches the same boundary the HTTP routes do: a personal
     // index in a shared workspace does not exist, and `context_kind` is never

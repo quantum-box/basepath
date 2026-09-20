@@ -525,6 +525,12 @@ const MIGRATIONS: &[(i64, &str, &str, &str)] = &[
         include_str!("../migrations/sqlite/0009_mcp_connection_identity.sql"),
         include_str!("../migrations/mysql/0009_mcp_connection_identity.sql"),
     ),
+    (
+        10,
+        "conversation links",
+        include_str!("../migrations/sqlite/0010_conversation_links.sql"),
+        include_str!("../migrations/mysql/0010_conversation_links.sql"),
+    ),
 ];
 
 /// The schema version this build expects. Readiness compares against it, so a

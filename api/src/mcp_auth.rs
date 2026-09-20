@@ -376,6 +376,7 @@ pub async fn revoke(tx: &mut Tx, actor: &Actor, id: &str) -> Result<Connection> 
     // have expired. They are in the same transaction as the status change, so
     // there is no window where one is true and the other is not.
     crate::oauth::revoke_connection(tx, id).await?;
+    crate::conversation::stop_for_connection(tx, id).await?;
     get_connection(tx, actor, id).await
 }
 

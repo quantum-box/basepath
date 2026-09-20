@@ -397,6 +397,130 @@ impl Mcp {
                     json!({"me":me,"workspaces":workspaces,"delegation":"proposal_only","basepath_url":basepath_url,"approval":"Approve a change set in Basepath; an app-initiated call is never accepted as approval"}),
                 );
             }
+            "pathbase_link_context" => {
+                // A context link is deliberately not a plan write.  First
+                // authorize the target through the normal workspace service,
+                // then return a URL that the person can open in their own
+                // session.  A model cannot use this to mutate a confirmed
+                // plan, and a link never carries an MCP credential.
+                let Some(conversation_id) = args["conversation_id"].as_str() else {
+                    return Ok(json!({
+                        "status": "unsupported_host",
+                        "reason": "host_did_not_provide_conversation_id",
+                        "permission": "read",
+                        "plan_mutation": "none",
+                        "retry": "safe_to_retry",
+                        "disconnect": "revoke_the_mcp_connection"
+                    }));
+                };
+                self.service
+                    .handle(
+                        &actor,
+                        "GET",
+                        &format!("{base}/snapshot"),
+                        &q,
+                        json!({}),
+                        None,
+                    )
+                    .await?;
+                if let Some(item_id) = args["item_id"].as_str() {
+                    self.service
+                        .handle(
+                            &actor,
+                            "GET",
+                            &format!("{base}/items/{item_id}"),
+                            &q,
+                            json!({}),
+                            None,
+                        )
+                        .await?;
+                }
+                let Some(basepath) = basepath_url() else {
+                    return Ok(json!({
+                        "status": "unsupported_host",
+                        "reason": "PATHBASE_PUBLIC_URL is not configured",
+                        "permission": "read",
+                        "target": {"workspace_id": w, "item_id": args["item_id"]},
+                        "plan_mutation": "none",
+                        "retry": "safe_to_retry",
+                        "disconnect": "revoke_the_mcp_connection"
+                    }));
+                };
+                let url = {
+                    let mut query = url::form_urlencoded::Serializer::new(String::new());
+                    query.append_pair("workspace", w);
+                    if let Some(item_id) = args["item_id"].as_str() {
+                        query.append_pair("item", item_id);
+                    }
+                    if let Some(screen) = args["screen"].as_str() {
+                        query.append_pair("screen", screen);
+                    }
+                    format!("{basepath}/?{}", query.finish())
+                };
+                let mut tx = self.service.db.begin_write().await?;
+                let link = crate::conversation::upsert(
+                    &mut tx,
+                    &actor,
+                    &actor.connection.clone().unwrap_or_default(),
+                    conversation_id,
+                    w,
+                    args["item_id"].as_str(),
+                    args["screen"].as_str(),
+                    args["idempotency_key"].as_str().unwrap_or(conversation_id),
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(json!({
+                    "status": link.status,
+                    "url": url,
+                    "conversation_id": link.conversation_id,
+                    "target": {"workspace_id": w, "item_id": args["item_id"]},
+                    "link_id": link.id,
+                    "source": link.source,
+                    "source_version": link.source_version,
+                    "created_at": link.created_at,
+                    "updated_at": link.updated_at,
+                    "permission": "read",
+                    "plan_mutation": "none",
+                    "retry": "safe_to_retry",
+                    "disconnect": "revoke_the_mcp_connection",
+                    "host_support": "plain_link_only"
+                }));
+            }
+            "pathbase_get_linked_context" => {
+                let Some(conversation_id) = args["conversation_id"].as_str() else {
+                    return Ok(
+                        json!({"status":"unsupported_host","reason":"host_did_not_provide_conversation_id","retry":"safe_to_retry"}),
+                    );
+                };
+                let mut tx = self.service.db.begin_write().await?;
+                let Some(link) = crate::conversation::get(&mut tx, &actor, conversation_id).await?
+                else {
+                    tx.commit().await?;
+                    return Ok(
+                        json!({"status":"not_linked","conversation_id":conversation_id,"permission":"read","plan_mutation":"none"}),
+                    );
+                };
+                tx.commit().await?;
+                if link.status != "active" {
+                    return Ok(
+                        json!({"status":link.status,"conversation_id":link.conversation_id,"link_id":link.id,"permission":"read","plan_mutation":"none","disconnect":"revoke_the_mcp_connection"}),
+                    );
+                }
+                self.service
+                    .handle(
+                        &actor,
+                        "GET",
+                        &format!("/v1/workspaces/{}/snapshot", link.workspace_id),
+                        &q,
+                        json!({}),
+                        None,
+                    )
+                    .await?;
+                return Ok(
+                    json!({"status":"linked","conversation_id":link.conversation_id,"link_id":link.id,"target":{"workspace_id":link.workspace_id,"item_id":link.item_id},"screen":link.screen,"source":link.source,"source_version":link.source_version,"permission":"read","plan_mutation":"none","retry":"safe_to_retry","disconnect":"revoke_the_mcp_connection"}),
+                );
+            }
             "pathbase_search_items" => ("GET", format!("{base}/items"), json!({})),
             "pathbase_get_item" => ("GET", format!("{base}/items/{id}"), json!({})),
             "pathbase_get_graph" => ("GET", format!("{base}/graph"), json!({})),
@@ -664,6 +788,17 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
 fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
     Some(match name {
         "pathbase_get_context" | "pathbase_list_templates" => (&[], &[]),
+        "pathbase_link_context" => (
+            &["workspace_id", "conversation_id", "idempotency_key"],
+            &[
+                "workspace_id",
+                "item_id",
+                "screen",
+                "conversation_id",
+                "idempotency_key",
+            ],
+        ),
+        "pathbase_get_linked_context" => (&["conversation_id"], &["conversation_id"]),
         "pathbase_search_items" => (
             &["workspace_id"],
             &["workspace_id", "query", "kind", "state", "cursor", "limit"],
@@ -859,6 +994,8 @@ const fn write(name: &'static str, description: &'static str, destructive: bool)
 fn tools() -> Vec<Tool> {
     let defs = [
         read("pathbase_get_context", "Get the authenticated actor and authorized workspaces."),
+        read("pathbase_link_context", "Return a read-only link from the conversation to one authorized PathBase workspace or item. This never changes a confirmed plan; if the public URL is unavailable, report that the host cannot provide a link instead of inventing one."),
+        read("pathbase_get_linked_context", "Resolve the workspace and business context previously linked to this conversation. Returns stopped or not_linked honestly; it never mutates the plan."),
         read("pathbase_search_items", "Search a single authorized workspace, with cursor paging."),
         read("pathbase_get_item", "Get an item including its version, dates, and evaluation settings."),
         read("pathbase_get_graph", "Get the goal graph for one workspace. Returns at most `limit` nodes (default and maximum 200) with the relations between them, plus `truncated` and the `limit` that was applied. When `truncated` is true the graph is a slice, not the plan: narrow the request or read the missing subtree with pathbase_get_item."),

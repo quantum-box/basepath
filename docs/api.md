@@ -352,3 +352,26 @@ Tachyonセッションを使用し、Field側の権限を毎回確認します�
 - `POST /v1/workspaces/{w}/field/refresh-task`：tenant_id、item_id。保存済みのField参照とテナント境界を検証し、Fieldからタイトル・状態・更新日時を明示的に再取得します。Field側のデータは変更しません。
 
 Fieldへの変更操作・バックグラウンド同期はありません。詳しい上流契約と権限の分離は[integration-contracts.md](integration-contracts.md)を参照してください。
+
+## 会話と業務コンテキストのリンク
+
+MCP接続は会話本文を保存しません。ホストが渡した`conversation_id`と、本人が
+アクセスできる1つのワークスペース（任意で項目）だけをリンク情報として保存します。
+リンクは計画を変更せず、`pathbase.read`だけで利用できます。
+
+- `pathbase_link_context`：`workspace_id`、`conversation_id`、`idempotency_key`が必須。
+  `item_id`と`screen`は任意です。対象は通常のtenant/workspace membershipで再検証され、同じ
+  会話への再試行は同じリンクを返します。作成・明示的な再リンクの返却`status`は`active`です。
+  別の対象への再リンクは409です。
+- `pathbase_get_linked_context`：`conversation_id`で現在のリンクを解決します。`active`、
+  `stopped`、`not_linked`を区別します。別tenantのリンクは返しません。
+- 接続解除はリンクを`stopped`にし、トークンも同じトランザクションで無効化します。
+  `stopped`リンクは自動では`active`に戻りません。新しい許可済みMCP接続から、同じ対象を
+  `pathbase_link_context`で明示的に再リンクした場合だけ`active`に戻ります。
+- `conversation_id`を提供しないホスト、または`PATHBASE_PUBLIC_URL`未設定の環境は
+  `unsupported_host`を返します。存在しない自動トリガーやURLを推測しません。
+
+`source`は認証済みMCP transport自身が付ける`mcp`固定値、`source_version`はこの保存契約の
+バージョン`1`固定値です。モデルやホストがこれらを任意に名乗る入力欄は提供しません。
+リンクの`source`と`source_version`は、どの契約で作られたかを示す監査用メタデータです。
+承認済みの変更案・目標・行動をこの機能から直接変更することはありません。
