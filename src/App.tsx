@@ -937,7 +937,16 @@ export function App() {
   }, []);
   useEffect(() => {
     if (store.error?.code === "UNAUTHENTICATED") {
-      tenantReturnRef.current = tenantReturnRef.current ?? tenantReturnUrl();
+      // `/login` is intentionally not a context route, so tenantReturnUrl()
+      // is null there. Preserve a return target captured before the auth gate
+      // (and recover one already present in the login URL) instead of dropping
+      // the deep link on a second render.
+      tenantReturnRef.current =
+        tenantReturnRef.current ??
+        safeTenantReturn(
+          new URLSearchParams(window.location.search).get("return_to"),
+        ) ??
+        tenantReturnUrl();
       replaceLoginUrl(tenantReturnRef.current);
       return;
     }

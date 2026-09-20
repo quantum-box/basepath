@@ -129,6 +129,15 @@ test("tenant selection can return to the login screen", async ({ page }) => {
   ).toBeVisible();
   await expect(page).toHaveURL(/\/login$/);
   expect(logoutRequests).toBe(1);
+
+  // A login render is not a context route; it must not erase the captured
+  // return target while the person is authenticating.
+  await page.goto(
+    "/login?return_to=%2Fpersonal%2Fhome%3Ftenant_id%3Dtn_example",
+  );
+  await expect(page).toHaveURL(
+    /\/login\?return_to=%2Fpersonal%2Fhome%3Ftenant_id%3Dtn_example/,
+  );
 });
 
 test("forbidden tenant selection stays on the selection screen", async ({
