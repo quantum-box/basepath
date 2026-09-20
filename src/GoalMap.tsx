@@ -350,11 +350,13 @@ function MapCanvas({
       const visibleParentMatchesPersisted =
         !!item.parentId && item.parentId === persistedParentId;
       const canMoveUp =
-        editable && parentEditable && visibleParentMatchesPersisted && siblingIndex > 0 && !!onMoveUp;
+        parentEditable && visibleParentMatchesPersisted && siblingIndex > 0 && !!onMoveUp;
       const canMoveDown =
-        editable && parentEditable && visibleParentMatchesPersisted && siblingIndex < siblingCount - 1 && !!onMoveDown;
-      const hasActions = editable && Boolean(
-          onEdit || (canMove && onMove) || onAddChild || onAddSibling || canMoveUp || canMoveDown,
+        parentEditable && visibleParentMatchesPersisted && siblingIndex < siblingCount - 1 && !!onMoveDown;
+      const hasActions = Boolean(
+        (editable && (onEdit || (canMove && onMove) || onAddChild || onAddSibling)) ||
+          canMoveUp ||
+          canMoveDown,
       );
       return { editable, canMove, canMoveUp, canMoveDown, hasActions };
     };
