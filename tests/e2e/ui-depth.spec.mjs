@@ -9,18 +9,30 @@ async function openMenu(page) {
 }
 
 async function openScreen(page, label, heading = label) {
-  await openMenu(page);
-  await page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: label, exact: true })
-    .click();
+  const routes = { 分解: "breakdown", 目標マップ: "goals" };
+  const url = new URL(page.url());
+  url.pathname = url.pathname.replace(/\/[^/]+$/, `/${routes[label]}`);
+  await page.goto(url.toString());
   await expect(
     page.getByRole("heading", { name: heading, exact: true, level: 1 }),
   ).toBeVisible();
 }
 
+async function createWorkspace(page, name) {
+  await page.goto("/personal/members");
+  const manager = page.locator(".members-page-content");
+  const creator = manager.locator("details").filter({
+    has: page.locator("summary", { hasText: "新しいワークスペースを作成" }),
+  });
+  await creator.locator("summary").click();
+  await creator.getByLabel("名前", { exact: true }).fill(name);
+  await creator.getByLabel("領域").selectOption("チーム");
+  await creator.getByRole("button", { name: "作成する", exact: true }).click();
+  await expect(manager.getByLabel("管理するワークスペース").locator("option:checked")).toContainText(name);
+  await page.getByRole("navigation", { name: "メインメニュー" }).getByRole("button", { name: "概要", exact: true }).click();
+}
+
 async function createRoot(page, title) {
-  await page.goto("/");
   await page.locator("#templates").getByRole("button", { name: /自由形式/ }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("目標の名前").fill(title);
@@ -59,6 +71,7 @@ test("creates, edits, and completes an eight-level plan through the UI", async (
     ["milestone", "UI深掘り: 節目4"],
     ["action", "UI深掘り: 次の一歩"],
   ];
+  await createWorkspace(page, `UI深掘りworkspace-${Date.now()}`);
   await createRoot(page, levels[0][1]);
   await openScreen(page, "分解");
 
