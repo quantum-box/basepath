@@ -2963,6 +2963,14 @@ async fn dispatch_inner(
             // without becoming part of something else, and without being
             // deleted for the privilege.
             let to = body["parent_id"].as_str().map(str::to_owned);
+            if let Some(old_parent) = &from {
+                let old_parent: Item = get(tx, w, "items", old_parent).await?;
+                guard_personal_goal(tx, actor, w, &old_parent).await?;
+            }
+            if let Some(new_parent) = &to {
+                let new_parent: Item = get(tx, w, "items", new_parent).await?;
+                guard_personal_goal(tx, actor, w, &new_parent).await?;
+            }
             if to == from {
                 return Err(ApiError::invalid("すでにその位置にあります"));
             }
@@ -2971,6 +2979,41 @@ async fn dispatch_inner(
                 // keeps its id so the structural parent stays single by
                 // construction rather than by a delete landing first, and so
                 // the history refers to one link that moved.
+                let mut siblings: Vec<Relation> = relations
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.relation_type == "part_of"
+                            && candidate.target_id == *parent
+                            && candidate.source_id != item.id
+                    })
+                    .cloned()
+                    .collect();
+                let items: Vec<Item> = list(tx, w, "items").await?;
+                siblings.sort_by_key(|candidate| {
+                    let source_index = items
+                        .iter()
+                        .position(|item| item.id == candidate.source_id)
+                        .unwrap_or(usize::MAX);
+                    (
+                        candidate.position.unwrap_or(i64::MAX),
+                        source_index,
+                        candidate.id.clone(),
+                    )
+                });
+                let mut next_position = siblings
+                    .iter()
+                    .filter_map(|candidate| candidate.position)
+                    .max()
+                    .map_or(0, |position| position.saturating_add(1));
+                for sibling in siblings
+                    .iter_mut()
+                    .filter(|candidate| candidate.position.is_none())
+                {
+                    sibling.position = Some(next_position);
+                    next_position = next_position.saturating_add(1);
+                    sibling.version += 1;
+                    put(tx, w, "relations", &sibling.id.clone(), &sibling.clone()).await?;
+                }
                 let relation = Relation {
                     id: existing
                         .as_ref()
@@ -2983,7 +3026,7 @@ async fn dispatch_inner(
                     rationale: text(body, "rationale").into(),
                     // Where it sat under the old parent means nothing under
                     // the new one, so it joins the end of that list.
-                    position: None,
+                    position: Some(next_position),
                     created_at: existing
                         .as_ref()
                         .and_then(|old| old.created_at.clone())
@@ -3012,7 +3055,8 @@ async fn dispatch_inner(
         // person dragged into place.
         ("POST", "items", id, "children") if !id.is_empty() => {
             only(body, &["order"])?;
-            let _: Item = get(tx, w, "items", id).await?;
+            let parent: Item = get(tx, w, "items", id).await?;
+            guard_personal_goal(tx, actor, w, &parent).await?;
             let wanted: Vec<&str> = body["order"]
                 .as_array()
                 .ok_or_else(|| ApiError::invalid("orderに子の並びを配列で指定してください"))?

@@ -113,6 +113,7 @@ export type Relation = {
   target_id: string;
   type: "part_of" | "contributes_to" | "depends_on" | "relates_to";
   rationale: string;
+  position?: number | null;
   version: number;
 };
 export type RecordEntry = {

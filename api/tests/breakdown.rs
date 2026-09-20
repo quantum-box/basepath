@@ -685,6 +685,42 @@ async fn siblings_keep_the_order_the_person_put_them_in() {
 }
 
 #[tokio::test]
+async fn reparent_appends_after_unplaced_siblings() {
+    let (_dir, service, w, who) = setup().await;
+    let old_parent = item(&service, &who, &w, "outcome", "旧親", None).await;
+    let new_parent = item(&service, &who, &w, "outcome", "新親", None).await;
+    let moved = item(&service, &who, &w, "milestone", "移動", Some(&old_parent)).await;
+    let existing = item(&service, &who, &w, "milestone", "既存", Some(&new_parent)).await;
+
+    call(
+        &service,
+        &who,
+        "POST",
+        &format!("/v1/workspaces/{w}/items/{moved}/reparent"),
+        json!({"parent_id":new_parent,"expected_version":1}),
+    )
+    .await
+    .unwrap();
+
+    let tree = query(
+        &service,
+        &who,
+        &format!("/v1/workspaces/{w}/items/{new_parent}/breakdown"),
+        &[],
+    )
+    .await
+    .unwrap();
+    let ordered: Vec<&str> = tree["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|node| node["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ordered, vec![existing.as_str(), moved.as_str()]);
+}
+
+#[tokio::test]
 async fn gaps_are_reported_and_never_filled_in() {
     let (_dir, service, w, who) = setup().await;
     let untouched = item(&service, &who, &w, "outcome", "分解していない目標", None).await;

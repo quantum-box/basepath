@@ -83,6 +83,7 @@ type ModalState =
       siblingTitle?: string;
       parentKind?: string;
     }
+  | { kind: "moveItem"; id: string; workspaceId: string; parentId: string | null }
   | { kind: "members" }
   | { kind: "settings" }
   | { kind: "learnings" }
@@ -629,6 +630,17 @@ export function App() {
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
+  const canEditItem = (item?: Item) => {
+    if (!item || !canWrite(item.workspace_id)) return false;
+    const owner = item.fields.owner;
+    if (owner?.kind !== "person" || !owner.id || owner.id === store.me.id) {
+      return true;
+    }
+    return store.workspaces.some(
+      (entry) => entry.id === item.workspace_id && entry.role === "owner",
+    );
+  };
+  const canEditMapItem = (id: string) => canEditItem(raw(id));
   const workspaceMatches = (id: string) =>
     scope === "すべて" ||
     (scopeOf(id) === scope &&
@@ -740,9 +752,19 @@ export function App() {
       const parent = partOfTarget(item);
       return {
         id: uiId(item),
+        workspaceId: item.workspace_id,
         title: item.title,
         kind: item.kind,
         parentId: parent ? uiId(parent) : undefined,
+        actualParentId: parent ? uiId(parent) : undefined,
+        position:
+          allRelations.find(
+            (relation) =>
+              relation.workspace_id === item.workspace_id &&
+              relation.source_id === item.id &&
+              relation.target_id === parent?.id &&
+              relation.type === "part_of",
+          )?.position ?? null,
         scope: scopeOf(item.workspace_id),
         icon:
           item.fields.icon ||
@@ -901,6 +923,58 @@ export function App() {
     },
     [allItems],
   );
+  const editTreeItem = useCallback((id: string) => {
+    const item = raw(id);
+    if (!item) return;
+    if (item.kind === "action" || item.kind === "initiative" || item.kind === "milestone") {
+      setModal({ kind: "initiativeDetail", id });
+    } else {
+      selectGoal(id);
+      setModal({ kind: "editGoal" });
+    }
+  }, [allItems, selectGoal]);
+  const moveTreeItem = useCallback((id: string) => {
+    const item = raw(id);
+    if (!item || !canEditItem(item)) return;
+    const current = partOfTarget(item);
+    if (current && !canEditItem(current)) return;
+    setModal({
+      kind: "moveItem",
+      id: item.id,
+      workspaceId: item.workspace_id,
+      parentId: current?.id ?? null,
+    });
+  }, [canEditItem, raw]);
+  const reorderTreeItem = useCallback((id: string, delta: -1 | 1) => {
+    const item = raw(id);
+    if (!item || !canWrite(item.workspace_id)) return;
+    const parent = partOfTarget(item);
+    if (!parent || !canEditItem(parent)) return;
+    const siblings = allItems.filter((entry) => entry.workspace_id === item.workspace_id && partOfTarget(entry)?.id === parent.id && ["outcome", "idea", "initiative", "milestone", "action"].includes(entry.kind));
+    siblings.sort((a, b) => {
+      const pa = allRelations.find((relation) => relation.workspace_id === item.workspace_id && relation.source_id === a.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
+      const pb = allRelations.find((relation) => relation.workspace_id === item.workspace_id && relation.source_id === b.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
+      const ai = allItems.findIndex(
+        (entry) => entry.workspace_id === item.workspace_id && entry.id === a.id,
+      );
+      const bi = allItems.findIndex(
+        (entry) => entry.workspace_id === item.workspace_id && entry.id === b.id,
+      );
+      return pa - pb || ai - bi;
+    });
+    const index = siblings.findIndex((entry) => entry.id === item.id);
+    if (index < 0) return;
+    // Archived children remain part of the persisted order, but are not
+    // visible siblings in the map. Move to the nearest visible sibling and
+    // swap those two slots so hidden entries keep their relative position.
+    const visible = siblings.filter((entry) => !entry.archived_at);
+    const visibleIndex = visible.findIndex((entry) => entry.id === item.id);
+    const adjacent = visible[visibleIndex + delta];
+    if (!adjacent) return;
+    const next = siblings.findIndex((entry) => entry.id === adjacent.id);
+    [siblings[index], siblings[next]] = [siblings[next], siblings[index]];
+    void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${parent.id}/children`, { order: siblings.map((entry) => entry.id) }), () => notify("並び順を変更しました"));
+  }, [allItems, allRelations, canEditItem, canWrite, notify, raw, store]);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 3200);
@@ -1266,6 +1340,31 @@ export function App() {
   async function saveForm(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
+    if (modal?.kind === "moveItem") {
+      const parentId = String(data.get("parent_id") || "");
+      const item = allItems.find(
+        (entry) => entry.workspace_id === modal.workspaceId && entry.id === modal.id,
+      );
+      const parent = parentId
+        ? allItems.find(
+            (entry) => entry.workspace_id === modal.workspaceId && entry.id === parentId,
+          )
+        : undefined;
+      if (!item || (parent && !canEditItem(parent))) return;
+      await store.run(
+        () =>
+          store.write(
+            "POST",
+            `/v1/workspaces/${modal.workspaceId}/items/${modal.id}/reparent`,
+            { parent_id: parent?.id ?? null, expected_version: item.version },
+          ),
+        () => {
+          setModal(null);
+          notify("親を変更しました");
+        },
+      );
+      return;
+    }
     const title = String(data.get("title") || "").trim();
     if (!title) return;
     const w = String(data.get("workspace_id") || currentWorkspace?.id || "");
@@ -1942,8 +2041,13 @@ export function App() {
                 scope={scope}
                 setScope={changeScope}
                 onInitiative={openInitiative}
+                canEdit={canEditMapItem}
                 onAddChild={(id) => openCreateRelative(id, "child")}
                 onAddSibling={(id) => openCreateRelative(id, "sibling")}
+                onEdit={editTreeItem}
+                onMove={moveTreeItem}
+                onMoveUp={(id) => reorderTreeItem(id, -1)}
+                onMoveDown={(id) => reorderTreeItem(id, 1)}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">
@@ -2519,8 +2623,13 @@ export function App() {
             }
             onEditGoal={() => setModal({ kind: "editGoal" })}
             onAddInitiative={() => setModal({ kind: "initiative" })}
+            canEditMapItem={canEditMapItem}
             onAddChild={(id) => openCreateRelative(id, "child")}
             onAddSibling={(id) => openCreateRelative(id, "sibling")}
+            onEditTreeItem={editTreeItem}
+            onMoveTreeItem={moveTreeItem}
+            onMoveUpTreeItem={(id) => reorderTreeItem(id, -1)}
+            onMoveDownTreeItem={(id) => reorderTreeItem(id, 1)}
             onReflectionChange={(value) => {
               setReflection(value);
               localStorage.setItem(reviewDraftKey, value);
@@ -2567,6 +2676,8 @@ export function App() {
               ? "新しい目標をつくる"
               : modal.kind === "task"
                 ? "今日の行動を追加"
+                : modal.kind === "moveItem"
+                  ? "親を変更"
                 : modal.kind === "initiative" || modal.kind === "createItem"
                   ? "取り組みを追加"
                   : modal.kind === "members"
@@ -2594,6 +2705,88 @@ export function App() {
               <button onClick={() => void store.refresh()}>最新を確認</button>
             </p>
           )}
+          {modal.kind === "moveItem" && (() => {
+            const moving = allItems.find(
+              (item) => item.workspace_id === modal.workspaceId && item.id === modal.id,
+            );
+            if (!moving) return null;
+            const descendants = new Set<string>();
+            const collect = (parentId: string) => {
+              allItems
+                .filter(
+                  (item) =>
+                    item.workspace_id === modal.workspaceId &&
+                    partOfTarget(item)?.id === parentId,
+                )
+                .forEach((child) => {
+                  if (!descendants.has(child.id)) {
+                    descendants.add(child.id);
+                    collect(child.id);
+                  }
+                });
+            };
+            collect(moving.id);
+            const parents = allItems
+              .filter(
+                (item) =>
+                  item.workspace_id === modal.workspaceId &&
+                  !item.archived_at &&
+                  item.id !== moving.id &&
+                  item.kind !== "action" &&
+                  !descendants.has(item.id) &&
+                  canEditItem(item),
+              )
+              .sort((a, b) => a.title.localeCompare(b.title, "ja"));
+            const breadcrumb = (item: Item) => {
+              const labels = [item.title];
+              const seen = new Set<string>([item.id]);
+              let current = partOfTarget(item);
+              while (current && !seen.has(current.id)) {
+                seen.add(current.id);
+                labels.unshift(current.title);
+                current = partOfTarget(current);
+              }
+              return labels.join(" › ");
+            };
+            const baseLabels = new Map(
+              parents.map((parent) => [
+                parent.id,
+                `${breadcrumb(parent)}（${parent.kind}）`,
+              ]),
+            );
+            const labelCounts = new Map<string, number>();
+            baseLabels.forEach((label) => {
+              labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+            });
+            return (
+              <form onSubmit={saveForm} className="editor-form">
+                <p className="modal-intro">
+                  「{moving.title}」を移動する先を選択してください。ルートに戻すこともできます。
+                </p>
+                <label>
+                  新しい親
+                  <select name="parent_id" defaultValue={modal.parentId ?? ""}>
+                    <option value="">ルート（親なし）</option>
+                    {parents.map((parent) => (
+                      <option value={parent.id} key={parent.id}>
+                        {labelCounts.get(baseLabels.get(parent.id)!)! > 1
+                          ? `${baseLabels.get(parent.id)} · ${parent.id.slice(-6)}`
+                          : baseLabels.get(parent.id)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="modal-actions">
+                  <button type="button" className="secondary-button" onClick={() => setModal(null)}>
+                    キャンセル
+                  </button>
+                  <button type="submit" className="primary-button" disabled={store.pending}>
+                    保存
+                  </button>
+                </div>
+              </form>
+            );
+          })()}
           {modal.kind === "editGoal" &&
             editBase !== null &&
             editBase !== selectedRaw?.version && (
@@ -3105,8 +3298,13 @@ type DedicatedScreenProps = {
   onChooseTemplate: (template: string) => void;
   onEditGoal: () => void;
   onAddInitiative: () => void;
-  onAddChild: (id: string) => void;
-  onAddSibling: (id: string) => void;
+  canEditMapItem: (id: string) => boolean;
+  onAddChild?: (id: string) => void;
+  onAddSibling?: (id: string) => void;
+  onEditTreeItem?: (id: string) => void;
+  onMoveTreeItem?: (id: string) => void;
+  onMoveUpTreeItem?: (id: string) => void;
+  onMoveDownTreeItem?: (id: string) => void;
   onReflectionChange: (value: string) => void;
   onSaveReflection: () => void;
 };
@@ -3141,8 +3339,13 @@ function DedicatedScreen({
   onChooseTemplate,
   onEditGoal,
   onAddInitiative,
+  canEditMapItem,
   onAddChild,
   onAddSibling,
+  onEditTreeItem,
+  onMoveTreeItem,
+  onMoveUpTreeItem,
+  onMoveDownTreeItem,
   onReflectionChange,
   onSaveReflection,
 }: DedicatedScreenProps) {
@@ -3167,8 +3370,13 @@ function DedicatedScreen({
             scope={scope}
             setScope={onChangeScope}
             onInitiative={onOpenInitiative}
+            canEdit={canEditMapItem}
             onAddChild={onAddChild}
             onAddSibling={onAddSibling}
+            onEdit={onEditTreeItem}
+            onMove={onMoveTreeItem}
+            onMoveUp={onMoveUpTreeItem}
+            onMoveDown={onMoveDownTreeItem}
           />
           {selected ? (
             <section

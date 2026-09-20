@@ -733,6 +733,19 @@ input[type="checkbox"]:checked::after {
   position: relative;
   box-shadow: 0 2px 6px #1c5c9602;
 }
+.map-node:not(.root) {
+  height: 100%;
+  padding-bottom: 11px;
+}
+.map-node:not(.root).has-actions {
+  padding-bottom: 44px;
+}
+.map-node:not(.root).has-children {
+  padding-bottom: 32px;
+}
+.map-node:not(.root).has-actions.has-children {
+  padding-bottom: 44px;
+}
 .map-node:hover {
   box-shadow: 0 4px 14px #829ac21c;
 }
@@ -783,6 +796,15 @@ input[type="checkbox"]:checked::after {
   box-shadow: 0 2px 8px #926bff0d;
   padding: 10px;
 }
+.map-node.goal.is-selected.has-actions {
+  padding: 10px 10px 44px;
+}
+.map-node.goal.is-selected.has-children {
+  padding-bottom: 32px;
+}
+.map-node.goal.is-selected.has-actions.has-children {
+  padding-bottom: 44px;
+}
 .node-toggle {
   pointer-events: all;
   position: absolute;
@@ -810,24 +832,36 @@ input[type="checkbox"]:checked::after {
   color: var(--ink);
   border-color: #c3d2e6;
 }
+.map-node.has-actions ~ .node-toggle {
+  bottom: 45px;
+}
+.map-node.has-children ~ .node-toggle {
+  bottom: 3px;
+}
+.map-node.has-actions.has-children ~ .node-toggle {
+  bottom: 45px;
+}
 .map-node-actions {
   position: absolute;
-  right: 3px;
-  bottom: -27px;
+  left: 2px;
+  right: 2px;
+  bottom: 3px;
   z-index: 4;
-  display: inline-flex;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 3px;
   pointer-events: all;
-  white-space: nowrap;
 }
 .map-node-action {
   min-height: 19px;
-  padding: 1px 5px;
+  max-width: 100%;
+  padding: 1px 4px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: #fff;
   color: #5b6b82;
-  font-size: 9px;
+  font-size: 8px;
   line-height: 1;
   box-shadow: 0 2px 6px #40648814;
 }

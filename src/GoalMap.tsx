@@ -21,12 +21,17 @@ type MapData = {
   kind: "root" | "goal" | "initiative";
   hasChildren?: boolean;
   childCount?: number;
+  hasActions?: boolean;
   open?: boolean;
   active?: boolean;
   onSelect?: () => void;
   onToggle?: () => void;
   onAddChild?: () => void;
   onAddSibling?: () => void;
+  onEdit?: () => void;
+  onMove?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 };
 /** A node in the generic part_of tree.  The map intentionally does not
  * encode a Goal -> Initiative hierarchy: every item kind can have a parent. */
@@ -34,11 +39,16 @@ export type MapItem = {
   id: string;
   title: string;
   kind: string;
+  workspaceId?: string;
   parentId?: string;
+  /** The persisted parent, retained for permissions when that parent is archived. */
+  actualParentId?: string;
   scope: Scope;
   icon?: string;
   subtitle?: string;
   progress?: number | null;
+  /** Persisted sibling order from the part_of relation. */
+  position?: number | null;
 };
 type MapNode = Node<MapData, "goal">;
 function GoalNode({ data }: NodeProps<MapNode>) {
@@ -46,7 +56,7 @@ function GoalNode({ data }: NodeProps<MapNode>) {
   return (
     <>
       <button
-        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""}`}
+        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""} ${data.hasActions ? "has-actions" : ""} ${data.hasChildren ? "has-children" : ""}`}
         onClick={data.onSelect}
         aria-pressed={data.active}
         tabIndex={data.kind === "root" ? -1 : 0}
@@ -113,8 +123,10 @@ function GoalNode({ data }: NodeProps<MapNode>) {
           )}
         </button>
       )}
-      {data.kind !== "root" && (data.onAddChild || data.onAddSibling) && (
+      {data.kind !== "root" && (data.onAddChild || data.onAddSibling || data.onEdit || data.onMove) && (
         <span className="map-node-actions">
+          {data.onEdit && <button type="button" className="map-node-action nodrag nopan" onClick={data.onEdit}>編集</button>}
+          {data.onMove && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMove}>親を変更</button>}
           {data.onAddChild && (
             <button
               type="button"
@@ -135,6 +147,8 @@ function GoalNode({ data }: NodeProps<MapNode>) {
               兄弟を追加
             </button>
           )}
+          {data.onMoveUp && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMoveUp}>↑</button>}
+          {data.onMoveDown && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMoveDown}>↓</button>}
         </span>
       )}
     </>
@@ -145,19 +159,24 @@ type TreeItem = {
   id: string;
   kind: "goal" | "initiative";
   parentId?: string;
+  actualParentId?: string;
   scope: Scope;
   goal?: Goal;
   initiative?: Initiative;
   children: TreeItem[];
   terminal?: boolean;
+  position?: number | null;
+  sourceIndex: number;
 };
 const GAP = 22;
-const nodeSize = (item: TreeItem) =>
-  item.kind === "goal"
+const nodeSize = (item: TreeItem, hasActions: boolean) => {
+  const compact = item.kind === "goal"
     ? { width: 214, height: 65 }
     : { width: 148, height: 70 };
-const rowY = (depth: number) =>
-  depth === 0 ? 8 : depth === 1 ? 118 : 221 + (depth - 2) * 95;
+  return hasActions
+    ? { ...compact, height: compact.height + 51 }
+    : compact;
+};
 const strokeColor = (scope: Scope) =>
   scope === "チーム" ? "#c4adf5" : scope === "組織" ? "#bdcce0" : "#abcaf6";
 type Props = {
@@ -174,6 +193,11 @@ type Props = {
   onInitiative: (id: string) => void;
   onAddChild?: (id: string) => void;
   onAddSibling?: (id: string) => void;
+  onEdit?: (id: string) => void;
+  onMove?: (id: string) => void;
+  onMoveUp?: (id: string) => void;
+  onMoveDown?: (id: string) => void;
+  canEdit?: (id: string) => boolean;
 };
 function MapCanvas({
   goals,
@@ -186,6 +210,11 @@ function MapCanvas({
   onInitiative,
   onAddChild,
   onAddSibling,
+  onEdit,
+  onMove,
+  onMoveUp,
+  onMoveDown,
+  canEdit,
 }: Props) {
   const flow = useReactFlow<MapNode>();
   const [zoom, setZoom] = useState(100);
@@ -230,7 +259,7 @@ function MapCanvas({
       }
       return current && shown.has(current.id) ? current.id : undefined;
     };
-    const treeItems: TreeItem[] = matched.map((item) => ({
+    const treeItems: TreeItem[] = matched.map((item, sourceIndex) => ({
       id: item.id,
       // The existing node treatment is deliberately retained for all
       // non-goals so the visual language and spacing do not change.
@@ -238,7 +267,9 @@ function MapCanvas({
         item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
           ? "goal"
           : "initiative",
+      workspaceId: item.workspaceId,
       parentId: displayParent(item),
+      actualParentId: item.actualParentId ?? item.parentId,
       scope: item.scope,
       goal:
         item.kind === "outcome" || item.kind === "idea" || item.kind === "goal" || item.kind === "milestone"
@@ -268,6 +299,8 @@ function MapCanvas({
             },
       children: [],
       terminal: item.kind === "action",
+      position: item.position,
+      sourceIndex,
     }));
     const index = new Map(treeItems.map((item) => [item.id, item]));
     const roots: TreeItem[] = [];
@@ -275,6 +308,22 @@ function MapCanvas({
       const parent = item.parentId ? index.get(item.parentId) : undefined;
       if (parent && parent !== item) parent.children.push(item);
       else roots.push(item);
+    });
+    const compare = (a: TreeItem, b: TreeItem) => {
+      const pa = a.position ?? Number.MAX_SAFE_INTEGER;
+      const pb = b.position ?? Number.MAX_SAFE_INTEGER;
+      return pa - pb || a.sourceIndex - b.sourceIndex;
+    };
+    for (const item of treeItems) item.children.sort(compare);
+    roots.sort((a, b) => {
+      // A child promoted past an archived parent is visually a root, but its
+      // persisted position belongs to the hidden parent's sibling list. Do
+      // not compare that position with true roots; source order is stable for
+      // the mixed promoted/root list.
+      const aPromoted = !!a.actualParentId && !a.parentId;
+      const bPromoted = !!b.actualParentId && !b.parentId;
+      if (aPromoted || bPromoted) return a.sourceIndex - b.sourceIndex;
+      return compare(a, b);
     });
     return roots;
   }, [goals, initiatives, items, scope]);
@@ -286,8 +335,55 @@ function MapCanvas({
     const offset = heading ? 1 : 0;
     const isOpen = (item: TreeItem) => !closedIds.has(item.id);
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
+    const actionState = (item: TreeItem, siblingIndex: number, siblingCount: number) => {
+      const editable = canEdit ? canEdit(item.id) : true;
+      const persistedParentId = item.actualParentId ?? item.parentId;
+      const parentEditable = persistedParentId
+        ? canEdit
+          ? canEdit(persistedParentId)
+          : true
+        : true;
+      const canMove = editable && parentEditable;
+      // A promoted child whose archived parent is hidden is not actually a
+      // sibling of the displayed roots. Hide reorder controls rather than
+      // calculating an adjacent item from the wrong visual group.
+      const visibleParentMatchesPersisted =
+        !!item.parentId && item.parentId === persistedParentId;
+      const canMoveUp =
+        parentEditable && visibleParentMatchesPersisted && siblingIndex > 0 && !!onMoveUp;
+      const canMoveDown =
+        parentEditable && visibleParentMatchesPersisted && siblingIndex < siblingCount - 1 && !!onMoveDown;
+      const hasActions = Boolean(
+        (editable && (onEdit || (canMove && onMove) || onAddChild || onAddSibling)) ||
+          canMoveUp ||
+          canMoveDown,
+      );
+      return { editable, canMove, canMoveUp, canMoveDown, hasActions };
+    };
+    const depthHeights = new Map<number, number>();
+    const measureDepth = (itemsAtDepth: TreeItem[], depth: number) => {
+      itemsAtDepth.forEach((item, index) => {
+        const state = actionState(item, index, itemsAtDepth.length);
+        depthHeights.set(
+          depth,
+          Math.max(depthHeights.get(depth) ?? 0, nodeSize(item, state.hasActions).height),
+        );
+        measureDepth(childrenOf(item), depth + 1);
+      });
+    };
+    measureDepth(tree, offset);
+    const rowY = (depth: number) => {
+      let y = 8;
+      for (let current = 0; current < depth; current += 1) {
+        const height = current === 0 && heading
+          ? 62
+          : depthHeights.get(current) ?? 70;
+        y += height + (current === 0 ? (heading ? 48 : 45) : 38);
+      }
+      return y;
+    };
     const measure = (item: TreeItem): number => {
-      const own = nodeSize(item).width;
+      const own = nodeSize(item, false).width;
       const kids = childrenOf(item);
       if (!kids.length) return own;
       const width =
@@ -295,9 +391,14 @@ function MapCanvas({
         GAP * (kids.length - 1);
       return Math.max(own, width);
     };
-    const place = (item: TreeItem, left: number, depth: number) => {
+    const place = (
+      item: TreeItem,
+      left: number,
+      depth: number,
+      siblingIndex = 0,
+      siblingCount = 1,
+    ) => {
       const width = measure(item);
-      const size = nodeSize(item);
       const kids = childrenOf(item);
       const shared = {
         hasChildren: kids.length > 0,
@@ -305,6 +406,12 @@ function MapCanvas({
         open: isOpen(item),
         onToggle: () => toggleNode(item.id),
       };
+      const { editable, canMove, canMoveUp, canMoveDown, hasActions } = actionState(
+        item,
+        siblingIndex,
+        siblingCount,
+      );
+      const size = nodeSize(item, hasActions);
       nodes.push({
         id: item.id,
         type: "goal",
@@ -315,31 +422,53 @@ function MapCanvas({
             ? {
                 ...item.goal!,
                 ...shared,
+                hasActions,
                 kind: "goal",
                 subtitle: item.goal!.subtitle,
                 progress: undefined,
                 active: selected === item.id,
                 onSelect: () => onSelect(item.id),
-                onAddChild: onAddChild ? () => onAddChild(item.id) : undefined,
-                onAddSibling: onAddSibling
+                onAddChild: editable && onAddChild ? () => onAddChild(item.id) : undefined,
+                onAddSibling: editable && onAddSibling
                   ? () => onAddSibling(item.id)
                   : undefined,
+                onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
+                onMove: canMove && onMove ? () => onMove(item.id) : undefined,
+                onMoveUp:
+                  canMoveUp
+                    ? () => onMoveUp!(item.id)
+                    : undefined,
+                onMoveDown:
+                  canMoveDown
+                    ? () => onMoveDown!(item.id)
+                    : undefined,
               }
             : {
                 ...item.initiative!,
                 ...shared,
+                hasActions,
                 scope: item.scope,
                 kind: "initiative",
                 active: selected === item.id,
                 onSelect: () => onInitiative(item.id),
-                onAddChild: item.terminal
+                onAddChild: item.terminal || !editable
                   ? undefined
                   : onAddChild
                     ? () => onAddChild(item.id)
                     : undefined,
-                onAddSibling: onAddSibling
+                onAddSibling: editable && onAddSibling
                   ? () => onAddSibling(item.id)
                   : undefined,
+                onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
+                onMove: canMove && onMove ? () => onMove(item.id) : undefined,
+                onMoveUp:
+                  canMoveUp
+                    ? () => onMoveUp!(item.id)
+                    : undefined,
+                onMoveDown:
+                  canMoveDown
+                    ? () => onMoveDown!(item.id)
+                    : undefined,
               },
       });
       if (item.parentId && depth > offset) {
@@ -355,14 +484,14 @@ function MapCanvas({
         kids.reduce((total, child) => total + measure(child), 0) +
         GAP * (kids.length - 1);
       let cursor = left + (width - childrenWidth) / 2;
-      kids.forEach((child) => {
-        place(child, cursor, depth + 1);
+      kids.forEach((child, index) => {
+        place(child, cursor, depth + 1, index, kids.length);
         cursor += measure(child) + GAP;
       });
     };
     let cursor = 0;
-    tree.forEach((root) => {
-      place(root, cursor, offset);
+    tree.forEach((root, index) => {
+      place(root, cursor, offset, index, tree.length);
       cursor += measure(root) + GAP;
     });
     if (heading) {
@@ -389,6 +518,11 @@ function MapCanvas({
     onInitiative,
     onAddChild,
     onAddSibling,
+    onEdit,
+    onMove,
+    onMoveUp,
+    onMoveDown,
+    canEdit,
   ]);
   const resetView = useCallback(() => {
     // Establish the baseline after fitting async-loaded data, before animation

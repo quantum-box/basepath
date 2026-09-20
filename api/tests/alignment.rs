@@ -517,6 +517,69 @@ async fn someone_elses_goal_is_theirs_to_change() {
     .unwrap_err();
     assert_eq!(refused.code, "GOAL_OWNER_REQUIRED");
 
+    // Reordering under Bob's goal is also a mutation of that goal. The
+    // parent guard must not leave this endpoint as an ownership bypass.
+    let child = call(
+        &service,
+        &person("us_bob"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items"),
+        json!({"kind":"milestone","title":"ボブの節目","parent_id":bobs}),
+    )
+    .await
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused_reorder = call(
+        &service,
+        &person("us_carol"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items/{bobs}/children"),
+        json!({"order":[child]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused_reorder.code, "GOAL_OWNER_REQUIRED");
+
+    // The same ownership boundary applies when detaching a child from that
+    // goal, not only when editing the goal itself or reordering under it.
+    let refused_move = call(
+        &service,
+        &person("us_carol"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items/{child}/reparent"),
+        json!({"parent_id":null,"expected_version":1}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused_move.code, "GOAL_OWNER_REQUIRED");
+
+    // A move into someone else's goal is equally forbidden even when the
+    // source branch belongs to an ordinary team goal.
+    let team_child = call(
+        &service,
+        &person("us_bob"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items"),
+        json!({"kind":"milestone","title":"チームの節目","parent_id":team}),
+    )
+    .await
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused_move_in = call(
+        &service,
+        &person("us_carol"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items/{team_child}/reparent"),
+        json!({"parent_id":bobs,"expected_version":1}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused_move_in.code, "GOAL_OWNER_REQUIRED");
+
     // Bob can, and so can the workspace owner — who could remove him anyway,
     // so refusing there would only be theatre.
     call(
