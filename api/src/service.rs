@@ -3012,7 +3012,8 @@ async fn dispatch_inner(
         // person dragged into place.
         ("POST", "items", id, "children") if !id.is_empty() => {
             only(body, &["order"])?;
-            let _: Item = get(tx, w, "items", id).await?;
+            let parent: Item = get(tx, w, "items", id).await?;
+            guard_personal_goal(tx, actor, w, &parent).await?;
             let wanted: Vec<&str> = body["order"]
                 .as_array()
                 .ok_or_else(|| ApiError::invalid("orderに子の並びを配列で指定してください"))?

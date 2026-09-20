@@ -954,12 +954,18 @@ export function App() {
     const item = raw(id);
     if (!item || !canWrite(item.workspace_id)) return;
     const parent = partOfTarget(item);
-    if (!parent) return;
+    if (!parent || !canEditItem(parent)) return;
     const siblings = allItems.filter((entry) => entry.workspace_id === item.workspace_id && partOfTarget(entry)?.id === parent.id && ["outcome", "idea", "initiative", "milestone", "action"].includes(entry.kind));
     siblings.sort((a, b) => {
       const pa = allRelations.find((relation) => relation.workspace_id === item.workspace_id && relation.source_id === a.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
       const pb = allRelations.find((relation) => relation.workspace_id === item.workspace_id && relation.source_id === b.id && relation.target_id === parent.id && relation.type === "part_of")?.position ?? Number.MAX_SAFE_INTEGER;
-      return pa - pb || a.created_at.localeCompare(b.created_at);
+      const ai = allItems.findIndex(
+        (entry) => entry.workspace_id === item.workspace_id && entry.id === a.id,
+      );
+      const bi = allItems.findIndex(
+        (entry) => entry.workspace_id === item.workspace_id && entry.id === b.id,
+      );
+      return pa - pb || ai - bi;
     });
     const index = siblings.findIndex((entry) => entry.id === item.id);
     if (index < 0) return;
@@ -973,7 +979,7 @@ export function App() {
     const next = siblings.findIndex((entry) => entry.id === adjacent.id);
     [siblings[index], siblings[next]] = [siblings[next], siblings[index]];
     void store.run(() => store.write("POST", `/v1/workspaces/${item.workspace_id}/items/${parent.id}/children`, { order: siblings.map((entry) => entry.id) }), () => notify("並び順を変更しました"));
-  }, [allItems, allRelations, canWrite, notify, raw, store]);
+  }, [allItems, allRelations, canEditItem, canWrite, notify, raw, store]);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 3200);

@@ -517,6 +517,31 @@ async fn someone_elses_goal_is_theirs_to_change() {
     .unwrap_err();
     assert_eq!(refused.code, "GOAL_OWNER_REQUIRED");
 
+    // Reordering under Bob's goal is also a mutation of that goal. The
+    // parent guard must not leave this endpoint as an ownership bypass.
+    let child = call(
+        &service,
+        &person("us_bob"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items"),
+        json!({"kind":"milestone","title":"ボブの節目","parent_id":bobs}),
+    )
+    .await
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused_reorder = call(
+        &service,
+        &person("us_carol"),
+        "POST",
+        &format!("/v1/workspaces/{workspace}/items/{bobs}/children"),
+        json!({"order":[child]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused_reorder.code, "GOAL_OWNER_REQUIRED");
+
     // Bob can, and so can the workspace owner — who could remove him anyway,
     // so refusing there would only be theatre.
     call(

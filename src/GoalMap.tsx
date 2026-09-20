@@ -324,8 +324,13 @@ function MapCanvas({
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
     const actionState = (item: TreeItem, siblingIndex: number, siblingCount: number) => {
       const editable = canEdit ? canEdit(item.id) : true;
-      const canMoveUp = editable && !!item.parentId && siblingIndex > 0 && !!onMoveUp;
-      const canMoveDown = editable && !!item.parentId && siblingIndex < siblingCount - 1 && !!onMoveDown;
+      const parentEditable = item.parentId
+        ? canEdit
+          ? canEdit(item.parentId)
+          : true
+        : false;
+      const canMoveUp = editable && parentEditable && siblingIndex > 0 && !!onMoveUp;
+      const canMoveDown = editable && parentEditable && siblingIndex < siblingCount - 1 && !!onMoveDown;
       const hasActions = editable && Boolean(
         onEdit || onMove || onAddChild || onAddSibling || canMoveUp || canMoveDown,
       );
