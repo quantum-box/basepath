@@ -32,6 +32,8 @@ function Branch({
   open,
   onToggle,
   onSelect,
+  onAddChild,
+  onAddSibling,
   selected,
 }: {
   node: BreakdownNode;
@@ -39,6 +41,8 @@ function Branch({
   open: Set<string>;
   onToggle: (node: BreakdownNode) => void;
   onSelect: (id: string) => void;
+  onAddChild?: (node: BreakdownNode) => void;
+  onAddSibling?: (node: BreakdownNode) => void;
   selected: string;
 }) {
   const children = byParent.get(node.id) ?? [];
@@ -66,6 +70,26 @@ function Branch({
         <button className="breakdown-title" onClick={() => onSelect(node.id)}>
           {node.title}
         </button>
+        {node.kind !== "action" && onAddChild && (
+          <button
+            type="button"
+            className="text-link"
+            aria-label={`${node.title}に子項目を追加`}
+            onClick={() => onAddChild(node)}
+          >
+            子を追加
+          </button>
+        )}
+        {onAddSibling && (
+          <button
+            type="button"
+            className="text-link"
+            aria-label={`${node.title}の兄弟項目を追加`}
+            onClick={() => onAddSibling(node)}
+          >
+            兄弟を追加
+          </button>
+        )}
         {node.childCount > 0 && (
           <span className="breakdown-count">{node.childCount}</span>
         )}
@@ -94,6 +118,8 @@ function Branch({
               open={open}
               onToggle={onToggle}
               onSelect={onSelect}
+              onAddChild={onAddChild}
+              onAddSibling={onAddSibling}
               selected={selected}
             />
           ))}
@@ -109,9 +135,17 @@ function Branch({
 export function BreakdownScreen({
   store,
   workspace,
+  onAddChild,
+  onAddSibling,
+  refreshKey,
+  selectedId,
 }: {
   store: WorkspaceStore;
   workspace?: Workspace;
+  onAddChild?: (node: BreakdownNode) => void;
+  onAddSibling?: (node: BreakdownNode) => void;
+  refreshKey?: string | number;
+  selectedId?: string;
 }) {
   const [roots, setRoots] = useState<BreakdownNode[]>([]);
   const [rootId, setRootId] = useState("");
@@ -157,15 +191,17 @@ export function BreakdownScreen({
         })) as BreakdownNode[];
       setRoots(tops);
       setRootId((current) =>
-        current && tops.some((item) => item.id === current)
-          ? current
-          : (tops[0]?.id ?? ""),
+        selectedId && tops.some((item) => item.id === selectedId)
+          ? selectedId
+          : current && tops.some((item) => item.id === current)
+            ? current
+            : (tops[0]?.id ?? ""),
       );
       setError("");
     } catch (failure) {
       say(failure, "内訳を読み込めませんでした");
     }
-  }, [workspace]);
+  }, [workspace, selectedId]);
 
   const loadTree = useCallback(async () => {
     if (!workspace || !rootId) {
@@ -179,8 +215,15 @@ export function BreakdownScreen({
       );
       const parsed = breakdownFrom(found);
       setTree(parsed);
-      setExtra([]);
-      setOpen(new Set(parsed ? parsed.nodes.map((node) => node.id) : []));
+      // Keep already opened branches across a graph refresh. This is
+      // important after creating a child several levels below the root.
+      setOpen(
+        (current) =>
+          new Set([
+            ...current,
+            ...(parsed ? parsed.nodes.map((node) => node.id) : []),
+          ]),
+      );
       setError("");
     } catch (failure) {
       say(failure, "内訳を読み込めませんでした");
@@ -189,11 +232,10 @@ export function BreakdownScreen({
 
   useEffect(() => {
     void loadRoots();
-  }, [loadRoots]);
+  }, [loadRoots, refreshKey]);
   useEffect(() => {
     void loadTree();
-  }, [loadTree]);
-
+  }, [loadTree, refreshKey]);
   /** Fetches one more level from the node the person opened. */
   const expand = async (node: BreakdownNode) => {
     if (!workspace) return;
@@ -282,9 +324,68 @@ export function BreakdownScreen({
   const merged = useMemo(() => {
     if (!tree) return null;
     const seen = new Map<string, BreakdownNode>();
-    for (const node of tree.nodes.concat(extra)) seen.set(node.id, node);
+    // Fresh root responses are authoritative. Keep older expanded nodes only
+    // when the fresh response does not contain them, so stale rows cannot
+    // overwrite newly-created titles or parents.
+    for (const node of extra.concat(tree.nodes)) seen.set(node.id, node);
     return { ...tree, nodes: [...seen.values()] };
   }, [tree, extra]);
+
+  useEffect(() => {
+    if (!selectedId || !workspace) return;
+    setSelected(selectedId);
+    setWhy(null);
+    void request<unknown>(
+      "GET",
+      `/v1/workspaces/${workspace.id}/items/${selectedId}/ancestry`,
+    ).then((value) => {
+      const source = value as { ancestors?: { id?: string }[] };
+      const ancestors = (source.ancestors ?? [])
+        .map((entry) => entry.id)
+        .filter((id): id is string => typeof id === "string");
+      if (ancestors[0] && ancestors[0] !== rootId) setRootId(ancestors[0]);
+      setWhy(rationaleFrom(value));
+    }).catch((failure) => say(failure, "理由をたどれませんでした"));
+  }, [selectedId, workspace]);
+  useEffect(() => {
+    if (
+      !workspace ||
+      !selectedId ||
+      !tree ||
+      merged?.nodes.some((node) => node.id === selectedId)
+    )
+      return;
+    void request<unknown>(
+      "GET",
+      `/v1/workspaces/${workspace.id}/items/${selectedId}/ancestry`,
+    )
+      .then((value) => {
+        const source = value as { ancestors?: { id?: string }[] };
+        const ancestors = (source.ancestors ?? [])
+          .map((entry) => entry.id)
+          .filter((id): id is string => typeof id === "string");
+        if (!ancestors.length) return;
+        return Promise.all(
+          ancestors.map((id) =>
+            request<unknown>(
+              "GET",
+              `/v1/workspaces/${workspace.id}/items/${id}/breakdown?depth=2`,
+            ),
+          ),
+        ).then((responses) => {
+          const fetched = responses
+            .map(breakdownFrom)
+            .flatMap((entry) => entry?.nodes ?? []);
+          setExtra((current) => {
+            const byId = new Map(current.map((node) => [node.id, node]));
+            for (const node of fetched) byId.set(node.id, node);
+            return [...byId.values()];
+          });
+          setOpen((current) => new Set([...current, ...ancestors]));
+        });
+      })
+      .catch((failure) => say(failure, "作成した項目を表示できませんでした"));
+  }, [workspace, selectedId, tree, merged]);
 
   const byParent = useMemo(
     () => (merged ? childrenOf(merged) : new Map<string, BreakdownNode[]>()),
@@ -361,6 +462,8 @@ export function BreakdownScreen({
                 open={open}
                 onToggle={toggle}
                 onSelect={(id) => void select(id)}
+                onAddChild={onAddChild}
+                onAddSibling={onAddSibling}
                 selected={selected}
               />
             </ul>

@@ -180,6 +180,37 @@ async fn a_plan_can_be_as_deep_as_it_needs_to_be() {
 }
 
 #[tokio::test]
+async fn actions_are_terminal_for_every_part_of_write_path() {
+    let (_dir, service, w, who) = setup().await;
+    let action = item(&service, &who, &w, "action", "顧客へ連絡する", None).await;
+
+    let nested_on_create = call(
+        &service,
+        &who,
+        "POST",
+        &format!("/v1/workspaces/{w}/items"),
+        json!({"kind":"initiative","title":"子にしてはいけない","parent_id":action}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(nested_on_create.status, 422);
+
+    let child = item(&service, &who, &w, "initiative", "あとから関係を張る", None).await;
+    let nested_by_relation = link(
+        &service,
+        &who,
+        &w,
+        &child,
+        &action,
+        "part_of",
+        "Action を親にはしない",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(nested_by_relation.status, 422);
+}
+
+#[tokio::test]
 async fn a_deep_map_loads_a_piece_at_a_time_and_says_where_it_stopped() {
     let (_dir, service, w, who) = setup().await;
     let chain = deep_chain(&service, &who, &w).await;

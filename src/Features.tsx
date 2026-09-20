@@ -609,10 +609,14 @@ export function ItemEditor({
   item,
   store,
   onClose,
+  onAddChild,
+  onAddSibling,
 }: {
   item: Item;
   store: WorkspaceStore;
   onClose: () => void;
+  onAddChild?: () => void;
+  onAddSibling?: () => void;
 }) {
   const [version, setVersion] = useState(item.version);
   const [archiving, setArchiving] = useState(false);
@@ -665,14 +669,18 @@ export function ItemEditor({
             self_assessment: assessment === "" ? null : Number(assessment),
             ...(item.kind === "action"
               ? {
-                  recurrence: frequency || weekdays.length
-                    ? {
-                        mode: recurrenceMode,
-                        times_per_week: recurrenceMode === "fixed_schedule" ? weekdays.length : frequency,
-                        weekdays,
-                        timezone: store.settings.timezone,
-                      }
-                    : null,
+                  recurrence:
+                    frequency || weekdays.length
+                      ? {
+                          mode: recurrenceMode,
+                          times_per_week:
+                            recurrenceMode === "fixed_schedule"
+                              ? weekdays.length
+                              : frequency,
+                          weekdays,
+                          timezone: store.settings.timezone,
+                        }
+                      : null,
                 }
               : {}),
           },
@@ -722,6 +730,31 @@ export function ItemEditor({
         {kindNames[item.kind]} · {stateNames[item.state]} ·{" "}
         {dateLabel(item.due_date)}
       </p>
+      <div className="button-row">
+        {item.kind === "action" && (
+          <p className="empty-value">
+            行動は最後の階層です。子項目は追加できません。
+          </p>
+        )}
+        {item.kind !== "action" && onAddChild && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onAddChild}
+          >
+            子項目を追加
+          </button>
+        )}
+        {onAddSibling && (
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onAddSibling}
+          >
+            兄弟項目を追加
+          </button>
+        )}
+      </div>
       {conflict && (
         <div className="conflict-note">
           <p>
@@ -836,7 +869,10 @@ export function ItemEditor({
               </div>
               <label>
                 習慣ルール
-                <select name="recurrence_mode" defaultValue={item.fields.recurrence?.mode || "period_quota"}>
+                <select
+                  name="recurrence_mode"
+                  defaultValue={item.fields.recurrence?.mode || "period_quota"}
+                >
                   <option value="period_quota">週の回数で決める</option>
                   <option value="fixed_schedule">曜日を固定する</option>
                 </select>
@@ -857,9 +893,21 @@ export function ItemEditor({
               </label>
               <fieldset className="weekday-picker">
                 <legend>固定する曜日（曜日固定を選んだ場合）</legend>
-                {["月", "火", "水", "木", "金", "土", "日"].map((label, index) => (
-                  <label key={label}><input type="checkbox" name="weekdays" value={index} defaultChecked={item.fields.recurrence?.weekdays.includes(index)} />{label}</label>
-                ))}
+                {["月", "火", "水", "木", "金", "土", "日"].map(
+                  (label, index) => (
+                    <label key={label}>
+                      <input
+                        type="checkbox"
+                        name="weekdays"
+                        value={index}
+                        defaultChecked={item.fields.recurrence?.weekdays.includes(
+                          index,
+                        )}
+                      />
+                      {label}
+                    </label>
+                  ),
+                )}
               </fieldset>
             </>
           ) : (
