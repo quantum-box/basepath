@@ -946,7 +946,7 @@ async fn consecutive_requests_may_reach_different_instances() {
         json!({}),
     )
     .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 34);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 36);
     assert!(headers.get("mcp-session-id").is_none());
     // Nothing the endpoint returns may be cached by a proxy in between.
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");
