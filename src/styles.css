@@ -733,6 +733,9 @@ input[type="checkbox"]:checked::after {
   position: relative;
   box-shadow: 0 2px 6px #1c5c9602;
 }
+.map-node:not(.root) {
+  height: calc(100% - 46px);
+}
 .map-node:hover {
   box-shadow: 0 4px 14px #829ac21c;
 }

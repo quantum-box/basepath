@@ -166,10 +166,10 @@ type TreeItem = {
 const GAP = 22;
 const nodeSize = (item: TreeItem) =>
   item.kind === "goal"
-    ? { width: 214, height: 65 }
-    : { width: 148, height: 70 };
+    ? { width: 214, height: 116 }
+    : { width: 148, height: 121 };
 const rowY = (depth: number) =>
-  depth === 0 ? 8 : depth === 1 ? 118 : 221 + (depth - 2) * 95;
+  depth === 0 ? 8 : depth === 1 ? 160 : 300 + (depth - 2) * 135;
 const strokeColor = (scope: Scope) =>
   scope === "チーム" ? "#c4adf5" : scope === "組織" ? "#bdcce0" : "#abcaf6";
 type Props = {
