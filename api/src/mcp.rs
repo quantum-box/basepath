@@ -822,10 +822,12 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
     if object
         .get("idempotency_key")
         .and_then(Value::as_str)
-        .is_some_and(|key| key.len() > 200)
+        .is_some_and(|key| {
+            key.len() > crate::conversation::MAX_IDEMPOTENCY_KEY_BYTES || !key.is_ascii()
+        })
     {
         return Err(crate::model::ApiError::invalid(
-            "idempotency_key must be at most 200 characters",
+            "idempotency_key must be at most 200 ASCII bytes",
         ));
     }
     if name == "pathbase_link_context" {
@@ -850,6 +852,18 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
                     "screen is not a recognized PathBase route",
                 ));
             }
+        }
+        if object.get("idempotency_key").is_none()
+            && object
+                .get("conversation_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    id.len() > crate::conversation::MAX_IDEMPOTENCY_KEY_BYTES || !id.is_ascii()
+                })
+        {
+            return Err(crate::model::ApiError::invalid(
+                "conversation_id cannot be used as an idempotency fallback unless it is 1-200 ASCII bytes",
+            ));
         }
     }
     Ok(())
@@ -1098,7 +1112,7 @@ const fn write(name: &'static str, description: &'static str, destructive: bool)
 fn tools() -> Vec<Tool> {
     let defs = [
         read("pathbase_get_context", "Get the authenticated actor and authorized workspaces."),
-        write("pathbase_link_context", "Create or explicitly relink a conversation-to-workspace context using pathbase.context. conversation_id is at most 191 characters; idempotency_key is optional (at most 200 characters) and falls back to conversation_id. This never changes a confirmed plan; if the public URL is unavailable, report unsupported_host.", false),
+        write("pathbase_link_context", "Create or explicitly relink a conversation-to-workspace context using pathbase.context. conversation_id is at most 191 characters; idempotency_key is optional (1-200 ASCII bytes) and falls back to conversation_id only when that fallback fits the same byte contract. This never changes a confirmed plan; if the public URL is unavailable, report unsupported_host.", false),
         read("pathbase_get_linked_context", "Resolve the workspace and business context previously linked to this conversation using pathbase.read. Returns stopped or not_linked honestly; it never mutates the plan."),
         read("pathbase_search_items", "Search a single authorized workspace, with cursor paging."),
         read("pathbase_get_item", "Get an item including its version, dates, and evaluation settings."),
@@ -1137,7 +1151,7 @@ fn tools() -> Vec<Tool> {
     defs.into_iter().map(|shape| {
         let (required, allowed) = argument_contract(shape.name).unwrap();
         let mut props=json!({});
-        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key"=>json!({"type":"string","minLength":1,"maxLength":200}),_=>json!({"type":"string"})};}
+        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key"=>json!({"type":"string","minLength":1,"maxLength":200,"pattern":"^[\\x20-\\x7E]+$","description":"1-200 ASCII bytes; storage is VARBINARY(200)."}),_=>json!({"type":"string"})};}
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
         if let Some(uri) = ui_resource(shape.name) {
             // Both conventions, for the same document. MCP Apps reads

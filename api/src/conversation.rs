@@ -32,6 +32,7 @@ pub struct LinkInput<'a> {
 /// boundary in SQLite and at the MCP contract so a link cannot succeed in one
 /// deployment and fail after a storage migration in another.
 pub const MAX_CONVERSATION_ID_LENGTH: usize = 191;
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 200;
 
 const SELECT: &str = "SELECT id,conversation_id,workspace_id,item_id,screen,status,source,source_version,idempotency_key,created_at,updated_at FROM conversation_links";
 const SELECT_FOR_KEY: &str = "SELECT l.id,l.conversation_id,l.workspace_id,l.item_id,l.screen,l.status,l.source,l.source_version,l.idempotency_key,l.created_at,l.updated_at FROM conversation_links l JOIN conversation_link_idempotency k ON k.link_id=l.id";
@@ -131,6 +132,14 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
     {
         return Err(ApiError::invalid(
             "conversation_id must be 1-191 characters",
+        ));
+    }
+    if input.idempotency_key.is_empty()
+        || input.idempotency_key.len() > MAX_IDEMPOTENCY_KEY_BYTES
+        || !input.idempotency_key.is_ascii()
+    {
+        return Err(ApiError::invalid(
+            "idempotency_key must be 1-200 ASCII bytes",
         ));
     }
     // Check ownership before the conversation lookup. Otherwise a retry of an
@@ -244,6 +253,10 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
                         ));
                     }
                 }
+                // The losing request may have used a distinct, previously
+                // unused key. Claim it for the winning link before returning
+                // so a later conversation cannot take that key.
+                claim_key(tx, actor, &input, &link.id).await?;
                 return Ok(link);
             }
             return Err(ApiError::new(

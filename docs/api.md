@@ -361,8 +361,9 @@ MCP接続は会話本文を保存しません。ホストが渡した`conversati
 リンクは計画を変更せず、解決は`pathbase.read`で利用できます。
 
 - `pathbase_link_context`：`workspace_id`が必須。対応hostでは`conversation_id`（最大191文字）を
-  指定します。`idempotency_key`は任意で、conversation IDをキーとして安全に再試行できます。
-  指定した場合は最大200文字で、同じキーに別の会話・対象・画面を割り当てると409です。
+  指定します。`idempotency_key`は任意で、conversation IDが1〜200 ASCII bytesならそれを
+  fallback keyとして安全に再試行できます。明示したkeyも1〜200 ASCII bytesです。
+  同じキーに別の会話・対象・画面を割り当てると409です。
   `item_id`と`screen`は任意ですが、画面はworkspaceのscopeに適合するものだけ指定できます。
   `item_id`が行動なら`today`、取り組みなら`breakdown`へ正規化し、目標画面へ誤ってfallbackしません。
   対象は通常のtenant/workspace membershipで再検証され、同じ会話への再試行は同じリンクを返します。

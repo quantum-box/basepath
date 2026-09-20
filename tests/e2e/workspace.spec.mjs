@@ -280,7 +280,7 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
     exact: true,
   });
   await expect(switcher).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_first$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_first$/);
   await switcher.click();
   await expect(
     page.getByRole("heading", { name: "利用するテナント", exact: true }),
@@ -292,19 +292,19 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
     .getByRole("button", { name: "このテナントで始める", exact: true })
     .click();
   await expect(switcher).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
   expect(selectedTenant).toBe("tn_second");
 
   await page.reload();
   await expect(switcher).toBeVisible();
   await expect(page.getByText("Tachyonでログイン中")).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
 
   await switcher.click();
   await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_second$/);
   await page.getByRole("button", { name: "ホームに戻る", exact: true }).click();
   await expect(switcher).toBeVisible();
-  await expect(page).toHaveURL(/\/\?tenant_id=tn_second$/);
+  await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
   expect(logoutRequests).toBe(0);
 });
 
@@ -344,7 +344,7 @@ for (const failure of [
     await expect(
       page.getByLabel("Tachyonユーザー名またはメールアドレス"),
     ).not.toBeVisible();
-    await expect(page).toHaveURL(/\/\?tenant_id=tn_selected$/);
+    await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_selected$/);
   });
 }
 

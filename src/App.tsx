@@ -185,6 +185,14 @@ function replaceTenantSelectionUrl(tenantId: string, returnTo?: string | null) {
   url.hash = "";
   window.history.replaceState({}, "", url);
 }
+function replaceLoginUrl(returnTo?: string | null) {
+  const url = new URL(window.location.href);
+  url.pathname = "/login";
+  url.search = "";
+  if (returnTo) url.searchParams.set("return_to", returnTo);
+  url.hash = "";
+  window.history.replaceState({}, "", url);
+}
 function safeTenantReturn(value: string | null): string | null {
   if (!value) return null;
   try {
@@ -560,8 +568,16 @@ export function App() {
   const raw = (id: string) => allItems.find((i) => uiId(i) === id);
   const scopeOf = (w: string): Scope =>
     store.workspaces.find((s) => s.id === w)?.scope || "個人";
+  const requestedRoute = parsePath(window.location.pathname);
+  const requestedOrganizationId =
+    requestedRoute?.kind === "organization" ? requestedRoute.orgId : "";
   const currentWorkspace =
-    store.workspaces.find((w) => w.id === workspaceId) || store.workspaces[0];
+    (requestedOrganizationId
+      ? store.workspaces.find((w) => w.id === requestedOrganizationId)
+      : store.workspaces.find((w) => w.id === workspaceId)) ||
+    (requestedOrganizationId ? undefined : store.workspaces[0]);
+  const contextUnavailable =
+    !store.loading && !!requestedOrganizationId && !currentWorkspace;
   /**
    * Where the person is: their own Basepath, or an organization's.
    *
@@ -613,6 +629,16 @@ export function App() {
   const visibleItems = allItems.filter(
     (i) => !i.archived_at && workspaceMatches(i.workspace_id),
   );
+  const linkedItem = raw(selectedId);
+  useEffect(() => {
+    if (
+      shownScreen === "today" &&
+      linkedItem?.kind === "action" &&
+      !modal
+    ) {
+      setModal({ kind: "initiativeDetail", id: selectedId });
+    }
+  }, [linkedItem?.id, modal, selectedId, shownScreen]);
   const isGoalKind = (item: Item) =>
     ["outcome", "idea", "milestone"].includes(item.kind);
   const partOfTarget = (item: Item) => {
@@ -716,6 +742,7 @@ export function App() {
       (i) =>
         i.kind === "action" &&
         !["paused", "abandoned", "draft"].includes(i.state) &&
+        (linkedItem?.kind === "action" && i.id === linkedItem.id) ||
         (i.fields.recurrence
           ? (!i.start_date || i.start_date <= today) &&
             (!i.due_date || i.due_date >= today) &&
@@ -749,7 +776,6 @@ export function App() {
               : null
         : null,
     }));
-  const linkedItem = raw(selectedId);
   // An item deep link must not silently select the first goal when the target
   // is an action or initiative. Those links are routed to their own screen by
   // the MCP contract; keeping the detail empty here also protects old links.
@@ -886,7 +912,8 @@ export function App() {
   }, []);
   useEffect(() => {
     if (store.error?.code === "UNAUTHENTICATED") {
-      replaceScreenUrl("/login");
+      tenantReturnRef.current = tenantReturnRef.current ?? tenantReturnUrl();
+      replaceLoginUrl(tenantReturnRef.current);
       return;
     }
     if (store.error?.code === "TENANT_SELECTION_REQUIRED") {
@@ -924,9 +951,15 @@ export function App() {
     }>("GET", "/v1/tenants").then(
       (result) => {
         if (!active) return;
+        const returnTo = tenantReturnRef.current;
+        const returnTenantId = returnTo
+          ? new URL(returnTo, window.location.origin).searchParams.get(
+              "tenant_id",
+            )
+          : null;
         const requestedTenantId = new URLSearchParams(
           window.location.search,
-        ).get("tenant_id");
+        ).get("tenant_id") || returnTenantId;
         // A conversation deep link may name a tenant other than the one in
         // this browser session. Do not silently replace that target with the
         // current tenant: move through the explicit selector, whose URL is
@@ -947,6 +980,16 @@ export function App() {
         }
         if (!result.selected_tenant_id) return;
         setTenantId(result.selected_tenant_id);
+        if (returnTo && returnTenantId === result.selected_tenant_id) {
+          const restored = restoreTenantReturn(returnTo, result.selected_tenant_id);
+          const restoredRoute = parsePath(restored.pathname);
+          tenantReturnRef.current = null;
+          setScreen(restoredRoute?.screen ?? "home");
+          setWorkspaceId(restoredRoute?.orgId ?? "");
+          setSelectedId(restored.searchParams.get("item") || "");
+          window.history.replaceState({}, "", restored);
+          return;
+        }
         const route = parsePath(window.location.pathname);
         if (route) {
           setWorkspaceId(route.kind === "organization" ? route.orgId : "");
@@ -989,14 +1032,20 @@ export function App() {
    * organization's screen up until something happens to reload.
    */
   useEffect(() => {
-    if (store.loading || store.workspaces.length === 0 || !context) return;
+    if (
+      store.loading ||
+      store.workspaces.length === 0 ||
+      !context ||
+      requestedOrganizationId
+    )
+      return;
     if (stillAvailable(context, store.workspaces)) return;
     const own = personalWorkspaceId();
     if (!own) return;
     notify("このワークスペースを利用できなくなりました");
     switchContext(own);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store.loading, store.workspaces, context?.workspaceId]);
+  }, [store.loading, store.workspaces, context?.workspaceId, requestedOrganizationId]);
 
   /**
    * A personal deep link, once the workspace list has arrived.
@@ -1009,7 +1058,16 @@ export function App() {
     const route = parsePath(window.location.pathname);
     if (route?.kind !== "personal") return;
     const own = personalWorkspaceId();
-    if (own && own !== workspaceId) setWorkspaceId(own);
+    const requested = new URLSearchParams(window.location.search).get(
+      "workspace",
+    );
+    const requestedPersonal = requested
+      ? store.workspaces.find(
+          (workspace) => workspace.id === requested && workspace.scope === "個人",
+        )?.id
+      : undefined;
+    const target = requestedPersonal || own;
+    if (target && target !== workspaceId) setWorkspaceId(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.workspaces.length]);
 
@@ -1025,13 +1083,24 @@ export function App() {
     if (!context) return;
     const route = parsePath(window.location.pathname);
     const expected = pathFor(context, shownScreen);
-    if (route && window.location.pathname === expected && !window.location.hash)
+    const tenantMatches =
+      !tenantId ||
+      store.me.mode !== "tachyon" ||
+      new URL(window.location.href).searchParams.get("tenant_id") === tenantId;
+    if (
+      route &&
+      window.location.pathname === expected &&
+      !window.location.hash &&
+      tenantMatches
+    )
       return;
     const url = new URL(window.location.href);
     url.pathname = expected;
+    if (tenantId && store.me.mode === "tachyon")
+      url.searchParams.set("tenant_id", tenantId);
     url.hash = "";
     window.history.replaceState(null, "", url);
-  }, [context?.kind, context?.workspaceId, shownScreen]);
+  }, [context?.kind, context?.workspaceId, shownScreen, tenantId, store.me.mode]);
 
   function toggleTask(id: string) {
     const item = raw(id);
@@ -1386,6 +1455,18 @@ export function App() {
         backLabel="ホームに戻る"
         backPendingLabel="戻っています…"
       />
+    );
+  if (contextUnavailable)
+    return (
+      <main className="auth-page">
+        <div className="panel auth-card">
+          <h1>ワークスペースを開けません</h1>
+          <p>このリンクのワークスペースは、現在のテナントでは利用できません。</p>
+          <button className="primary-button" onClick={() => replaceScreenUrl("/", tenantId)}>
+            ホームへ戻る
+          </button>
+        </div>
+      </main>
     );
   return (
     <div className={`app-shell ${compact ? "compact" : ""}`}>
