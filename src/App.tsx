@@ -2737,6 +2737,27 @@ export function App() {
                   canEditItem(item),
               )
               .sort((a, b) => a.title.localeCompare(b.title, "ja"));
+            const breadcrumb = (item: Item) => {
+              const labels = [item.title];
+              const seen = new Set<string>([item.id]);
+              let current = partOfTarget(item);
+              while (current && !seen.has(current.id)) {
+                seen.add(current.id);
+                labels.unshift(current.title);
+                current = partOfTarget(current);
+              }
+              return labels.join(" › ");
+            };
+            const baseLabels = new Map(
+              parents.map((parent) => [
+                parent.id,
+                `${breadcrumb(parent)}（${parent.kind}）`,
+              ]),
+            );
+            const labelCounts = new Map<string, number>();
+            baseLabels.forEach((label) => {
+              labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+            });
             return (
               <form onSubmit={saveForm} className="editor-form">
                 <p className="modal-intro">
@@ -2748,7 +2769,9 @@ export function App() {
                     <option value="">ルート（親なし）</option>
                     {parents.map((parent) => (
                       <option value={parent.id} key={parent.id}>
-                        {parent.title}（{parent.kind}）
+                        {labelCounts.get(baseLabels.get(parent.id)!)! > 1
+                          ? `${baseLabels.get(parent.id)} · ${parent.id.slice(-6)}`
+                          : baseLabels.get(parent.id)}
                       </option>
                     ))}
                   </select>
