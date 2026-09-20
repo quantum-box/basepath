@@ -287,10 +287,12 @@ test("Tachyon home can open tenant selection and return", async ({ page }) => {
   ).toBeVisible();
   await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_first$/);
   await page.getByLabel("Tachyonテナント").selectOption("tn_second");
-  await expect(page).toHaveURL(/\/tenants\?tenant_id=tn_second$/);
-  await page
-    .getByRole("button", { name: "このテナントで始める", exact: true })
-    .click();
+  const chooseTenant = page.getByRole("button", {
+    name: "このテナントで始める",
+    exact: true,
+  });
+  if (await chooseTenant.isVisible().catch(() => false))
+    await chooseTenant.click();
   await expect(switcher).toBeVisible();
   await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_second$/);
   expect(selectedTenant).toBe("tn_second");

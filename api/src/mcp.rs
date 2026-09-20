@@ -446,6 +446,9 @@ impl Mcp {
                             None,
                         )
                         .await?;
+                    if !item["archived_at"].is_null() {
+                        return Err(crate::model::ApiError::missing());
+                    }
                     // A deep link must open the screen that can actually
                     // address the item. In particular, an action is not a
                     // goal and must never fall through to the first goal in
@@ -880,7 +883,7 @@ fn screen_allowed_for_scope(scope: &str, screen: &str) -> bool {
                 | "templates"
                 | "members"
         ),
-        "組織" => matches!(
+        "組織" | "チーム" => matches!(
             screen,
             "home"
                 | "goals"
@@ -1432,7 +1435,7 @@ impl ServerHandler for Mcp {
 
 #[cfg(test)]
 mod screen_link_tests {
-    use super::screen_for_item_kind;
+    use super::{screen_allowed_for_scope, screen_for_item_kind};
 
     #[test]
     fn goal_like_items_use_the_goal_map() {
@@ -1448,5 +1451,11 @@ mod screen_link_tests {
             screen_for_item_kind(Some("initiative"), "today"),
             "breakdown"
         );
+    }
+
+    #[test]
+    fn team_workspaces_use_organization_routes() {
+        assert!(screen_allowed_for_scope("チーム", "dashboard"));
+        assert!(!screen_allowed_for_scope("チーム", "memory"));
     }
 }
