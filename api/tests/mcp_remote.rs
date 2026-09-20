@@ -455,6 +455,21 @@ async fn conversation_context_link_persists_resolves_isolates_and_stops() {
     .await
     .unwrap();
     assert_eq!(retry.id, link.id);
+    let screen_conflict = conversation::upsert(
+        &mut tx,
+        &actor,
+        conversation::LinkInput {
+            connection_id: "connection-a",
+            conversation_id: "chat-1",
+            workspace_id: "personal",
+            item_id: Some("item-1"),
+            screen: Some("dashboard"),
+            idempotency_key: "retry-screen",
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(screen_conflict.status, 409);
     let conflict = conversation::upsert(
         &mut tx,
         &actor,
@@ -638,6 +653,29 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     assert!(listed
         .iter()
         .any(|tool| tool["name"] == "pathbase_get_linked_context"));
+    let link_schema = listed
+        .iter()
+        .find(|tool| tool["name"] == "pathbase_link_context")
+        .unwrap();
+    assert_eq!(
+        link_schema["inputSchema"]["properties"]["conversation_id"]["maxLength"],
+        191
+    );
+    assert_eq!(
+        link_schema["inputSchema"]["properties"]["idempotency_key"]["maxLength"],
+        200
+    );
+    let (too_long_conversation, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        4,
+        "tools/call",
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":"personal","conversation_id":"x".repeat(192)}}),
+    )
+    .await;
+    assert_eq!(too_long_conversation["isError"], true);
     // Annotations describe the real effect: a change set can contain DELETE
     // operations, so proposing and applying one are not "non-destructive".
     let shape = |name: &str| {
@@ -711,7 +749,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         None,
         32,
         "tools/call",
-        json!({"name":"pathbase_link_context","arguments":{"workspace_id":alice_personal,"conversation_id":"chat-alice-1","idempotency_key":"chat-alice-1-v1","screen":"alignment"}}),
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":alice_personal,"conversation_id":"chat-alice-1","idempotency_key":"chat-alice-1-v1","screen":"memory"}}),
     )
     .await;
     assert_eq!(linked["structuredContent"]["status"], "active");
@@ -719,12 +757,34 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         linked["structuredContent"]["target"]["workspace_id"],
         alice_personal
     );
-    let (resolved, _) = request(
+    let (fallback_key, _) = request(
         &client,
         &url,
         &alice,
         None,
         33,
+        "tools/call",
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":alice_personal,"conversation_id":"chat-alice-fallback","screen":"memory"}}),
+    )
+    .await;
+    assert_eq!(fallback_key["structuredContent"]["status"], "active");
+    let (wrong_screen, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        34,
+        "tools/call",
+        json!({"name":"pathbase_link_context","arguments":{"workspace_id":alice_personal,"conversation_id":"chat-alice-1","idempotency_key":"chat-alice-1-v2","screen":"alignment"}}),
+    )
+    .await;
+    assert_eq!(wrong_screen["isError"], true);
+    let (resolved, _) = request(
+        &client,
+        &url,
+        &alice,
+        None,
+        35,
         "tools/call",
         json!({"name":"pathbase_get_linked_context","arguments":{"conversation_id":"chat-alice-1"}}),
     )
@@ -739,7 +799,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
         &url,
         &alice,
         None,
-        34,
+        36,
         "tools/call",
         json!({"name":"pathbase_link_context","arguments":{"workspace_id":"someone-elses-workspace","conversation_id":"chat-alice-2","idempotency_key":"chat-alice-2-v1"}}),
     )

@@ -875,7 +875,25 @@ export function App() {
       selected_tenant_id: string | null;
     }>("GET", "/v1/tenants").then(
       (result) => {
-        if (!active || !result.selected_tenant_id) return;
+        if (!active) return;
+        const requestedTenantId = new URLSearchParams(
+          window.location.search,
+        ).get("tenant_id");
+        // A conversation deep link may name a tenant other than the one in
+        // this browser session. Do not silently replace that target with the
+        // current tenant: move through the explicit selector, whose URL is
+        // the safe boundary and whose membership check is authoritative.
+        if (
+          requestedTenantId &&
+          requestedTenantId !== result.selected_tenant_id &&
+          result.tenants.some((tenant) => tenant.id === requestedTenantId)
+        ) {
+          setTenantId(requestedTenantId);
+          setSelectingTenant(true);
+          replaceScreenUrl("/tenants", requestedTenantId);
+          return;
+        }
+        if (!result.selected_tenant_id) return;
         setTenantId(result.selected_tenant_id);
         replaceScreenUrl("/", result.selected_tenant_id);
       },

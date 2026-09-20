@@ -432,6 +432,12 @@ impl Mcp {
                     .and_then(|rows| rows.iter().find(|row| row["id"] == w))
                     .and_then(|row| row["scope"].as_str())
                     .unwrap_or("組織");
+                let screen = args["screen"].as_str().unwrap_or("home");
+                if !screen_allowed_for_scope(scope, screen) {
+                    return Err(crate::model::ApiError::invalid(
+                        "screen is not available in this workspace scope",
+                    ));
+                }
                 if let Some(item_id) = args["item_id"].as_str() {
                     self.service
                         .handle(
@@ -462,7 +468,6 @@ impl Mcp {
                     if let Some(item_id) = args["item_id"].as_str() {
                         query.append_pair("item", &format!("{w}~{item_id}"));
                     }
-                    let screen = args["screen"].as_str().unwrap_or("home");
                     let path = if scope == "個人" {
                         format!("/personal/{screen}")
                     } else {
@@ -480,7 +485,7 @@ impl Mcp {
                         conversation_id,
                         workspace_id: w,
                         item_id: args["item_id"].as_str(),
-                        screen: args["screen"].as_str(),
+                        screen: Some(screen),
                         idempotency_key: args["idempotency_key"]
                             .as_str()
                             .unwrap_or(conversation_id),
@@ -795,6 +800,15 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
         }
     }
     if object
+        .get("conversation_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id.chars().count() > crate::conversation::MAX_CONVERSATION_ID_LENGTH)
+    {
+        return Err(crate::model::ApiError::invalid(
+            "conversation_id must be at most 191 characters",
+        ));
+    }
+    if object
         .get("idempotency_key")
         .and_then(Value::as_str)
         .is_some_and(|key| key.len() > 200)
@@ -826,21 +840,42 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
                 ));
             }
         }
-        if object
-            .get("conversation_id")
-            .and_then(Value::as_str)
-            .is_some()
-            && object
-                .get("idempotency_key")
-                .and_then(Value::as_str)
-                .is_none()
-        {
-            return Err(crate::model::ApiError::invalid(
-                "idempotency_key is required when conversation_id is provided",
-            ));
-        }
     }
     Ok(())
+}
+
+fn screen_allowed_for_scope(scope: &str, screen: &str) -> bool {
+    match scope {
+        "個人" => matches!(
+            screen,
+            "home"
+                | "today"
+                | "goals"
+                | "breakdown"
+                | "timeline"
+                | "memory"
+                | "reflection"
+                | "cycles"
+                | "templates"
+                | "members"
+        ),
+        "組織" => matches!(
+            screen,
+            "home"
+                | "goals"
+                | "breakdown"
+                | "alignment"
+                | "dashboard"
+                | "goal-review"
+                | "cycles"
+                | "timeline"
+                | "today"
+                | "reflection"
+                | "templates"
+                | "members"
+        ),
+        _ => false,
+    }
 }
 
 fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&'static str])> {
@@ -1052,8 +1087,8 @@ const fn write(name: &'static str, description: &'static str, destructive: bool)
 fn tools() -> Vec<Tool> {
     let defs = [
         read("pathbase_get_context", "Get the authenticated actor and authorized workspaces."),
-        write("pathbase_link_context", "Persist a conversation-to-workspace link using the separately granted pathbase.context permission. This never changes a confirmed plan; if the public URL is unavailable, report unsupported_host.", false),
-        read("pathbase_get_linked_context", "Resolve the workspace and business context previously linked to this conversation. Returns stopped or not_linked honestly; it never mutates the plan."),
+        write("pathbase_link_context", "Create or explicitly relink a conversation-to-workspace context using pathbase.context. conversation_id is at most 191 characters; idempotency_key is optional (at most 200 characters) and falls back to conversation_id. This never changes a confirmed plan; if the public URL is unavailable, report unsupported_host.", false),
+        read("pathbase_get_linked_context", "Resolve the workspace and business context previously linked to this conversation using pathbase.read. Returns stopped or not_linked honestly; it never mutates the plan."),
         read("pathbase_search_items", "Search a single authorized workspace, with cursor paging."),
         read("pathbase_get_item", "Get an item including its version, dates, and evaluation settings."),
         read("pathbase_get_graph", "Get the goal graph for one workspace. Returns at most `limit` nodes (default and maximum 200) with the relations between them, plus `truncated` and the `limit` that was applied. When `truncated` is true the graph is a slice, not the plan: narrow the request or read the missing subtree with pathbase_get_item."),
@@ -1091,7 +1126,7 @@ fn tools() -> Vec<Tool> {
     defs.into_iter().map(|shape| {
         let (required, allowed) = argument_contract(shape.name).unwrap();
         let mut props=json!({});
-        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),_=>json!({"type":"string"})};}
+        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key"=>json!({"type":"string","minLength":1,"maxLength":200}),_=>json!({"type":"string"})};}
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
         if let Some(uri) = ui_resource(shape.name) {
             // Both conventions, for the same document. MCP Apps reads

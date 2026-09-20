@@ -28,6 +28,11 @@ pub struct LinkInput<'a> {
     pub idempotency_key: &'a str,
 }
 
+/// MySQL stores conversation ids in a VARCHAR(191) column. Keep the same
+/// boundary in SQLite and at the MCP contract so a link cannot succeed in one
+/// deployment and fail after a storage migration in another.
+pub const MAX_CONVERSATION_ID_LENGTH: usize = 191;
+
 const SELECT: &str = "SELECT id,conversation_id,workspace_id,item_id,screen,status,source,source_version,idempotency_key,created_at,updated_at FROM conversation_links";
 
 fn row(row: &crate::db::Row) -> Result<ConversationLink> {
@@ -47,6 +52,13 @@ fn row(row: &crate::db::Row) -> Result<ConversationLink> {
 }
 
 pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<ConversationLink> {
+    if input.conversation_id.is_empty()
+        || input.conversation_id.chars().count() > MAX_CONVERSATION_ID_LENGTH
+    {
+        return Err(ApiError::invalid(
+            "conversation_id must be 1-191 characters",
+        ));
+    }
     let existing = tx
         .fetch_optional(
             &format!(
@@ -63,7 +75,10 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
         .await?;
     if let Some(existing) = existing {
         let link = row(&existing)?;
-        if link.workspace_id != input.workspace_id || link.item_id.as_deref() != input.item_id {
+        if link.workspace_id != input.workspace_id
+            || link.item_id.as_deref() != input.item_id
+            || link.screen.as_deref() != input.screen
+        {
             return Err(ApiError::new(
                 409,
                 "CONTEXT_LINK_CONFLICT",
@@ -105,6 +120,7 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
         if link.conversation_id != input.conversation_id
             || link.workspace_id != input.workspace_id
             || link.item_id.as_deref() != input.item_id
+            || link.screen.as_deref() != input.screen
         {
             return Err(ApiError::new(
                 409,
@@ -121,9 +137,58 @@ pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<
     ).await {
         // A concurrent Lambda may have won the unique insert. Read the
         // winner and make a retry idempotent instead of leaking STORAGE_CONFLICT.
-        if let Some(winner) = tx.fetch_optional(&format!("{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND conversation_id=?{}", tx.lock_reads()), &params![&actor.id, &actor.tenant, input.connection_id, input.conversation_id]).await? {
+        let conversation_winner = tx.fetch_optional(
+            &format!(
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND conversation_id=?{}",
+                tx.lock_reads()
+            ),
+            &params![&actor.id, &actor.tenant, input.connection_id, input.conversation_id],
+        ).await?;
+        let idempotency_winner = tx.fetch_optional(
+            &format!(
+                "{SELECT} WHERE actor=? AND tenant=? AND connection_id=? AND idempotency_key=?{}",
+                tx.lock_reads()
+            ),
+            &params![&actor.id, &actor.tenant, input.connection_id, input.idempotency_key],
+        ).await?;
+        if let Some(winner) = conversation_winner {
             let link = row(&winner)?;
-            if link.workspace_id == input.workspace_id && link.item_id.as_deref() == input.item_id { return Ok(link); }
+            let same_target = link.workspace_id == input.workspace_id
+                && link.item_id.as_deref() == input.item_id
+                && link.screen.as_deref() == input.screen;
+            if same_target {
+                if let Some(key_winner) = idempotency_winner {
+                    let key_link = row(&key_winner)?;
+                    if key_link.conversation_id != input.conversation_id {
+                        return Err(ApiError::new(
+                            409,
+                            "CONTEXT_LINK_CONFLICT",
+                            "idempotency key is already used for another context link",
+                        ));
+                    }
+                }
+                return Ok(link);
+            }
+            return Err(ApiError::new(
+                409,
+                "CONTEXT_LINK_CONFLICT",
+                "この会話は別の業務コンテキストにリンク済みです",
+            ));
+        }
+        if let Some(winner) = idempotency_winner {
+            let link = row(&winner)?;
+            if link.conversation_id != input.conversation_id
+                || link.workspace_id != input.workspace_id
+                || link.item_id.as_deref() != input.item_id
+                || link.screen.as_deref() != input.screen
+            {
+                return Err(ApiError::new(
+                    409,
+                    "CONTEXT_LINK_CONFLICT",
+                    "idempotency key is already used for another context link",
+                ));
+            }
+            return Ok(link);
         }
         return Err(insert_error);
     }
