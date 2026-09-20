@@ -9,10 +9,12 @@ async function openMenu(page) {
 }
 
 async function openScreen(page, label, heading = label) {
-  const routes = { 分解: "breakdown", 目標マップ: "goals" };
-  const url = new URL(page.url());
-  url.pathname = url.pathname.replace(/\/[^/]+$/, `/${routes[label]}`);
-  await page.goto(url.toString());
+  await openMenu(page);
+  const entry = page
+    .getByRole("navigation", { name: "メインメニュー" })
+    .getByRole("button", { name: label, exact: true });
+  await entry.focus();
+  await entry.press("Enter");
   await expect(
     page.getByRole("heading", { name: heading, exact: true, level: 1 }),
   ).toBeVisible();
