@@ -19,6 +19,15 @@ pub struct ConversationLink {
     pub updated_at: String,
 }
 
+pub struct LinkInput<'a> {
+    pub connection_id: &'a str,
+    pub conversation_id: &'a str,
+    pub workspace_id: &'a str,
+    pub item_id: Option<&'a str>,
+    pub screen: Option<&'a str>,
+    pub idempotency_key: &'a str,
+}
+
 const SELECT: &str = "SELECT id,conversation_id,workspace_id,item_id,screen,status,source,source_version,idempotency_key,created_at,updated_at FROM conversation_links";
 
 fn row(row: &crate::db::Row) -> Result<ConversationLink> {
@@ -37,28 +46,19 @@ fn row(row: &crate::db::Row) -> Result<ConversationLink> {
     })
 }
 
-pub async fn upsert(
-    tx: &mut Tx,
-    actor: &Actor,
-    connection_id: &str,
-    conversation_id: &str,
-    workspace_id: &str,
-    item_id: Option<&str>,
-    screen: Option<&str>,
-    idempotency_key: &str,
-) -> Result<ConversationLink> {
+pub async fn upsert(tx: &mut Tx, actor: &Actor, input: LinkInput<'_>) -> Result<ConversationLink> {
     let existing = tx
         .fetch_optional(
             &format!(
                 "{SELECT} WHERE actor=? AND tenant=? AND conversation_id=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, conversation_id],
+            &params![&actor.id, &actor.tenant, input.conversation_id],
         )
         .await?;
     if let Some(existing) = existing {
         let link = row(&existing)?;
-        if link.workspace_id != workspace_id || link.item_id.as_deref() != item_id {
+        if link.workspace_id != input.workspace_id || link.item_id.as_deref() != input.item_id {
             return Err(ApiError::new(
                 409,
                 "CONTEXT_LINK_CONFLICT",
@@ -68,7 +68,7 @@ pub async fn upsert(
         if link.status == "stopped" {
             tx.execute(
                 "UPDATE conversation_links SET connection_id=?,screen=?,status='active',idempotency_key=?,updated_at=? WHERE id=?",
-                &params![connection_id, screen, idempotency_key, now(), &link.id],
+                &params![input.connection_id, input.screen, input.idempotency_key, now(), &link.id],
             )
             .await?;
             let refreshed = tx
@@ -87,14 +87,14 @@ pub async fn upsert(
                 "{SELECT} WHERE actor=? AND tenant=? AND idempotency_key=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, idempotency_key],
+            &params![&actor.id, &actor.tenant, input.idempotency_key],
         )
         .await?
     {
         let link = row(&existing)?;
-        if link.conversation_id != conversation_id
-            || link.workspace_id != workspace_id
-            || link.item_id.as_deref() != item_id
+        if link.conversation_id != input.conversation_id
+            || link.workspace_id != input.workspace_id
+            || link.item_id.as_deref() != input.item_id
         {
             return Err(ApiError::new(
                 409,
@@ -107,7 +107,7 @@ pub async fn upsert(
     let timestamp = now();
     tx.execute(
         "INSERT INTO conversation_links(id,actor,tenant,connection_id,conversation_id,workspace_id,item_id,screen,status,source,source_version,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        &params![new_id("clink"), &actor.id, &actor.tenant, connection_id, conversation_id, workspace_id, item_id, screen, "active", "mcp", "1", idempotency_key, &timestamp, &timestamp],
+        &params![new_id("clink"), &actor.id, &actor.tenant, input.connection_id, input.conversation_id, input.workspace_id, input.item_id, input.screen, "active", "mcp", "1", input.idempotency_key, &timestamp, &timestamp],
     )
     .await?;
     let saved = tx
@@ -116,7 +116,7 @@ pub async fn upsert(
                 "{SELECT} WHERE actor=? AND tenant=? AND conversation_id=?{}",
                 tx.lock_reads()
             ),
-            &params![&actor.id, &actor.tenant, conversation_id],
+            &params![&actor.id, &actor.tenant, input.conversation_id],
         )
         .await?;
     row(&saved)
@@ -140,5 +140,7 @@ pub async fn get(
 }
 
 pub async fn stop_for_connection(tx: &mut Tx, connection_id: &str) -> Result<()> {
-    tx.execute("UPDATE conversation_links SET status='stopped',updated_at=? WHERE connection_id=? AND status='active'", &params![now(), connection_id]).await.map(|_| ()).map_err(Into::into)
+    tx.execute("UPDATE conversation_links SET status='stopped',updated_at=? WHERE connection_id=? AND status='active'", &params![now(), connection_id])
+        .await
+        .map(|_| ())
 }

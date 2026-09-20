@@ -458,15 +458,20 @@ impl Mcp {
                     format!("{basepath}/?{}", query.finish())
                 };
                 let mut tx = self.service.db.begin_write().await?;
+                let connection_id = actor.connection.clone().unwrap_or_default();
                 let link = crate::conversation::upsert(
                     &mut tx,
                     &actor,
-                    &actor.connection.clone().unwrap_or_default(),
-                    conversation_id,
-                    w,
-                    args["item_id"].as_str(),
-                    args["screen"].as_str(),
-                    args["idempotency_key"].as_str().unwrap_or(conversation_id),
+                    crate::conversation::LinkInput {
+                        connection_id: &connection_id,
+                        conversation_id,
+                        workspace_id: w,
+                        item_id: args["item_id"].as_str(),
+                        screen: args["screen"].as_str(),
+                        idempotency_key: args["idempotency_key"]
+                            .as_str()
+                            .unwrap_or(conversation_id),
+                    },
                 )
                 .await?;
                 tx.commit().await?;
