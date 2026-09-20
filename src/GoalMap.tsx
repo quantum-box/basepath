@@ -402,7 +402,10 @@ function MapCanvas({
   useEffect(() => {
     const timer = setTimeout(resetView, 90);
     return () => clearTimeout(timer);
-  }, [scope, goals.length, initiatives.length, closedIds, expanded, resetView]);
+  // `tree` is the complete graph projection, including milestones and
+  // actions. Counting the legacy collections here would leave a newly-added
+  // deeper action outside the current viewport.
+  }, [scope, tree, closedIds, expanded, resetView]);
   useEffect(() => {
     const observer = new ResizeObserver(resetView);
     if (container.current) observer.observe(container.current);
