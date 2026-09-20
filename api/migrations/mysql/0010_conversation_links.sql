@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS conversation_links(
   status VARCHAR(32) NOT NULL,
   source VARCHAR(80) NOT NULL,
   source_version VARCHAR(80) NOT NULL,
-  idempotency_key VARCHAR(200) NOT NULL,
+  idempotency_key VARBINARY(200) NOT NULL,
   created_at VARCHAR(40) NOT NULL,
   updated_at VARCHAR(40) NOT NULL,
   PRIMARY KEY(id),
