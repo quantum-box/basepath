@@ -29,7 +29,11 @@ async fn main() -> Result<(), Error> {
             pathbase_api::auth::TachyonAuth::for_runtime_from_env(
                 pathbase_api::auth::AuthConfig::from_env().map_err(|error| error.message)?,
             )
-            .map_err(|error| error.message)?,
+            .map_err(|error| error.message)?
+            // Production sessions need the shared database so the refresh
+            // token stays server-side and access tokens can be renewed after
+            // the first token expires.
+            .with_database(service.db.clone()),
         ))
     };
     let field = pathbase_api::field::FieldClient::from_env().map_err(|error| error.message)?;

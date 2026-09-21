@@ -6,7 +6,7 @@ PathBase has two independent state classes:
 
 | State | Current implementation | Restart | Horizontal scale |
 | --- | --- | --- | --- |
-| Tachyon login session | AES-256-GCM `HttpOnly` cookie | survives when the same key is configured | safe; no affinity required |
+| Tachyon login session | Opaque `HttpOnly` cookie + AES-256-GCM sealed session row in shared TiDB | survives replacement and renews access tokens for up to 12 hours | safe; no affinity required |
 | Workspaces, memberships, documents, audit, idempotency | Tachyon-managed TiDB via `DATABASE_URL` (SQLx / MySQL protocol) | survives | safe; writers serialize per workspace inside the database |
 
 `GET /api/health` reports what the running process actually persists to: `storage: tidb` with `storage_durability: shared-durable`, or `storage: sqlite` with `storage_durability: ephemeral-runtime` for the explicit local preview. A deployment that silently came up on the preview database is therefore visible from the health endpoint; do not treat `ephemeral-runtime` in production as durable.
@@ -110,12 +110,12 @@ Tachyon Storage/R2 is an object store for files. Copying a live SQLite database 
 
 Production startup requires `PATHBASE_SESSION_KEYS`. Each entry is exactly 32 random bytes encoded as unpadded base64url. Keep it in the Cloud App secret/credential facility, never in `tachyon.yml`, source, browser variables, or build logs.
 
-The first key encrypts new cookies; later keys decrypt old cookies. Rotate without logging everyone out:
+The first key encrypts new session envelopes; later keys decrypt old envelopes. Rotate without logging everyone out:
 
 1. Deploy `new,current` and wait at least the maximum access-token lifetime.
 2. Deploy `new` only.
 
-Removing every old key immediately invalidates existing sessions. Logout clears the browser cookie but cannot centrally revoke a copied stateless cookie; upstream Tachyon token revocation and the short access-token expiry remain the revocation boundary. PathBase intentionally does not persist a refresh token in the cookie, so a user signs in again when the access token expires.
+Removing every old key immediately invalidates existing sessions. Logout deletes the shared session row and clears the browser cookie, so copied cookies stop working too. PathBase keeps the rotating refresh token only in that sealed row, renews the access token near expiry, and ends the session after 12 hours or when the upstream rejects renewal. A no-database test configuration intentionally falls back to a sealed cookie without renewal; production Lambda always attaches the shared database.
 
 ## Storage boundary
 
