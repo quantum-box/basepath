@@ -40,7 +40,7 @@ Tauriは`npm run tauri dev`で起動できます。debugでは同じRust処理�
 
 ログインフォームの認証先は設定で決まります。`PATHBASE_COGNITO_ISSUER`を設定すると、Cognitoの`InitiateAuth`（`USER_PASSWORD_AUTH`）を直接呼び、その access token をセッションのbearerにします。Hosted UIとAmplifyは使いません。専用のApp Clientを別途作る必要はありません。`useTachyonUserPool`付きのOAuth2Clientを登録するとTachyonが共有ユーザープールにsecretなしApp Clientを作り、`USER_PASSWORD_AUTH`も既定で有効なため、`TACHYON_OIDC_CLIENT_ID`がそのApp Client IDです。別のApp Clientを指す場合だけ`PATHBASE_COGNITO_CLIENT_ID`を設定します。issuer未設定時はTachyon OAuth2のPKCEフローになりますが、FieldはCognito発行token以外を受け付けないため、Fieldの呼び出しは401になります。`npm run preflight`が未設定を警告します。
 
-`PATHBASE_MODE=tachyon`の場合、必要な認証設定がないと起動しません。コールバックは`PATHBASE_PUBLIC_URL/api/auth/callback`と完全一致させます。アクセストークンと選択テナントは`PATHBASE_SESSION_KEYS`でAES-256-GCM暗号化したHttpOnly Cookieに保持し、ブラウザーJavaScriptからは読めません。同じ鍵を設定した`pathbase-api`の実行環境間でセッションを引き継げます。Cookieは上流アクセストークンと同時（最大8時間）に失効し、ログアウト時に消去します。
+`PATHBASE_MODE=tachyon`の場合、必要な認証設定がないと起動しません。コールバックは`PATHBASE_PUBLIC_URL/api/auth/callback`と完全一致させます。本番では`pathbase_session` HttpOnly Cookieは不透明なIDだけを持ち、access token・refresh token・選択テナントを`PATHBASE_SESSION_KEYS`でAES-256-GCM暗号化した共有TiDBのセッション行に保持します。ブラウザーJavaScriptからは読めず、access tokenの期限が近づくとサーバー側で自動更新します（セッション自体の上限は12時間）。同じDBと鍵を設定した`pathbase-api`の実行環境間でセッションを引き継げます。ログアウト時はCookieだけでなくセッション行も削除します。
 
 実環境へ接続する前に`npm run preflight`を実行すると、設定形式、OIDC Discovery、Tachyonのトークン検証API、Fieldの権限付きテナント一覧APIへの到達性を確認できます。確認要求には意図的に無効な認証情報を使い、クライアントシークレット、トークン、テナント識別子は結果へ表示しません。成功後も、実ユーザーでログインしてFieldの許可・権限不足・期限切れを確認する必要があります。
 
