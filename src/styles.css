@@ -150,8 +150,24 @@ input[type="checkbox"]:checked::after {
   gap: 6px;
   font-size: 12px;
   font-weight: 500;
-  margin: 16px 8px 7px;
+  margin: 12px 8px 6px;
   color: #475c78;
+}
+.workspace-label-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.tenant-label {
+  display: block;
+  max-width: 155px;
+  overflow: hidden;
+  color: #7b8ca4;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .workspace-label .text-link {
   font-size: 10px;
@@ -6335,7 +6351,7 @@ button:disabled {
 .context-switch {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   margin: 0;
   /* Every organization at its full height. The list scrolls with the
      navigation below it, in `.sidebar-nav`, rather than against it. */
@@ -6344,25 +6360,40 @@ button:disabled {
 .context-switch button {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 9px 11px;
+  min-height: 43px;
+  padding: 6px 9px;
   border: 1px solid #e6eaf1;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #fff;
   font: inherit;
   text-align: start;
   cursor: pointer;
 }
+.context-switch button > svg {
+  width: 17px;
+  height: 17px;
+}
 .context-switch button span {
   display: flex;
   flex-direction: column;
-  line-height: 1.35;
+  line-height: 1.25;
   min-width: 0;
+}
+.context-switch button strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-switch button small {
   color: var(--muted);
-  font-size: 11px;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-switch button.active {
   border-color: #b9c6dd;

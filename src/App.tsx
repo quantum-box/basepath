@@ -516,6 +516,7 @@ export function App() {
   const store = useWorkspace();
   const route = new URLSearchParams(window.location.search);
   const [tenantId, setTenantId] = useState(route.get("tenant_id") || "");
+  const [tenantName, setTenantName] = useState("");
   const [selectedId, setSelectedId] = useState(
     route.get("item") || "team~event",
   );
@@ -1105,6 +1106,10 @@ export function App() {
         ) {
           tenantReturnRef.current = tenantReturnUrl();
           setTenantId(requestedTenantId);
+          setTenantName(
+            result.tenants.find((tenant) => tenant.id === requestedTenantId)
+              ?.name || "",
+          );
           setSelectingTenant(true);
           replaceTenantSelectionUrl(
             requestedTenantId,
@@ -1112,7 +1117,15 @@ export function App() {
           );
           return;
         }
-        if (!result.selected_tenant_id) return;
+        if (!result.selected_tenant_id) {
+          setTenantName("");
+          return;
+        }
+        setTenantName(
+          result.tenants.find(
+            (tenant) => tenant.id === result.selected_tenant_id,
+          )?.name || "",
+        );
         setTenantId(result.selected_tenant_id);
         if (returnTo && returnTenantId === result.selected_tenant_id) {
           const restored = restoreTenantReturn(returnTo, result.selected_tenant_id);
@@ -1146,7 +1159,14 @@ export function App() {
     store.loading,
     store.me.id,
     store.me.mode,
+    tenantId,
   ]);
+
+  useEffect(() => {
+    if (store.me.mode !== "tachyon") setTenantName("ローカルテナント");
+    else if (store.error?.code === "TENANT_SELECTION_REQUIRED")
+      setTenantName("");
+  }, [store.error?.code, store.me.mode]);
 
   useEffect(() => {
     // The tab title says the context too, so a person with both open in two
@@ -1683,7 +1703,12 @@ export function App() {
           <span>PathBase</span>
         </button>
         <div className="workspace-label">
-          <span>現在のワークスペース</span>
+          <span className="workspace-label-copy">
+            <span>現在のワークスペース</span>
+            <small className="tenant-label">
+              テナント: {tenantName || "確認中…"}
+            </small>
+          </span>
           {store.me.mode === "tachyon" && (
             <button
               className="text-link"
@@ -1717,7 +1742,7 @@ export function App() {
             >
               <Icon name="home" size={18} weight="duotone" />
               <span>
-                個人
+                <strong>個人</strong>
                 <small>あなただけのBasepath</small>
               </span>
             </button>
@@ -1732,7 +1757,7 @@ export function App() {
                 >
                   <Icon name="users" size={18} weight="duotone" />
                   <span>
-                    {w.name}
+                    <strong>{w.name}</strong>
                     <small>組織{w.role === "viewer" ? "・閲覧のみ" : ""}</small>
                   </span>
                 </button>
