@@ -1,11 +1,10 @@
 /**
  * Collapse and selection state for a goal tree.
  *
- * The web map and the MCP App draw the tree very differently — one with a
- * canvas, one with nested lists — but the behaviour a person relies on is the
- * same: every branch is open until they close it, and closing a branch does
- * not lose which node they had selected. That behaviour lives here so both
- * surfaces cannot drift apart.
+ * The web map and the nested plan views rely on the same tree behaviour:
+ * every branch is open until a person closes it, and closing a branch does not
+ * lose which node they selected. That behaviour lives here so views cannot
+ * drift apart.
  *
  * The state is keyed by scope (a workspace id). Switching workspaces resets
  * it, because a node id from one workspace means nothing in another and

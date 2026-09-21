@@ -1,26 +1,12 @@
 /**
  * Reviewing a proposed change.
  *
- * The same component is shown in the conversation and in Basepath itself, but
- * what a person can *do* differs, and deliberately so:
+ * This component is used by Basepath's own-origin approval screen. The MCP
+ * server returns change data and approval links as tool data; it does not
+ * publish this component as an embedded host UI.
  *
- * - In Basepath they are signed in, on Basepath's own origin, with a session
- *   the server can verify. They can approve.
- * - In an AI host they are not. A click there reaches the server as an
- *   ordinary tool call, indistinguishable from the model's, so it is not
- *   evidence of anything. The app shows the diff and links out to approve.
- *
- * Withdrawing a proposal is available in both, because discarding a proposal
- * changes no plan data.
- *
- * There is now one more control in the conversation, and it does not weaken
- * any of that. When the person has already decided — in Basepath, on their own
- * session — that proposals of this shape from this AI client may be reflected,
- * the button here is the *trigger*, not the evidence. The evidence is the
- * range, which is why the server re-reads it on every apply rather than
- * believing anything this component sends. If there is no range, the button is
- * not rendered and the link out is, because a person who cannot act on what
- * they are reading is where the last two proposals died.
+ * Withdrawing a proposal changes no plan data, so the MCP reject tool can
+ * expose that action independently of this approval screen.
  */
 import type { ChangeSet, ChangeRow } from "./changeView";
 import { isExpired, summarize } from "./changeView";

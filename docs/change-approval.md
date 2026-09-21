@@ -3,11 +3,11 @@
 An AI can propose. Only a person can approve. This document is the boundary
 between the two, and the threat model it is built to.
 
-## The problem a picture does not solve
+## The problem a conversation summary does not solve
 
-MCP Apps let Basepath render a change set inside the conversation, which is a
-real improvement: a person sees the diff where they are already reading. It is
-tempting to put an "Approve" button there too.
+ChatGPT and other hosts receive the change set as structured data and text and
+may summarize the diff in the conversation. It is tempting to treat that
+summary — or a host-provided button — as the approval itself.
 
 That button cannot be trusted, and not because the host is untrustworthy. When
 an app calls a tool, the call reaches this server **on the same connection,
@@ -55,20 +55,20 @@ a decision they have already made.
 
 ## What each surface may do
 
-| Action | AI host (MCP App) | Basepath |
+| Action | AI host / conversation | Basepath |
 | --- | --- | --- |
-| See the diff | yes | yes |
+| See or summarize the diff | yes | yes |
 | Propose / re-propose | yes | yes |
-| Withdraw a proposal | yes | yes |
+| Withdraw a proposal | yes, through a tool call | yes |
 | **Approve** (which applies) | **no** | yes |
 | Apply a change set approved before approving applied | yes, if *that person* approved it | yes |
 
-Withdrawing is allowed from the app because it only discards a proposal:
+Withdrawing is allowed through the reject tool call because it only discards a proposal:
 nothing is applied, and anyone can propose again.
 
-Applying is allowed from the app because the server checks that the change set
+Applying is allowed through the apply tool because the server checks that the change set
 was approved **by this same actor**, with a digest matching its current
-content, before the expiry, against an unchanged plan. The app cannot cause an
+content, before the expiry, against an unchanged plan. A tool call cannot cause an
 apply the person did not already authorize.
 
 In practice there is now nothing for it to apply: the approval did that. The
@@ -88,7 +88,7 @@ This is **not** an exception to anything above, and the distinction is worth
 being exact about, because it is the only place an apply proceeds without a
 per-change approval.
 
-The argument against a button in the app is that the server cannot attribute
+The argument against treating a conversation button as approval is that the server cannot attribute
 the click. That argument is untouched. What a range changes is *when* the
 person decides, not *where*: the row is written on Basepath's origin, with
 their session and the same-origin CSRF header — the identical evidence an
@@ -96,7 +96,7 @@ approval carries. Applying under it is the server reading a decision they
 already made, in the one place it can read decisions. Approval moved from
 one件ずつ to 範囲ごと; the boundary did not move.
 
-So the app may now show a trigger, and the trigger proves nothing. The range
+So a client may now offer a trigger, and the trigger proves nothing. The range
 does. The server re-reads it on every apply, which is why revoking takes effect
 on the next call rather than the next session.
 
@@ -143,7 +143,7 @@ can still name what it was applied under.
 
 A proposal may also carry the week's review text, as
 `POST /v1/workspaces/{w}/weekly-reviews/draft`. It is the same contract: the
-app writes a draft nobody has saved, the person reads the diff in Basepath —
+the AI tool writes a draft nobody has saved, the person reads the diff in Basepath —
 their own words on the left, the proposed ones on the right — and approves it
 there.
 
@@ -195,26 +195,14 @@ And one more, which is the point of the whole design: **previewing does not
 change the plan.** The operations run inside a savepoint that is rolled back;
 what survives is the description of what they did.
 
-## Seeing the diff where the decision is made
+## The diff in the conversation
 
-The conversation shows the change set. That is the point of the whole MCP Apps
-surface, and for a while it did not happen: the tools that *create* a change set
-carried no UI resource, so a host had nothing to render. The model answered in
-prose, the person never saw the diff, and the proposal expired
-(PLT-4943). Every change tool now names a view, in both the MCP Apps and the
-OpenAI Apps SDK spelling, because a host reads one or the other and not both.
-
-A host that renders nothing must still not be a dead end. Every change set a
-tool returns carries `approval_url` — the absolute Basepath link — and a
-sentence saying what to do with it, so the model has somewhere to send the
-person even when there is no view at all. "It told me to approve in Basepath
-and did not say where" is what that field exists to prevent.
-
-Whether a given host draws the view is now recorded rather than argued:
-reading a `ui://` resource stamps `mcp_connections.ui_read_at`, and 設定 →
-AIクライアントの接続 shows it per connection. A host reads that resource only in
-order to draw it, so the timestamp separates "this client does not support it"
-from "it does, and something else went wrong".
+The MCP server returns each change set as structured data and text. The host
+may render or summarize it, but the result always carries `approval_url` — the
+absolute Basepath link — and `where_to_approve`, so the model can tell the
+person exactly where the decision happens. The embedded MCP App is a plan-tree
+surface, not an approval surface; it does not replace the Basepath approval
+screen or turn a widget click into evidence.
 
 ## The diff a person sees
 

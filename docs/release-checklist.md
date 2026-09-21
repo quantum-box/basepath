@@ -13,10 +13,10 @@ pull requestから狭められません。
 
 | チェック | 何を保証するか |
 | --- | --- |
-| `Web build and Sites tests` | 型、ビルド、Worker、Tachyon manifest、ビューモデル、配布パッケージ、MCP Appバンドルの同一性、出荷ゲート自身 |
+| `Web build and Sites tests` | 型、ビルド、Worker、Tachyon manifest、ビューモデル、MCP Appsの目標ツリー、配布パッケージ、出荷ゲート自身 |
 | `Rust API tests and lint` | APIの契約と拒否条件、承認、OAuth認可サーバー、指示注入、Skills配信。`clippy -D warnings` と `fmt --check` |
 | `Shared TiDB behaviour` | **出荷する保存先での**受入フロー、移行、耐久性、readiness、環境claim |
-| `Browser integration tests` | 実ブラウザでのWeb画面、変更承認、接続許可、MCP Appの実host bridge |
+| `Browser integration tests` | 実ブラウザでのWeb画面、変更承認、接続許可 |
 | `Tauri compile check` | ネイティブ側が同じRust処理でビルドできること |
 
 `Shared TiDB behaviour` を必須に含めるのは、これが**本番と同じストレージ**で走る唯一の
@@ -64,7 +64,7 @@ pull requestから狭められません。
 | --- | --- | --- |
 | 実ChatGPTからの接続 | 確認済み（2026-09-20） | ChatGPT Work（GPT-5.6 Sol / Basepath plugin 1.0.0）で本番OAuth再接続、個人ワークスペース読取、変更案の差分・Basepath導線・承認後の再読取、ならびに個人・追加のみ・7日間の事前許可範囲での自動適用を確認。詳細は `docs/chatgpt-plugin.md` |
 | 実claude.ai / Claude Desktopからの接続 | 未実施 | Claudeアカウント |
-| 両hostでのMCP Apps描画 | 一部確認済み | ChatGPT は実機で確認済み。Claude は未実施。harnessの成功は実hostの成功ではない |
+| ChatGPT / Claude側のMCP Apps目標ツリー表示 | 未再確認 | MCP Appsのbridge/harnessはCIで確認する。デプロイ後に各hostでworkspace切替と描画を確認 |
 | 対応クライアント・プラン・バージョン | 一部測定済み | ChatGPT Work（GPT-5.6 Sol / Basepath plugin 1.0.0）は実接続で確認済み。その他は未測定 |
 | TiDB Cloud Serverlessのretention / PITR | 未検証 | 実際の復元試行。PathBase自身のexport/importはCI検証済み |
 | `mcp_connections` の移行 | 対象外 | `migrate.rs` の `TABLES` に含まれない。SQLite→TiDBの一度きりの移行は完了済み |

@@ -105,34 +105,19 @@ State that has to survive lives in the shared database: the delegation, the
 plan, the change sets, the audit trail. A redeploy or a cold start loses
 nothing, because there is nothing in a process worth keeping.
 
-## MCP Apps UI
+## MCP Apps plan-tree contract
 
-`pathbase_get_graph`, `pathbase_get_today`, `pathbase_get_week` and
-`pathbase_get_weekly_review` carry
-`_meta.ui.resourceUri = "ui://basepath/plan.html"`, so a host that supports MCP
-Apps can preload the view before the tool is called. Which of them the host ran
-is what the person asked about, so it decides which surface the app opens on:
-the plan, or the week it reviews. `resources/list` publishes
-that resource with `mimeType: text/html;profile=mcp-app` and an **empty** CSP
-(`connectDomains: []`, `resourceDomains: []`): the document is a single
-self-contained file that loads no script, style, font or image from anywhere,
-so the host's deny-by-default policy needs no exception.
+The MCP server publishes one reusable resource, `ui://basepath/plan.html`.
+Plan-reading tools carry `_meta.ui.resourceUri` and the ChatGPT compatibility
+alias `openai/outputTemplate`; the widget renders the selected workspace's
+goal tree from the tool result. It does not publish separate personal and
+organization screens.
 
-The document is the empty application shell. It contains no workspace data and
-no credential; it asks the host for both, and the host proxies each request to
-this server, which authorizes it as usual. **Rendering is never permission.**
-`_meta.ui.visibility` is deliberately never set: hiding a tool from the model is
-a presentation choice, and it is not used here as a server-side authorization
-device.
-
-A host that does not support MCP Apps loses nothing. Every tool returns the
-same `structuredContent` and text it always did, and the connection works
-without the view.
-
-The bundle is built by `npm run build:mcp-app` from `mcp-app/` and the shared
-components in `src/shared/`, and is committed at `api/ui/mcp-app.html` because
-the Lambda that serves it has no Node and no CDN. CI rebuilds it and fails if
-the committed file has drifted, and the build enforces a size budget.
+The server still returns `structuredContent` plus a text content block from
+`tools/call`, so hosts without embedded UI remain usable. Workspace identifiers,
+personal/organization scope, `part_of` relations, truncation markers, and change
+approval links remain explicit in the response. Authorization is enforced on
+every tool call and is never delegated to a renderer or to the model's summary.
 
 ## Tool annotations
 

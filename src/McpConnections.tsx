@@ -16,16 +16,6 @@ export type McpConnection = {
   created_at: string;
   updated_at: string;
   last_used_at: string;
-  /**
-   * When a host on this connection last rendered Basepath inside the
-   * conversation. Empty means it never has.
-   *
-   * Shown because "does this AI client draw the plan, or only talk about it?"
-   * was a question nobody could answer from here, and a day was spent on it.
-   * The host reads that view only in order to draw it, so this is measured
-   * rather than inferred from anyone's documentation.
-   */
-  ui_read_at: string;
   version: number;
 };
 
@@ -171,11 +161,6 @@ export function McpConnections({ store }: { store: WorkspaceStore }) {
                 <small>
                   {statusLabel(connection.status)}・最終利用{" "}
                   {when(connection.last_used_at)}
-                </small>
-                <small>
-                  {connection.ui_read_at
-                    ? `会話内に表示あり・${when(connection.ui_read_at)}`
-                    : "会話内の表示はまだありません（このクライアントが対応していないか、まだ開いていません）"}
                 </small>
                 <small>
                   承認したアカウント：

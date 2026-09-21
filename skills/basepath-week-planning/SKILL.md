@@ -44,17 +44,13 @@ show the person what is different rather than overwriting it.
 The change set is a proposal. The person approves it in Basepath. Say so
 plainly, and do not describe the week as planned until they have.
 
-### After proposing, show it
+### After proposing, summarize it
 
-A change set is only useful if the person can see it. Every change tool opens
-Basepath's view, so in a host that renders it the diff appears on its own and
-you do not need to retell it — say what you assumed and what you want them to
-check, not what the rows already say.
-
-In a host that renders nothing, the diff is still in the tool result and so is
-`approval_url`. **Give them that URL.** Saying "approve it in Basepath" without
-it leaves them with nothing to click, and a proposal expires in thirty minutes.
-That failure is why this paragraph exists.
+A change set is only useful if the person can understand it. The result
+contains the diff in `structuredContent` and text: summarize what is different,
+say what you assumed and what you want them to check, and give them
+`approval_url`. Saying "approve it in Basepath" without the link leaves them
+with nothing to click, and a proposal expires in thirty minutes.
 
 If the change set comes back with `auto_apply_eligible: true`, the person has
 already decided, in Basepath, that changes of this shape may be reflected
@@ -62,4 +58,3 @@ without being asked again. Say that it is inside a range they set — not that
 you have permission — and reflect it with `pathbase_apply_changes`. If that is
 refused, the range is gone or narrower than it was: nothing was written, and
 the answer is their approval screen, not a retry.
-

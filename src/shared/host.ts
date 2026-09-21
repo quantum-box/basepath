@@ -1,12 +1,13 @@
 /**
  * Where the data comes from.
  *
- * The same view components run in three places, and only this differs:
+ * The shared loader can read from two places, and only this differs:
  *
- * - **MCP App** — the host proxies `tools/call` to the PathBase MCP server.
- * - **Web / Tauri** — the browser calls the same-origin HTTP API.
- * - **Fixture** — static data, so the UI can be built and tested before a host
- *   or a database exists.
+ * - **MCP tool host** — a host proxies `tools/call` to the PathBase MCP server.
+ * - **Fixture** — static data, so view-model tests do not need a database.
+ *
+ * Web / Tauri screens call the same-origin HTTP API directly in their own
+ * loaders; this adapter remains useful for contract tests and integrations.
  *
  * Nothing here decides what a person is allowed to do. Authorization is the
  * Rust service's, on every call, in every host.
@@ -91,8 +92,8 @@ export class FixtureHost implements PlanHost {
   }
 }
 
-/** The MCP App host: every call is proxied by the AI host to the server. */
-export class McpAppHost implements PlanHost {
+/** A host adapter: every call is proxied by the AI host to the server. */
+export class McpToolHost implements PlanHost {
   readonly kind = "mcp" as const;
   constructor(
     private readonly callServerTool: (params: {
@@ -199,6 +200,8 @@ export async function loadPlanView(
     workspaceId?: string;
     localDate?: string;
     limit?: number;
+    /** Load today's actions as well as the goal graph. */
+    includeToday?: boolean;
     /** Also load the week around `localDate`. */
     includeWeek?: boolean;
   } = {},
@@ -216,10 +219,12 @@ export async function loadPlanView(
         workspace_id: workspace.id,
         ...(options.limit ? { limit: String(options.limit) } : {}),
       }),
-      host.call("pathbase_get_today", {
-        workspace_id: workspace.id,
-        local_date: localDate,
-      }),
+      options.includeToday === false
+        ? Promise.resolve(undefined)
+        : host.call("pathbase_get_today", {
+            workspace_id: workspace.id,
+            local_date: localDate,
+          }),
       options.includeWeek
         ? host.call("pathbase_get_week", {
             workspace_id: workspace.id,

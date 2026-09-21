@@ -10,7 +10,7 @@ register("./ts-loader.mjs", import.meta.url);
 
 const { treeFrom, actionsFrom, buildPlanView, countNodes } =
   await import("../src/shared/viewModel.ts");
-const { FixtureHost, HostError, loadPlanView, structuredResult, McpAppHost } =
+const { FixtureHost, HostError, loadPlanView, structuredResult, McpToolHost } =
   await import("../src/shared/host.ts");
 
 const graph = {
@@ -81,6 +81,31 @@ test("the goal tree nests part_of and keeps orphans visible", () => {
   assert.equal(countNodes(tree.nodes), 4);
 });
 
+test("a focused breakdown result is rendered as the same goal tree", () => {
+  const tree = treeFrom({
+    nodes: [
+      {
+        id: "root",
+        title: "組織の目標",
+        kind: "outcome",
+        state: "active",
+        parent_id: null,
+      },
+      {
+        id: "child",
+        title: "組織の取り組み",
+        kind: "initiative",
+        state: "active",
+        parent_id: "root",
+      },
+    ],
+    truncated: false,
+    limit: 200,
+  });
+  assert.equal(tree.nodes[0].title, "組織の目標");
+  assert.equal(tree.nodes[0].children[0].title, "組織の取り組み");
+});
+
 test("a self-referencing relation cannot build an infinite tree", () => {
   const tree = treeFrom({
     items: [{ id: "x", title: "自己参照", kind: "outcome", state: "active" }],
@@ -110,6 +135,20 @@ test("missing or malformed data renders as empty rather than throwing", () => {
   assert.deepEqual(treeFrom(null).nodes, []);
   assert.deepEqual(treeFrom({ items: "nonsense" }).nodes, []);
   assert.deepEqual(actionsFrom(undefined).actions, []);
+});
+
+test("an explicit workspace wins over the personal fallback", () => {
+  const view = buildPlanView({
+    context: {
+      workspaces: [
+        { id: "organization", name: "組織", scope: "組織" },
+        { id: "personal", name: "個人", scope: "個人" },
+      ],
+    },
+    workspaceId: "organization",
+  });
+  assert.equal(view.workspaces[0].id, "personal");
+  assert.equal(view.workspace.id, "organization");
 });
 
 test("a tool error becomes a typed failure instead of being rendered as data", () => {
@@ -152,7 +191,7 @@ test("the fixture host and a host adapter produce the same view", async () => {
 
   // The MCP host wraps the same responses in tool-result envelopes. The view
   // must come out identical.
-  const mcp = new McpAppHost(
+  const mcp = new McpToolHost(
     async ({ name }) => ({
       isError: false,
       structuredContent: {
@@ -168,7 +207,7 @@ test("the fixture host and a host adapter produce the same view", async () => {
 });
 
 test("a host without tool support fails with a reason the UI can explain", async () => {
-  const host = new McpAppHost(async () => ({}), { serverTools: false });
+  const host = new McpToolHost(async () => ({}), { serverTools: false });
   const { error } = await loadPlanView(host);
   assert.equal(error.code, "HOST_UNSUPPORTED");
 });
