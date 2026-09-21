@@ -13,7 +13,7 @@
 - 目標ダッシュボード。行動の実施・指標の進捗・自己評価・状況を混ぜずに並べる。集計方法に既定値を置かず、方法未設定の目標は導出進捗を出さない。未計測を0%にしない。各数値から観測へ辿れる
 - 組織・チーム・個人を担当とするGoal Alignment。`part_of`（構造）と`contributes_to`（貢献）を分けたまま、上位未接続の目標も確認できる。1ワークスペース内のグラフで、個人ワークスペースの目標は含めない
 - 四半期・月・週・任意期間の計画期間。現在/過去/次の期間の切り替え、次期間の作成、引き継ぎ（元項目は変更せず由来を残す）、期間の終了。期間を使わないワークスペースは従来どおり
-- ワークスペースの現地週による週次レビュー。行動実績、自己評価、成果指標、担当者別集計、下書き・確定・訂正履歴、印刷用要約。会話内（MCP Apps）でも同じ集計値を表示し、そこでの編集は変更案として本人の承認を経由します
+- ワークスペースの現地週による週次レビュー。行動実績、自己評価、成果指標、担当者別集計、下書き・確定・訂正履歴、印刷用要約。MCPでは再利用可能な構造化データとtextを返し、ChatGPT側の埋め込みUIでは目標ツリーを表示します
 - SQLite永続化、トランザクション、楽観的ロック、再送の重複防止、領域ごとのアクセス制御、JSONバックアップと検証付き復元
 - Tachyon OIDCログイン、PKCE・state・nonce・署名検証、サーバー側セッション。Tachyonの正規ユーザーIDから個人領域を解決
 - 共有ワークスペースの作成・名前変更、TachyonユーザーID宛ての期限付き招待、参加・辞退・取り消し、オーナー／編集／閲覧の権限管理と退出。複数ワークスペースを名前で選択
@@ -92,15 +92,11 @@ transportはstateless Streamable HTTP（JSON応答）です。Lambdaでは連続
 
 toolのannotationsは実際の副作用に合わせています。変更案はDELETEを含みうるので、preview / propose / applyは`destructiveHint: true`です。`pathbase_get_graph`は最大`limit`件（既定・上限とも200）を返し、`truncated`を明示します。
 
-MCP Apps対応として、UI resourceを**2つ**公開します。`ui://basepath/personal/plan.html`（個人）と `ui://basepath/organization/plan.html`（組織）で、別のresourceなのはアプリで別の画面なのと同じ理由です。個人と組織は境界を挟んだ別のストアで、1つのresourceが両方を出すと、ホストにも読む人にも「境界は表示の切替だ」と教えてしまいます。片側にしか存在しないツールはその側を指します（記憶系は個人、アラインメント／ダッシュボード／目標レビューは組織）。計画系の4ツールは `workspace_id` で呼ばれた先を描くのでツール側では決められません。個人を指したうえで、画面が受け取ったデータの文脈を自分で表示します。曖昧さは、半分外れる推測で解消するより名指しするほうがましです。バンドルは外部から何も読み込まない単一ファイルなので、CSPは空（許可する配信元なし）です。UIは空のシェルで、業務データも資格情報も埋め込みません。ホスト経由で取得し、認可はRust側で毎回行います。表示はホストの承認や認可の代替ではありません。変更案を作る・読むツールにもUI resourceを付けています。付いていなかったために、提案がサーバに作られても会話には差分が出ず、本人がそこで止まりました（PLT-4943）。
+このMCPサーバーは**1つの埋め込みMCP Apps UI**を使います。`tools/call` は引き続き
+`structuredContent` と text を返し、目標を読むツールは共通の
+`ui://basepath/plan.html` を開きます。UIはツール入力・結果の `workspace_id` を使い、指定がない場合だけ個人を安定したフォールバックとして表示します。組織を指定した読取や `part_of` のツリー結果では、個人画面を残さず組織の目標ツリーへ切り替えます。目標ツリーは、コンパクトなリスト表示とReact Flow風のマップ表示を切り替えられます。
 
-「このツールには画面がある」の書き方は2つあり、ホストによって読む側が違います。MCP Appsは`_meta.ui.resourceUri`と`text/html;profile=mcp-app`、OpenAI Apps SDKは`_meta["openai/outputTemplate"]`と`text/html+skybridge`です。同じ1つの文書に対して両方を公開します。知らないキーはホストが無視するので、既存の契約は変わりません。
-
-**描画したかどうかは記録します。**`ui://` resourceの読み取りで`mcp_connections.ui_read_at`に時刻が入り、設定→AIクライアントの接続に「会話内に表示あり・日時」として出ます。ホストはそのresourceを描画するためにしか読まないので、「このクライアントは非対応」と「対応していて別の理由で出ていない」がここで分かれます。推測ではなく実測です。
-
-UI非対応ホストでも通常の `structuredContent` / text でそのまま使えます。行き止まりにしないため、変更案には必ず`approval_url`（Basepathの絶対URL）と`where_to_approve`が付きます。画面が出ないホストでも、モデルが渡せるURLが手元にあります。
-
-UIは `mcp-app/` と `src/shared/`（Web / Tauriと共有する表示部品とビューモデル）から `npm run build:mcp-app` で1ファイルに束ね、`api/ui/mcp-app.html` としてコミットします（Lambdaに Node もCDNも無いため）。CIが再ビルドして差分があれば失敗し、サイズ上限も検査します。
+変更案には引き続き`approval_url`（Basepathの絶対URL）と`where_to_approve`が付き、ChatGPTは構造化データとtextから差分と承認先を説明できます。認可はRust側で毎回行われ、表示や要約は権限の代替ではありません。
 
 discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）と`/.well-known/oauth-authorization-server`（RFC 8414）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。API GatewayがこのヘッダーをリネームするのでWorkerが元に戻します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT実機での接続確認は未実施です。
 

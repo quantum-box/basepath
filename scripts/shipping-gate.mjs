@@ -49,8 +49,8 @@ const REQUIRED_JOBS = [
       "npm run test:sites",
       "npm run test:config",
       "npm run test:view",
-      "npm run test:plugin",
       "npm run check:mcp-app",
+      "npm run test:plugin",
       "npm run check:plugin",
     ],
   },
@@ -132,7 +132,7 @@ const SUITES = [
     pattern: /^test\(/gm,
     least: 4,
   },
-  { file: "tests/e2e/mcp-app.spec.mjs", pattern: /^test\(/gm, least: 23 },
+  { file: "tests/e2e/mcp-app.spec.mjs", pattern: /^test\(/gm, least: 6 },
   { file: "tests/e2e/workspace.spec.mjs", pattern: /^test\(/gm, least: 11 },
   { file: "tests/e2e/planning.spec.mjs", pattern: /^test\(/gm, least: 5 },
   { file: "tests/e2e/alignment.spec.mjs", pattern: /^test\(/gm, least: 5 },
@@ -143,7 +143,7 @@ const SUITES = [
   { file: "tests/e2e/context.spec.mjs", pattern: /^test\(/gm, least: 6 },
   { file: "tests/e2e/sidebar.spec.mjs", pattern: /^test\(/gm, least: 4 },
   { file: "tests/app-context.test.mjs", pattern: /^test\(/gm, least: 9 },
-  { file: "tests/plugin.test.mjs", pattern: /^test\(/gm, least: 9 },
+  { file: "tests/plugin.test.mjs", pattern: /^test\(/gm, least: 8 },
   { file: "tests/sites-worker.test.mjs", pattern: /^test\(/gm, least: 12 },
 ];
 

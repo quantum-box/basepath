@@ -135,57 +135,31 @@ person.
 To publish to a workspace rather than to yourself: **Plugins → Personal → ⋯ →
 Publish** (workspace admin only).
 
-## The in-conversation view, and which spelling ChatGPT reads
+## MCP Apps plan surface
 
-This is the part that cost a day, so it goes in full.
+Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan.html`,
+and plan-reading tools point to it through `_meta.ui.resourceUri` plus the
+ChatGPT compatibility alias `openai/outputTemplate`. Every `tools/call`
+response still carries the same information in two model-facing forms:
 
-There are two conventions for telling a host "this tool has a view", and they
-are not the same key:
+- `structuredContent` contains stable identifiers, workspace scope, graph
+  relations, truncation markers, and change-set fields for reliable follow-up
+  calls.
+- `content[0].text` contains the JSON representation for hosts that forward
+  text only.
 
-| | MCP Apps (SEP-1865) | OpenAI Apps SDK |
-| --- | --- | --- |
-| On the tool | `_meta["ui"]["resourceUri"]` | `_meta["openai/outputTemplate"]` |
-| Media type | `text/html;profile=mcp-app` | `text/html+skybridge` |
-| May the view call tools | negotiated by the bridge | `_meta["openai/widgetAccessible"]` |
-| Read by | claude.ai, Claude Desktop | ChatGPT |
+The widget is intentionally one content area: a compact goal tree with a
+list/map toggle. It reads the workspace named by the tool input/result, keeps
+personal as the fallback only when no workspace is named, and switches to the
+organization tree when an organization `workspace_id` or `part_of` breakdown
+arrives. Folding and the selected view mode are local UI state; the server
+remains authoritative and the MCP surface does not show separate action or
+detail panels.
 
-Basepath published only the first. A ChatGPT Developer Mode connection
-therefore saw no view at all — and because nothing recorded that a host had
-read a UI resource, that was indistinguishable from the view being broken. On
-2026-09-19 a proposal was created from ChatGPT, the conversation showed a
-paragraph saying approval happens in Basepath, and it expired unread
-(PLT-4943).
-
-Both spellings are now published for the same bytes, as two listings of one
-document rather than two documents. A host ignores the key it does not know, so
-this is additive: nothing about the MCP Apps contract changed.
-
-Separately, the tools that *create* a change set had no view in either
-convention — only the read tools did. So even a host that renders MCP Apps
-showed no diff at the moment a proposal was made. Every change tool now names
-a view.
-
-### Measuring it rather than arguing about it
-
-Reading a `ui://` resource stamps `mcp_connections.ui_read_at`, and
-**設定 → AIクライアントの接続** shows it per connection:
-
-- 「会話内に表示あり・<日時>」 — this host rendered the view. Measured, from the
-  host, on that connection.
-- 「会話内の表示はまだありません」 — it has not. Either the client does not
-  implement either convention, or nothing has opened a view yet.
-
-A host reads that resource only in order to draw it, so the timestamp is the
-evidence. Fill the table at the end of this file from what it says, not from
-anyone's documentation, and give the host name and version you actually used.
-
-### When a host renders nothing
-
-It must still not be a dead end, and that is not left to the model's judgement.
-Every change set a tool returns carries `approval_url` — the absolute Basepath
-link — and `where_to_approve`, a sentence telling the model to show the diff and
-the URL. So the worst case is prose *with a working link*, which is a person who
-can finish, rather than prose alone, which is a person who cannot.
+Change sets still carry an absolute `approval_url` and `where_to_approve`, so
+ChatGPT can explain the diff and direct the person to Basepath. A conversation
+rendering or summary never grants permission and never replaces the server's
+authorization checks.
 
 ## What happens when something goes wrong
 
@@ -193,13 +167,13 @@ can finish, rather than prose alone, which is a person who cannot.
 | --- | --- |
 | Not signed in when the host sends them | The Basepath sign-in screen, then the consent screen for the same request. The authorization request survives the round trip |
 | Declines | The host is told `access_denied`. No delegation is created |
-| Scope not granted | The tool fails with `INSUFFICIENT_SCOPE` and the app says which permission to allow |
+| Scope not granted | The tool fails with `INSUFFICIENT_SCOPE` and the host explains which permission to allow |
 | Disconnected in settings | The next call fails. The host can reconnect, which starts a new consent |
 | Authorization request expired (15 min) | "この認可リクエストは期限切れです" with no way to grant from that page |
 | Access token expired (1 hour) | The host refreshes silently. Refresh tokens rotate |
-| Host does not render MCP Apps | Every tool still returns the same `structuredContent` and text, including `approval_url`, so the model can hand over a working link. Nothing is lost but the in-conversation view |
-| A proposal is outside every pre-set range | The app offers 「Basepathで承認する」 and shows the URL. Nothing is applied |
-| A proposal is inside a range | The app offers 「この内容を反映する」, and says afterwards what it did. See [change-approval.md](change-approval.md#deciding-in-advance) |
+| The host has no custom UI | Every tool returns `structuredContent` and text, including `approval_url`; ChatGPT can present the result in the conversation |
+| A proposal is outside every pre-set range | ChatGPT explains the diff and gives the Basepath URL. Nothing is applied |
+| A proposal is inside a range | ChatGPT reports the server result; the pre-set range may allow reflection. See [change-approval.md](change-approval.md#deciding-in-advance) |
 
 ## Verified, and not
 
@@ -212,13 +186,10 @@ Keeping these apart is the point of the table.
 | A client can register, consent, exchange, and call MCP over HTTP | **CI** | `api/tests/mcp_remote.rs` — real child process, real HTTP |
 | The package is well-formed and carries no credential | **CI** | `tests/plugin.test.mjs`, `npm run check:plugin` |
 | `WWW-Authenticate` survives API Gateway | **CI** | `tests/sites-worker.test.mjs`. Observed failing in production before this change: the header arrived as `x-amzn-remapped-www-authenticate` |
-| Both view conventions are published for every tool that has one | **CI** | `api/tests/mcp_apps.rs` — `openai/outputTemplate`, `text/html+skybridge`, `openai/widgetAccessible`, and the MCP Apps keys, asserted together over a real MCP session |
-| Every change tool names a view | **CI** | `api/tests/mcp_apps.rs`. This is the PLT-4943 regression: a tool that creates a proposal and cannot render it |
-| A proposal renders as a diff the moment it is made, with no round trip | **CI** | `tests/e2e/mcp-app.spec.mjs` — pushed through the real AppBridge as a host does |
-| A host that renders nothing still gets a working link | **CI** | `api/tests/mcp_apps.rs` and the `approval_url` on every change set |
-| **Connecting from real ChatGPT** | **verified 2026-09-20** | ChatGPT Work reconnected to the production endpoint and read the sole `個人` workspace. |
-| **Whether ChatGPT renders the view once both conventions are published** | **verified 2026-09-20** | ChatGPT rendered `ui://basepath/personal/plan.html` inside the conversation after `pathbase_get_graph`; the embedded view named the workspace, rendered its plan, and showed the week. |
-| **The listing metadata as ChatGPT renders it** | **verified 2026-09-20** | ChatGPT's installed-plugin detail showed `Basepath`, description `目標・行動・記憶を、会話から扱う`, and plugin version `1.0.0`. |
+| Tools return structured data/text and plan tools link one UI resource | **CI** | `api/tests/mcp_apps.rs` — shared resource metadata, resource bytes, and both tool result forms |
+| A host without a widget still gets a working data/approval path | **CI** | `api/tests/mcp_apps.rs` and the `approval_url` on every change set |
+| **Connecting from real ChatGPT** | **verified 2026-09-20** | ChatGPT Work reconnected to the production endpoint and read the `個人` workspace. |
+| **ChatGPT MCP Apps tree presentation** | **not re-verified after the widget change** | The server resource and local bridge harness are tested; run a fresh ChatGPT Developer Mode call after deployment to verify workspace switching in the real host. |
 | **Supported clients, plans, versions** | **measured 2026-09-20** | ChatGPT Work with GPT-5.6 Sol (medium effort), using Basepath plugin `1.0.0`. This is one observed configuration, not a compatibility claim for other plans or versions. |
 
 ### Real-host log
@@ -226,12 +197,9 @@ Keeping these apart is the point of the table.
 One row per actual connection. Empty rows are the honest state; do not fill
 them from documentation or from the harness.
 
-| Date | Host and version | View rendered (`ui_read_at`) | Proposal → reflected in Basepath | Notes |
+| Date | Host and version | Tool data received | Proposal → reflected in Basepath | Notes |
 | --- | --- | --- | --- | --- |
-| 2026-09-19 | ChatGPT, Developer Mode | **no** | **no** — expired unread | Before this change. No view in either convention on the change tools, and only the MCP Apps spelling anywhere. PLT-4943 |
-| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — `ui://basepath/personal/plan.html` rendered in the conversation | **yes** — one `outcome` named `ChatGPT 実機受入` was proposed, then explicitly approved in Basepath and appeared in the personal goal map | The proposal's text diff and `Basepathで変更案を確認` link were visible in the conversation. The applied change contained one create, zero updates, and zero deletes. |
-| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — the conversation displayed the proposal diff and the Basepath review link | **yes** — `ChatGPT 会話内適用テスト` was approved and applied in Basepath, then a fresh conversation read returned `タイトル: ChatGPT 会話内適用テスト` and `状態: active` | This is an out-of-range change: the conversation led to Basepath for the person's approval, rather than treating an in-conversation click as evidence of approval. |
-| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — the conversation displayed the create diff | **yes, automatically** — `ChatGPT 自動適用テスト` was created as one `outcome` with no date, assignee, or target values; ChatGPT reported `applied` and Basepath recorded `事前に決めた範囲で自動反映` | The rule was limited to the personal workspace, create operations only, for seven days. The proposal record retains the diff; updates and guarded values were not included. |
+| 2026-09-20 | ChatGPT Work, GPT-5.6 Sol (medium); Basepath plugin 1.0.0 | **yes** — tool data and text were returned | **yes** — one `outcome` named `ChatGPT 実機受入` was proposed, then explicitly approved in Basepath and appeared in the personal goal map | Historical verification before removing the custom widget. |
 
 Submission to a public directory is out of scope and has not been prepared for
 review. The privacy and support material a directory requires is not written.

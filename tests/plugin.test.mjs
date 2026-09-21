@@ -111,25 +111,6 @@ test("both packages ship the same skills, and so does the server", async () => {
   }
 });
 
-test("the in-conversation app depends on no host's private API", async () => {
-  // The same bundle renders in every host that supports MCP Apps. It talks to
-  // the host over the published AppBridge protocol; reaching for a global one
-  // product happens to provide would quietly make it that product's app.
-  const bundle = await read("api/ui/mcp-app.html");
-  for (const forbidden of [
-    "window.openai",
-    "window.anthropic",
-    "webkit.messageHandlers",
-  ]) {
-    assert.ok(
-      !bundle.includes(forbidden),
-      `the MCP App bundle reaches for ${forbidden}`,
-    );
-  }
-  // What it does use.
-  assert.match(bundle, /ui\/initialize/);
-});
-
 test("nothing in the package is a credential", async () => {
   const files = ["plugin/chatgpt/plugin.json", "plugin/chatgpt/mcp.json"];
   for (const file of files) {

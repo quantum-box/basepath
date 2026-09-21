@@ -73,12 +73,10 @@ pub struct Connection {
     pub created_at: String,
     pub updated_at: String,
     pub last_used_at: String,
-    /// When a host on this connection last read the in-conversation view.
-    ///
-    /// A host reads the `ui://` resource only in order to render it, so this
-    /// is the difference between "this host does not draw MCP Apps" and "it
-    /// does, and something else went wrong" — measured per connection rather
-    /// than argued from documentation. Empty means never.
+    /// Legacy storage retained so existing databases migrate safely. Widget
+    /// read telemetry is not part of the connection API or authorization
+    /// contract, so the current embedded plan surface does not expose it.
+    #[serde(skip_serializing)]
     pub ui_read_at: String,
     pub version: i64,
 }
@@ -537,26 +535,4 @@ pub fn insufficient_scope(scope: &str, connection: &Connection) -> ApiError {
         "INSUFFICIENT_SCOPE",
         &format!("この接続には {scope} の権限がありません"),
     )
-}
-
-/// Records that a host on this connection rendered the in-conversation view.
-///
-/// Called when a `ui://` resource is read, which a host does only in order to
-/// draw it. It is the one signal that separates "this host does not implement
-/// MCP Apps" from "it does, and the view failed for some other reason" —
-/// a question that cost a day precisely because nothing recorded the answer.
-///
-/// Best-effort on purpose: reading the view must not fail because writing this
-/// did. It is evidence, not a gate.
-pub async fn note_ui_read(db: &Db, connection_id: &str) {
-    let Ok(mut tx) = db.begin_write().await else {
-        return;
-    };
-    let _ = tx
-        .execute(
-            "UPDATE mcp_connections SET ui_read_at=? WHERE id=?",
-            &params![now(), connection_id],
-        )
-        .await;
-    let _ = tx.commit().await;
 }

@@ -1,11 +1,9 @@
 /**
  * The view model every surface renders from.
  *
- * Web, Tauri and the MCP App show the same plan, so the shape of what is shown
- * is defined once here and built from the same server responses. Only *how the
- * data arrives* differs, and that is the host adapter's job. No business rule
- * lives here: the Rust service decides what is true, this decides how to read
- * it.
+ * Web and Tauri show the same plan, so the shape of what is shown is defined
+ * once here and built from the same server responses. No business rule lives
+ * here: the Rust service decides what is true, this decides how to read it.
  */
 
 export type PlanNodeKind =
@@ -105,15 +103,50 @@ function asString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
+/**
+ * Reads the workspace a host tool result belongs to.
+ *
+ * Most plan reads receive this in the tool input rather than in the payload,
+ * while change tools put it on the change set. Keeping this small adapter in
+ * the shared view model lets a caller use either shape without guessing
+ * from the first workspace in the context list.
+ */
+export function workspaceIdFrom(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Unknown;
+  const direct = asString(source.workspace_id);
+  if (direct) return direct;
+  for (const key of [
+    "arguments",
+    "input",
+    "changeset",
+    "change",
+    "target",
+    "workspace",
+  ]) {
+    const nested = workspaceIdFrom(source[key]);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 export function workspacesFrom(context: unknown): PlanWorkspace[] {
   const source = (context as Unknown | undefined)?.workspaces;
-  return asArray(source).map((workspace) => ({
+  const workspaces = asArray(source).map((workspace) => ({
     id: asString(workspace.id),
     name: asString(workspace.name, asString(workspace.id)),
     scope: asString(workspace.scope),
     timezone: asString(workspace.timezone, "Asia/Tokyo"),
     role: asString(workspace.role),
   }));
+  // Personal is the stable fallback and the first option in the switcher, but
+  // an explicit workspace_id always wins. Do not let the server's row order
+  // decide which plan a conversation silently shows.
+  return workspaces.sort((a, b) => {
+    const personal = (workspace: PlanWorkspace) =>
+      workspace.id === "personal" || workspace.scope === "個人";
+    return Number(personal(b)) - Number(personal(a));
+  });
 }
 
 /**
@@ -209,13 +242,26 @@ export function treeFrom(graph: unknown): {
   limit: number;
 } {
   const source = (graph as Unknown | undefined) ?? {};
-  const items = asArray(source.items);
-  const relations = asArray(source.relations);
+  // `pathbase_get_graph` returns items + relations. The focused breakdown
+  // tool returns a breadth-first `nodes` list with parent_id instead. Both
+  // describe the same tree, so a caller can render either result as a tree
+  // rather than falling back to the first workspace's plan.
+  const breakdown = !Array.isArray(source.items) && Array.isArray(source.nodes);
+  const items = breakdown ? asArray(source.nodes) : asArray(source.items);
+  const relations = breakdown
+    ? items
+        .filter((item) => asString(item.parent_id))
+        .map((item) => ({
+          type: "part_of",
+          source_id: asString(item.id),
+          target_id: asString(item.parent_id),
+        }))
+    : asArray(source.relations);
 
   const byId = new Map<string, PlanNode>();
   for (const item of items) {
     const fields = (item.fields as Unknown | undefined) ?? {};
-    const assessment = fields.self_assessment;
+    const assessment = fields.self_assessment ?? item.self_assessment;
     byId.set(asString(item.id), {
       id: asString(item.id),
       title: asString(item.title),
@@ -291,12 +337,16 @@ export function buildPlanView(input: {
   const workspaces = workspacesFrom(input.context);
   const tree = treeFrom(input.graph);
   const today = actionsFrom(input.today);
+  const personal = workspaces.find(
+    (workspace) => workspace.id === "personal" || workspace.scope === "個人",
+  );
   return {
     workspaces,
     workspace:
-      workspaces.find((workspace) => workspace.id === input.workspaceId) ??
-      workspaces[0] ??
-      null,
+      input.workspaceId !== undefined
+        ? (workspaces.find((workspace) => workspace.id === input.workspaceId) ??
+          null)
+        : (personal ?? workspaces[0] ?? null),
     nodes: tree.nodes,
     truncated: tree.truncated,
     limit: tree.limit,

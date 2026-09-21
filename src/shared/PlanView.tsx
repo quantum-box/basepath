@@ -8,7 +8,7 @@
  * Colours come from the host's CSS variables when it provides them, so the
  * same component follows a light or dark conversation without knowing which.
  */
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type {
   PlanAction,
   PlanEntry,
@@ -79,10 +79,12 @@ function Node({
   node,
   depth,
   tree,
+  selectable,
 }: {
   node: PlanNode;
   depth: number;
   tree: TreeState;
+  selectable: boolean;
 }) {
   const open = tree.isOpen(node.id);
   const hasChildren = node.children.length > 0;
@@ -102,16 +104,25 @@ function Node({
         ) : (
           <span className="plan-node-toggle" aria-hidden="true" />
         )}
-        <button
-          type="button"
-          className="plan-node-select"
-          aria-pressed={tree.selected === node.id}
-          aria-label={`${node.title}の詳細`}
-          onClick={() => tree.select(tree.selected === node.id ? "" : node.id)}
-        >
-          <span className="plan-node-kind">{kindLabel(node.kind)}</span>
-          <span className="plan-node-title">{node.title}</span>
-        </button>
+        {selectable ? (
+          <button
+            type="button"
+            className="plan-node-select"
+            aria-pressed={tree.selected === node.id}
+            aria-label={`${node.title}の詳細`}
+            onClick={() =>
+              tree.select(tree.selected === node.id ? "" : node.id)
+            }
+          >
+            <span className="plan-node-kind">{kindLabel(node.kind)}</span>
+            <span className="plan-node-title">{node.title}</span>
+          </button>
+        ) : (
+          <span className="plan-node-select plan-node-static">
+            <span className="plan-node-kind">{kindLabel(node.kind)}</span>
+            <span className="plan-node-title">{node.title}</span>
+          </span>
+        )}
         <span className="plan-node-state">{stateLabel(node.state)}</span>
         {node.dueDate && (
           <span className="plan-node-due">〜{node.dueDate}</span>
@@ -130,7 +141,13 @@ function Node({
       {hasChildren && open && (
         <ul>
           {node.children.map((child) => (
-            <Node key={child.id} node={child} depth={depth + 1} tree={tree} />
+            <Node
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              tree={tree}
+              selectable={selectable}
+            />
           ))}
         </ul>
       )}
@@ -280,7 +297,7 @@ function WorkspaceSwitcher({
   if (!onSelect || workspaces.length <= 1) return null;
   return (
     <label className="plan-workspace-switch">
-      <span>ワークスペース</span>
+      <span className="plan-workspace-switch-label">表示対象</span>
       <select
         value={current.id}
         onChange={(event) => onSelect(event.target.value)}
@@ -311,6 +328,16 @@ export type PlanViewProps = {
   /** Result of the last proposal, shown verbatim rather than assumed. */
   notice?: string | null;
   onExpand?: () => void;
+  /** MCP Apps uses the tree as its only content and hides the other panels. */
+  showWorkspaceSwitcher?: boolean;
+  showDetails?: boolean;
+  showActions?: boolean;
+  showWeek?: boolean;
+  /** Optional alternate rendering of the same tree, such as React Flow. */
+  flowContent?: ReactNode;
+  showViewToggle?: boolean;
+  viewMode?: "list" | "map";
+  onViewModeChange?: (mode: "list" | "map") => void;
 };
 
 export function PlanViewPanel({
@@ -324,12 +351,22 @@ export function PlanViewPanel({
   busyAction,
   notice,
   onExpand,
+  showWorkspaceSwitcher = true,
+  showDetails = true,
+  showActions = true,
+  showWeek = true,
+  flowContent,
+  showViewToggle = false,
+  viewMode = "list",
+  onViewModeChange,
 }: PlanViewProps) {
   // A selection that is no longer in the tree must not show a detail panel.
   const selectedNode = useMemo(() => {
     const ids = nodeIds(view.nodes);
-    return ids.has(tree.selected) ? findNode(view.nodes, tree.selected) : null;
-  }, [view.nodes, tree.selected]);
+    return showDetails && ids.has(tree.selected)
+      ? findNode(view.nodes, tree.selected)
+      : null;
+  }, [showDetails, view.nodes, tree.selected]);
 
   if (problem) {
     return (
@@ -359,19 +396,40 @@ export function PlanViewPanel({
     );
   }
   const shown = countNodes(view.nodes);
+  const isPersonal =
+    view.workspace.id === "personal" || view.workspace.scope === "個人";
+  const contextLabel = isPersonal ? "個人の計画" : "組織の計画";
   return (
     <div className="plan-panel" data-stale={stale ? "true" : undefined}>
       <header className="plan-header">
-        <h2>{view.workspace.name}</h2>
-        {view.workspace.scope && <span>{view.workspace.scope}</span>}
-        {view.workspace.role && (
-          <span className="plan-role">{view.workspace.role}</span>
+        <div className="plan-heading">
+          <span className="plan-eyebrow">いま見ている場所</span>
+          <div className="plan-title-row">
+            <span
+              className={`plan-context-mark ${isPersonal ? "personal" : "organization"}`}
+              aria-hidden="true"
+            >
+              {isPersonal ? "●" : "◆"}
+            </span>
+            <h2>{view.workspace.name}</h2>
+          </div>
+          <p>{contextLabel} · 目標から行動までをひとつのツリーで表示</p>
+        </div>
+        <div className="plan-header-meta">
+          <span className="plan-scope-chip">
+            {view.workspace.scope || (isPersonal ? "個人" : "組織")}
+          </span>
+          {view.workspace.role && (
+            <span className="plan-role">{view.workspace.role}</span>
+          )}
+        </div>
+        {showWorkspaceSwitcher && (
+          <WorkspaceSwitcher
+            workspaces={view.workspaces}
+            current={view.workspace}
+            onSelect={onSelectWorkspace}
+          />
         )}
-        <WorkspaceSwitcher
-          workspaces={view.workspaces}
-          current={view.workspace}
-          onSelect={onSelectWorkspace}
-        />
       </header>
       {stale && (
         <p className="plan-stale" role="status">
@@ -383,27 +441,75 @@ export function PlanViewPanel({
           {notice}
         </p>
       )}
-      {view.nodes.length === 0 ? (
-        <p className="plan-empty">まだ目標がありません。</p>
-      ) : (
-        <>
-          {tree.closedCount > 0 && (
-            <button
-              type="button"
-              className="plan-expand-all"
-              onClick={tree.openAll}
-            >
-              すべて開く
-            </button>
-          )}
-          <ul className="plan-tree">
-            {view.nodes.map((node) => (
-              <Node key={node.id} node={node} depth={0} tree={tree} />
-            ))}
-          </ul>
-        </>
-      )}
-      {selectedNode && <Detail node={selectedNode} />}
+      <section
+        className="plan-tree-section"
+        aria-labelledby="plan-tree-heading"
+      >
+        <div className="plan-section-heading">
+          <div>
+            <span className="plan-eyebrow">PLAN MAP</span>
+            <h3 id="plan-tree-heading">目標ツリー</h3>
+          </div>
+          <div className="plan-section-tools">
+            {showViewToggle && onViewModeChange && (
+              <div
+                className="plan-view-toggle"
+                role="group"
+                aria-label="表示形式"
+              >
+                <button
+                  type="button"
+                  aria-pressed={viewMode === "list"}
+                  onClick={() => onViewModeChange("list")}
+                >
+                  リスト表示
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={viewMode === "map"}
+                  onClick={() => onViewModeChange("map")}
+                >
+                  マップ表示
+                </button>
+              </div>
+            )}
+            <span className="plan-tree-count">{shown}項目</span>
+          </div>
+        </div>
+        {view.nodes.length === 0 ? (
+          <p className="plan-empty">
+            このワークスペースにはまだ目標がありません。
+          </p>
+        ) : (
+          <>
+            {tree.closedCount > 0 && (
+              <button
+                type="button"
+                className="plan-expand-all"
+                onClick={tree.openAll}
+              >
+                すべて開く
+              </button>
+            )}
+            {viewMode === "map" && flowContent ? (
+              flowContent
+            ) : (
+              <ul className="plan-tree">
+                {view.nodes.map((node) => (
+                  <Node
+                    key={node.id}
+                    node={node}
+                    depth={0}
+                    tree={tree}
+                    selectable={showDetails}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </section>
+      {showDetails && selectedNode && <Detail node={selectedNode} />}
       {view.truncated && (
         <p className="plan-truncated" role="status">
           上位{view.limit}件までを表示しています（{shown}
@@ -415,13 +521,15 @@ export function PlanViewPanel({
           )}
         </p>
       )}
-      <Actions
-        actions={view.actions}
-        localDate={view.localDate}
-        onPropose={onPropose}
-        busy={busyAction}
-      />
-      <Week view={view} />
+      {showActions && (
+        <Actions
+          actions={view.actions}
+          localDate={view.localDate}
+          onPropose={onPropose}
+          busy={busyAction}
+        />
+      )}
+      {showWeek && <Week view={view} />}
     </div>
   );
 }

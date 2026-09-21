@@ -229,7 +229,8 @@ async fn a_host_without_the_extension_can_still_read_the_instructions() {
 
     // Not every host implements the extension. Listing the skills as ordinary
     // resources costs nothing and means the instructions are never completely
-    // unavailable.
+    // unavailable. The plan tree is published as one reusable UI resource
+    // beside the ordinary skill resources.
     let resources = client.request(2, "resources/list", json!({}));
     let uris: Vec<&str> = resources["resources"]
         .as_array()
@@ -237,19 +238,13 @@ async fn a_host_without_the_extension_can_still_read_the_instructions() {
         .iter()
         .map(|resource| resource["uri"].as_str().unwrap())
         .collect();
-    // Both plan views are listed beside the skills. They are separate
-    // resources because they are separate places.
-    assert!(
-        uris.contains(&"ui://basepath/personal/plan.html"),
-        "{uris:?}"
-    );
-    assert!(
-        uris.contains(&"ui://basepath/organization/plan.html"),
-        "{uris:?}"
-    );
     assert!(
         uris.contains(&"skill://basepath-weekly-review/SKILL.md"),
         "{uris:?}"
+    );
+    assert!(
+        uris.contains(&"ui://basepath/plan.html"),
+        "the plan tree resource must be published: {uris:?}"
     );
 
     let read = client.request(

@@ -1,21 +1,15 @@
 # Claude — connecting Basepath as a custom connector
 
-Two ways in, and they are not the same thing. Which one someone uses decides
-what they can see, so this document separates them before anything else.
+All Claude entry points use the same MCP contract. The server returns
+`structuredContent` and a text block, and also publishes one reusable plan-tree
+resource for hosts that support MCP Apps. Claude Code remains a terminal
+surface; it uses the structured data and text directly.
 
-| Surface | How it connects | In-conversation UI | Approving a change |
+| Client | How it connects | Presentation | Approving a change |
 | --- | --- | --- | --- |
-| claude.ai (web) | Custom connector, by URL | **Yes** — MCP Apps | In Basepath, via the link the app shows |
-| Claude Desktop | Custom connector, by URL | **Yes** — MCP Apps | Same |
-| Claude Code (CLI) | `plugin/claude/` or `.mcp.json` | **No** — it is a terminal | Same, by opening the URL |
-
-The UI column is not a preference. MCP Apps renders in hosts that implement the
-extension; the published
-[client matrix](https://modelcontextprotocol.io/extensions/client-matrix) lists
-claude.ai and Claude Desktop and does not list Claude Code. Nothing here
-promises the CLI a rendered plan, and the tools return the same
-`structuredContent` and text everywhere, so the CLI loses the view and nothing
-else.
+| claude.ai (web) | Custom connector, by URL | Conversation; embedded plan tree when supported | In Basepath, via the returned link |
+| Claude Desktop | Custom connector, by URL | Conversation; embedded plan tree when supported | Same |
+| Claude Code (CLI) | `plugin/claude/` or `.mcp.json` | Terminal output | Same, by opening the returned URL |
 
 Approving is the same everywhere for the reason it always is: a click inside an
 AI host reaches this server as an ordinary tool call, indistinguishable from
@@ -25,26 +19,18 @@ See [change-approval.md](change-approval.md).
 One thing in that column has changed and one has not. What has not: a click
 here is still not evidence. What has: a person can decide **in advance**, in
 Basepath, that proposals of a given shape from a given connection may be
-reflected — and then the app offers a trigger, because the evidence is the
+reflected — and then the client may offer a trigger, because the evidence is the
 range rather than the click. Never a deletion, never a date or owner unless
 they said so, never another workspace or another connection, never
 indefinitely. The full argument and the refusals are in
 [change-approval.md](change-approval.md#deciding-in-advance).
 
-### Whether the view actually appears
+### Data and tree presentation
 
-The client matrix above is a published claim, not a measurement. Basepath now
-records its own: reading a `ui://` resource stamps the connection, and
-**設定 → AIクライアントの接続** shows 「会話内に表示あり・<日時>」 or
-「会話内の表示はまだありません」 per client. A host reads that resource only in
-order to draw it.
-
-Two things were fixed before that timestamp meant anything. The tools that
-*create* a change set carried no view at all, so the diff never appeared at the
-moment it mattered; they all name one now. And only the MCP Apps spelling of
-"this tool has a view" was published, which is the one Claude reads and not the
-one ChatGPT reads — both are published now. See
-[chatgpt-plugin.md](chatgpt-plugin.md#the-in-conversation-view-and-which-spelling-chatgpt-reads).
+The server publishes one `ui://basepath/plan.html` resource. Workspace scope,
+graph relations, truncation, and change approval links remain explicit in the
+returned data; the widget adds only folding and selection state and never
+decides authorization.
 
 ## Connecting claude.ai or Claude Desktop
 
@@ -129,13 +115,13 @@ client get separate delegations, and neither inherits the other's scopes.
 | Situation | What happens |
 | --- | --- |
 | Declines consent | Claude is told `access_denied`. No delegation is created |
-| Permission not granted | The tool fails with `INSUFFICIENT_SCOPE`, and the app names the permission to allow |
+| Permission not granted | The tool fails with `INSUFFICIENT_SCOPE`, and the host names the permission to allow |
 | Disconnected in Basepath | The next call fails. Reconnecting starts a fresh consent |
 | Access token expired (1 hour) | Refreshed silently; refresh tokens rotate |
 | Authorization request expired (15 min) | The consent page says so and grants nothing |
-| Host does not render MCP Apps | Every tool returns the same data as text, including `approval_url`, so the model can hand over a working link rather than a description of one |
-| A proposal is outside every pre-set range | The app shows the diff and the Basepath link. Nothing is applied |
-| A proposal is inside a range | The app offers 「この内容を反映する」 and says afterwards what it did |
+| The host has no custom UI | Every tool still returns structured data and text, including `approval_url`, so the model can present a useful result |
+| A proposal is outside every pre-set range | The model explains the diff and gives the Basepath link. Nothing is applied |
+| A proposal is inside a range | The model reports the server result. See [change-approval.md](change-approval.md#deciding-in-advance) |
 | A workspace the person cannot see | `404`. Naming a workspace in the arguments never grants access |
 
 ## Verified, and not
@@ -145,15 +131,13 @@ client get separate delegations, and neither inherits the other's scopes.
 | The skills are discoverable, verifiable and readable over a real MCP session | **CI** | `api/tests/skills_over_mcp.rs` — 4 tests over stdio against the real binary |
 | The served skills are byte-identical to the repository's and to both packages | **CI** | `api/tests/skills_over_mcp.rs`, `tests/plugin.test.mjs` |
 | The Claude package is well-formed and carries no credential | **CI** | `tests/plugin.test.mjs`, `npm run check:plugin` |
-| The in-conversation app uses no host's private API | **CI** | `tests/plugin.test.mjs` |
 | Two people using one client get separate delegations | **CI** | `api/tests/oauth.rs` |
 | OAuth discovery and the `WWW-Authenticate` challenge work in production | **verified** | `curl` against `https://pathbase-v2.txcloud.app`, 2026-09-19 |
-| Every change tool names a view, in both conventions | **CI** | `api/tests/mcp_apps.rs` |
-| A proposal renders as a diff the moment it is made | **CI** | `tests/e2e/mcp-app.spec.mjs`, through the real AppBridge |
+| Tools return structured data and one plan-tree UI resource | **CI** | `api/tests/mcp_apps.rs` |
 | A range is set on Basepath's origin, and an AI connection can neither read nor write one | **CI** | `api/tests/auto_apply.rs` — 12 tests; `tests/e2e/oauth-consent.spec.mjs` for the screen |
 | A deletion is never auto-applied, under any range that can be saved | **CI** | `api/tests/auto_apply.rs` |
 | **Connecting from real claude.ai or Claude Desktop** | **not verified** | Not performed in this repository |
-| **MCP Apps rendering in Claude** | **not verified** | Read `ui_read_at` in 設定 → AIクライアントの接続 after connecting, and record it below with the host version and the date |
+| **Claude-side MCP Apps tree presentation** | **not verified** | Run a fresh connector call after deployment and record whether the host renders the shared plan resource |
 | **Supported plans and versions** | **not measured** | Fill in from an actual connection; do not copy from documentation |
 
 ### Real-host log
@@ -161,7 +145,7 @@ client get separate delegations, and neither inherits the other's scopes.
 One row per actual connection. An empty row is the honest state; harness
 results do not belong here.
 
-| Date | Host and version | View rendered (`ui_read_at`) | Proposal → reflected in Basepath | Notes |
+| Date | Host and version | Tool data received | Proposal → reflected in Basepath | Notes |
 | --- | --- | --- | --- | --- |
 | | | | | |
 

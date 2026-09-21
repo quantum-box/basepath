@@ -1,8 +1,8 @@
 /* Styles for the shared plan and change-review components.
  *
  * Component scoped on purpose: the web app imports this alongside its own
- * stylesheet, so nothing here may restyle the document. The MCP App owns its
- * whole document and sets the page-level rules in mcp-app/document.css.
+ * stylesheet, so nothing here may restyle the document. The web application
+ * owns the page-level rules.
  *
  * Colours come from the host's CSS variables when it provides them and fall
  * back to values that work on either a light or a dark surface.
@@ -20,30 +20,106 @@
     color-mix(in srgb, currentColor 18%, transparent)
   );
   --plan-accent: var(--accent-primary, #c2703a);
+  --plan-surface: var(
+    --background-secondary,
+    color-mix(in srgb, currentColor 5%, transparent)
+  );
+  --plan-surface-strong: var(
+    --background-tertiary,
+    color-mix(in srgb, currentColor 9%, transparent)
+  );
   color: var(--plan-text);
 }
 .plan-panel {
-  padding: 12px 14px 16px;
+  padding: 14px 16px 20px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
+  max-width: 760px;
+  margin: 0 auto;
 }
 .plan-panel[data-stale="true"] {
   opacity: 0.72;
 }
 .plan-header {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  border-bottom: 1px solid var(--plan-line);
-  padding-bottom: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid var(--plan-line);
+  border-radius: 16px;
+  padding: 16px;
+  background:
+    radial-gradient(
+      circle at 100% 0,
+      color-mix(in srgb, var(--plan-accent) 18%, transparent),
+      transparent 42%
+    ),
+    var(--plan-surface);
 }
 .plan-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 20px;
+  letter-spacing: -0.02em;
 }
-.plan-header span {
+.plan-heading {
+  min-width: 0;
+}
+.plan-heading p {
+  margin: 5px 0 0;
   color: var(--plan-muted);
   font-size: 12px;
+}
+.plan-eyebrow {
+  display: block;
+  color: var(--plan-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.plan-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.plan-title-row h2 {
+  overflow-wrap: anywhere;
+}
+.plan-context-mark {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--plan-accent);
+  background: color-mix(in srgb, var(--plan-accent) 14%, transparent);
+  font-size: 12px;
+}
+.plan-context-mark.organization {
+  border-radius: 8px;
+  transform: rotate(0deg);
+}
+.plan-header-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.plan-scope-chip,
+.plan-role {
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--plan-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.plan-role {
+  border: 0;
+  padding-inline: 2px;
 }
 .plan-tree,
 .plan-tree ul,
@@ -52,21 +128,90 @@
   margin: 0;
   padding: 0;
   display: grid;
+  gap: 6px;
+}
+.plan-tree-section {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--plan-line);
+  border-radius: 16px;
+  padding: 14px;
+  background: var(--plan-surface);
+}
+.plan-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+.plan-section-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.plan-section-heading h3 {
+  margin: 2px 0 0;
+  font-size: 15px;
+}
+.plan-tree-count {
+  color: var(--plan-muted);
+  font-size: 11px;
+}
+.plan-view-toggle {
+  display: inline-flex;
   gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  background: var(--plan-surface-strong);
+}
+.plan-view-toggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--plan-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.plan-view-toggle button[aria-pressed="true"] {
+  color: var(--plan-text);
+  background: var(--plan-surface);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--plan-text) 12%, transparent);
 }
 .plan-node-row {
   display: flex;
   gap: 8px;
   align-items: baseline;
   flex-wrap: wrap;
-  padding: 3px 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--plan-line);
+  border-radius: 11px;
+  background: var(--plan-surface-strong);
+  transition:
+    border-color 0.16s,
+    transform 0.16s,
+    background 0.16s;
+}
+.plan-node-row:hover {
+  border-color: color-mix(in srgb, var(--plan-accent) 55%, var(--plan-line));
+  transform: translateY(-1px);
+}
+.plan-node ul {
+  margin: 4px 0 0 12px;
+  padding-inline-start: 10px;
+  border-inline-start: 1px solid var(--plan-line);
 }
 .plan-node-kind {
   font-size: 11px;
   color: var(--plan-muted);
   border: 1px solid var(--plan-line);
   border-radius: 999px;
-  padding: 0 7px;
+  padding: 2px 7px;
   white-space: nowrap;
 }
 .plan-node-title {
@@ -132,8 +277,22 @@
   .plan-panel {
     padding: 10px;
   }
+  .plan-header {
+    grid-template-columns: 1fr;
+    padding: 13px;
+  }
+  .plan-header-meta {
+    justify-content: flex-start;
+  }
   .plan-node-row {
     gap: 6px;
+    padding-inline: 8px;
+  }
+  .plan-tree-section {
+    padding: 11px;
+  }
+  .plan-workspace-switch select {
+    max-width: 64%;
   }
 }
 
@@ -152,7 +311,7 @@
 .plan-node-select {
   display: inline-flex;
   gap: 8px;
-  align-items: baseline;
+  align-items: center;
   flex: 1 1 12ch;
   min-width: 0;
   font: inherit;
@@ -167,6 +326,9 @@
   text-decoration: underline;
   text-decoration-color: var(--plan-accent);
   text-underline-offset: 3px;
+}
+.plan-node-static {
+  cursor: default;
 }
 .plan-node-folded {
   font-size: 11px;
@@ -274,25 +436,30 @@
   overflow-wrap: anywhere;
 }
 .plan-workspace-switch {
-  margin-inline-start: auto;
+  grid-column: 1 / -1;
   display: flex;
   gap: 6px;
   align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  border-top: 1px solid var(--plan-line);
+  padding-top: 10px;
   font-size: 12px;
+}
+.plan-workspace-switch-label {
+  color: var(--plan-muted);
+  font-size: 11px;
 }
 .plan-workspace-switch select {
   font: inherit;
   font-size: 12px;
-  background: transparent;
+  min-width: 0;
+  background: var(--plan-surface-strong);
   color: inherit;
   border: 1px solid var(--plan-line);
-  border-radius: 8px;
-  padding: 2px 6px;
-  max-width: 16ch;
-}
-.plan-role {
-  font-size: 11px;
-  color: var(--plan-muted);
+  border-radius: 9px;
+  padding: 5px 8px;
+  max-width: min(28ch, 70%);
 }
 
 /* Change review */

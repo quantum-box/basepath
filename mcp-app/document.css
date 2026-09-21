@@ -1,11 +1,8 @@
-/* Page-level rules for the MCP App document.
- *
- * The app owns its whole iframe document, so these belong here rather than in
- * the shared component stylesheet the web app also loads.
- */
+/* Page-level rules for the single MCP App plan surface. */
 :root {
   color-scheme: light dark;
 }
+
 body {
   margin: 0;
   color: var(--text-primary, currentColor);
@@ -13,4 +10,139 @@ body {
   font-family: var(--font-sans, system-ui, sans-serif);
   font-size: 14px;
   line-height: 1.6;
+}
+
+.mcp-plan-flow {
+  height: min(520px, 66vh);
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid var(--plan-line);
+  border-radius: 13px;
+  background: var(--plan-surface-strong);
+}
+
+.mcp-plan-flow .react-flow {
+  background: var(--plan-surface-strong);
+}
+
+.mcp-plan-flow .react-flow__edge-path {
+  stroke: var(--plan-muted);
+  stroke-width: 1.5;
+}
+
+.mcp-plan-flow .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--plan-surface);
+  background: var(--plan-accent);
+}
+
+.mcp-flow-node {
+  box-sizing: border-box;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+  width: 100%;
+  height: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--plan-line);
+  border-radius: 12px;
+  color: var(--plan-text);
+  background: var(--plan-surface);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--plan-text) 8%, transparent);
+}
+
+.mcp-flow-node[data-kind="outcome"] {
+  border-color: color-mix(in srgb, var(--plan-accent) 55%, var(--plan-line));
+}
+
+.mcp-flow-node[data-state="done"] strong {
+  color: var(--plan-muted);
+  text-decoration: line-through;
+}
+
+.mcp-flow-node-copy {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 2px;
+}
+
+.mcp-flow-node-kind,
+.mcp-flow-node-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--plan-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-flow-node-kind {
+  color: var(--plan-accent);
+  font-weight: 700;
+}
+
+.mcp-flow-node strong {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-flow-node-toggle {
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--plan-line);
+  border-radius: 7px;
+  color: var(--plan-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mcp-flow-node-toggle:hover,
+.mcp-flow-node-toggle:focus-visible {
+  color: var(--plan-text);
+  border-color: var(--plan-accent);
+}
+
+.mcp-plan-flow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--plan-line);
+  border-radius: 9px;
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--plan-text) 10%, transparent);
+}
+
+.mcp-plan-flow .react-flow__controls-button {
+  width: 28px;
+  height: 28px;
+  border-bottom: 1px solid var(--plan-line);
+  color: var(--plan-text);
+  background: var(--plan-surface);
+  fill: currentColor;
+}
+
+.mcp-plan-flow .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 520px) {
+  .plan-section-tools {
+    align-items: flex-end;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .mcp-plan-flow {
+    height: 390px;
+    min-height: 260px;
+  }
 }
