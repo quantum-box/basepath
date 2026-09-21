@@ -21,17 +21,11 @@ type MapData = {
   kind: "root" | "goal" | "initiative";
   hasChildren?: boolean;
   childCount?: number;
-  hasActions?: boolean;
   open?: boolean;
   active?: boolean;
   onSelect?: () => void;
   onToggle?: () => void;
   onAddChild?: () => void;
-  onAddSibling?: () => void;
-  onEdit?: () => void;
-  onMove?: () => void;
-  onMoveUp?: () => void;
-  onMoveDown?: () => void;
 };
 /** A node in the generic part_of tree.  The map intentionally does not
  * encode a Goal -> Initiative hierarchy: every item kind can have a parent. */
@@ -56,7 +50,7 @@ function GoalNode({ data }: NodeProps<MapNode>) {
   return (
     <>
       <button
-        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""} ${data.hasActions ? "has-actions" : ""} ${data.hasChildren ? "has-children" : ""}`}
+        className={`map-node nodrag nopan ${data.kind} ${color} ${data.active ? "is-selected" : ""} ${data.hasChildren ? "has-children" : ""}`}
         onClick={data.onSelect}
         aria-pressed={data.active}
         tabIndex={data.kind === "root" ? -1 : 0}
@@ -123,33 +117,16 @@ function GoalNode({ data }: NodeProps<MapNode>) {
           )}
         </button>
       )}
-      {data.kind !== "root" && (data.onAddChild || data.onAddSibling || data.onEdit || data.onMove) && (
-        <span className="map-node-actions">
-          {data.onEdit && <button type="button" className="map-node-action nodrag nopan" onClick={data.onEdit}>編集</button>}
-          {data.onMove && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMove}>親を変更</button>}
-          {data.onAddChild && (
-            <button
-              type="button"
-              className="map-node-action nodrag nopan"
-              onClick={data.onAddChild}
-              aria-label={`${data.title}に子項目を追加`}
-            >
-              子を追加
-            </button>
-          )}
-          {data.onAddSibling && (
-            <button
-              type="button"
-              className="map-node-action nodrag nopan"
-              onClick={data.onAddSibling}
-              aria-label={`${data.title}の兄弟項目を追加`}
-            >
-              兄弟を追加
-            </button>
-          )}
-          {data.onMoveUp && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMoveUp}>↑</button>}
-          {data.onMoveDown && <button type="button" className="map-node-action nodrag nopan" onClick={data.onMoveDown}>↓</button>}
-        </span>
+      {data.kind !== "root" && data.onAddChild && (
+        <button
+          type="button"
+          className="map-node-add nodrag nopan"
+          onClick={data.onAddChild}
+          aria-label={`${data.title}に子項目を追加`}
+          title="子項目を追加"
+        >
+          <Icon name="plus" size={13} weight="bold" />
+        </button>
       )}
     </>
   );
@@ -174,13 +151,11 @@ const MAP_FIT_VIEW_OPTIONS = {
   minZoom: 0.05,
   maxZoom: 1.35,
 } as const;
-const nodeSize = (item: TreeItem, hasActions: boolean) => {
+const nodeSize = (item: TreeItem) => {
   const compact = item.kind === "goal"
     ? { width: 184, height: 62 }
     : { width: 136, height: 62 };
-  return hasActions
-    ? { ...compact, height: compact.height + 43 }
-    : compact;
+  return compact;
 };
 const strokeColor = (scope: Scope) =>
   scope === "チーム" ? "#c4adf5" : scope === "組織" ? "#bdcce0" : "#abcaf6";
@@ -197,11 +172,6 @@ type Props = {
   setScope: (scope: Scope | "すべて") => void;
   onInitiative: (id: string) => void;
   onAddChild?: (id: string) => void;
-  onAddSibling?: (id: string) => void;
-  onEdit?: (id: string) => void;
-  onMove?: (id: string) => void;
-  onMoveUp?: (id: string) => void;
-  onMoveDown?: (id: string) => void;
   canEdit?: (id: string) => boolean;
 };
 function MapCanvas({
@@ -214,11 +184,6 @@ function MapCanvas({
   setScope,
   onInitiative,
   onAddChild,
-  onAddSibling,
-  onEdit,
-  onMove,
-  onMoveUp,
-  onMoveDown,
   canEdit,
 }: Props) {
   const flow = useReactFlow<MapNode>();
@@ -340,38 +305,16 @@ function MapCanvas({
     const offset = 0;
     const isOpen = (item: TreeItem) => !closedIds.has(item.id);
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
-    const actionState = (item: TreeItem, siblingIndex: number, siblingCount: number) => {
+    const actionState = (item: TreeItem) => {
       const editable = canEdit ? canEdit(item.id) : true;
-      const persistedParentId = item.actualParentId ?? item.parentId;
-      const parentEditable = persistedParentId
-        ? canEdit
-          ? canEdit(persistedParentId)
-          : true
-        : true;
-      const canMove = editable && parentEditable;
-      // A promoted child whose archived parent is hidden is not actually a
-      // sibling of the displayed roots. Hide reorder controls rather than
-      // calculating an adjacent item from the wrong visual group.
-      const visibleParentMatchesPersisted =
-        !!item.parentId && item.parentId === persistedParentId;
-      const canMoveUp =
-        parentEditable && visibleParentMatchesPersisted && siblingIndex > 0 && !!onMoveUp;
-      const canMoveDown =
-        parentEditable && visibleParentMatchesPersisted && siblingIndex < siblingCount - 1 && !!onMoveDown;
-      const hasActions = Boolean(
-        (editable && (onEdit || (canMove && onMove) || onAddChild || onAddSibling)) ||
-          canMoveUp ||
-          canMoveDown,
-      );
-      return { editable, canMove, canMoveUp, canMoveDown, hasActions };
+      return { editable };
     };
     const depthHeights = new Map<number, number>();
     const measureDepth = (itemsAtDepth: TreeItem[], depth: number) => {
-      itemsAtDepth.forEach((item, index) => {
-        const state = actionState(item, index, itemsAtDepth.length);
+      itemsAtDepth.forEach((item) => {
         depthHeights.set(
           depth,
-          Math.max(depthHeights.get(depth) ?? 0, nodeSize(item, state.hasActions).height),
+          Math.max(depthHeights.get(depth) ?? 0, nodeSize(item).height),
         );
         measureDepth(childrenOf(item), depth + 1);
       });
@@ -386,7 +329,7 @@ function MapCanvas({
       return y;
     };
     const measure = (item: TreeItem): number => {
-      const own = nodeSize(item, false).width;
+      const own = nodeSize(item).width;
       const kids = childrenOf(item);
       if (!kids.length) return own;
       const width =
@@ -398,8 +341,6 @@ function MapCanvas({
       item: TreeItem,
       left: number,
       depth: number,
-      siblingIndex = 0,
-      siblingCount = 1,
     ) => {
       const width = measure(item);
       const kids = childrenOf(item);
@@ -409,12 +350,8 @@ function MapCanvas({
         open: isOpen(item),
         onToggle: () => toggleNode(item.id),
       };
-      const { editable, canMove, canMoveUp, canMoveDown, hasActions } = actionState(
-        item,
-        siblingIndex,
-        siblingCount,
-      );
-      const size = nodeSize(item, hasActions);
+      const { editable } = actionState(item);
+      const size = nodeSize(item);
       nodes.push({
         id: item.id,
         type: "goal",
@@ -425,31 +362,16 @@ function MapCanvas({
             ? {
                 ...item.goal!,
                 ...shared,
-                hasActions,
                 kind: "goal",
                 subtitle: item.goal!.subtitle,
                 progress: undefined,
                 active: selected === item.id,
                 onSelect: () => onSelect(item.id),
                 onAddChild: editable && onAddChild ? () => onAddChild(item.id) : undefined,
-                onAddSibling: editable && onAddSibling
-                  ? () => onAddSibling(item.id)
-                  : undefined,
-                onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
-                onMove: canMove && onMove ? () => onMove(item.id) : undefined,
-                onMoveUp:
-                  canMoveUp
-                    ? () => onMoveUp!(item.id)
-                    : undefined,
-                onMoveDown:
-                  canMoveDown
-                    ? () => onMoveDown!(item.id)
-                    : undefined,
               }
             : {
                 ...item.initiative!,
                 ...shared,
-                hasActions,
                 scope: item.scope,
                 kind: "initiative",
                 active: selected === item.id,
@@ -458,19 +380,6 @@ function MapCanvas({
                   ? undefined
                   : onAddChild
                     ? () => onAddChild(item.id)
-                    : undefined,
-                onAddSibling: editable && onAddSibling
-                  ? () => onAddSibling(item.id)
-                  : undefined,
-                onEdit: editable && onEdit ? () => onEdit(item.id) : undefined,
-                onMove: canMove && onMove ? () => onMove(item.id) : undefined,
-                onMoveUp:
-                  canMoveUp
-                    ? () => onMoveUp!(item.id)
-                    : undefined,
-                onMoveDown:
-                  canMoveDown
-                    ? () => onMoveDown!(item.id)
                     : undefined,
               },
       });
@@ -487,14 +396,14 @@ function MapCanvas({
         kids.reduce((total, child) => total + measure(child), 0) +
         GAP * (kids.length - 1);
       let cursor = left + (width - childrenWidth) / 2;
-      kids.forEach((child, index) => {
-        place(child, cursor, depth + 1, index, kids.length);
+      kids.forEach((child) => {
+        place(child, cursor, depth + 1);
         cursor += measure(child) + GAP;
       });
     };
     let cursor = 0;
-    tree.forEach((root, index) => {
-      place(root, cursor, offset, index, tree.length);
+    tree.forEach((root) => {
+      place(root, cursor, offset);
       cursor += measure(root) + GAP;
     });
     return { nodes, edges };
@@ -506,11 +415,6 @@ function MapCanvas({
     onSelect,
     onInitiative,
     onAddChild,
-    onAddSibling,
-    onEdit,
-    onMove,
-    onMoveUp,
-    onMoveDown,
     canEdit,
   ]);
   const resetView = useCallback(() => {

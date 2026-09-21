@@ -2116,11 +2116,6 @@ export function App() {
                 onInitiative={openInitiative}
                 canEdit={canEditMapItem}
                 onAddChild={(id) => openCreateRelative(id, "child")}
-                onAddSibling={(id) => openCreateRelative(id, "sibling")}
-                onEdit={editTreeItem}
-                onMove={moveTreeItem}
-                onMoveUp={(id) => reorderTreeItem(id, -1)}
-                onMoveDown={(id) => reorderTreeItem(id, 1)}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">
@@ -2698,11 +2693,6 @@ export function App() {
             onAddInitiative={() => setModal({ kind: "initiative" })}
             canEditMapItem={canEditMapItem}
             onAddChild={(id) => openCreateRelative(id, "child")}
-            onAddSibling={(id) => openCreateRelative(id, "sibling")}
-            onEditTreeItem={editTreeItem}
-            onMoveTreeItem={moveTreeItem}
-            onMoveUpTreeItem={(id) => reorderTreeItem(id, -1)}
-            onMoveDownTreeItem={(id) => reorderTreeItem(id, 1)}
             onReflectionChange={(value) => {
               setReflection(value);
               localStorage.setItem(reviewDraftKey, value);
@@ -3373,11 +3363,6 @@ type DedicatedScreenProps = {
   onAddInitiative: () => void;
   canEditMapItem: (id: string) => boolean;
   onAddChild?: (id: string) => void;
-  onAddSibling?: (id: string) => void;
-  onEditTreeItem?: (id: string) => void;
-  onMoveTreeItem?: (id: string) => void;
-  onMoveUpTreeItem?: (id: string) => void;
-  onMoveDownTreeItem?: (id: string) => void;
   onReflectionChange: (value: string) => void;
   onSaveReflection: () => void;
 };
@@ -3414,11 +3399,6 @@ function DedicatedScreen({
   onAddInitiative,
   canEditMapItem,
   onAddChild,
-  onAddSibling,
-  onEditTreeItem,
-  onMoveTreeItem,
-  onMoveUpTreeItem,
-  onMoveDownTreeItem,
   onReflectionChange,
   onSaveReflection,
 }: DedicatedScreenProps) {
@@ -3445,11 +3425,6 @@ function DedicatedScreen({
             onInitiative={onOpenInitiative}
             canEdit={canEditMapItem}
             onAddChild={onAddChild}
-            onAddSibling={onAddSibling}
-            onEdit={onEditTreeItem}
-            onMove={onMoveTreeItem}
-            onMoveUp={onMoveUpTreeItem}
-            onMoveDown={onMoveDownTreeItem}
           />
           {selected ? (
             <section
