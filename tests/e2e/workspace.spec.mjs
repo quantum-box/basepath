@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openScreen } from "./navigate.mjs";
 
 async function mockAuthenticatedTachyonApp(page, fieldFailure) {
   await page.route("**/api/**", async (route) => {
@@ -459,16 +460,33 @@ async function snapshot(request, workspaceId) {
 }
 
 async function createGoal(page, title, workspaceId) {
-  await page
+  const homeTemplate = page
     .locator("#templates")
-    .getByRole("button", { name: /自由形式/ })
-    .click();
+    .getByRole("button", { name: /自由形式/ });
+  let openedFullTemplateScreen = false;
+  if (await homeTemplate.isVisible().catch(() => false)) {
+    await homeTemplate.click();
+  } else {
+    // The home template chooser is onboarding content and disappears after
+    // the workspace has its first saved item. The full template screen remains
+    // the supported way to start another goal.
+    await openScreen(page, "テンプレート");
+    await page.getByRole("button", { name: /自由形式/ }).click();
+    openedFullTemplateScreen = true;
+  }
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("目標の名前").fill(title);
   if (workspaceId)
     await dialog.getByLabel("ワークスペース").selectOption(workspaceId);
   await dialog.getByRole("button", { name: "目標を作成", exact: true }).click();
   await expect(dialog).not.toBeVisible();
+  if (openedFullTemplateScreen) {
+    await openScreen(
+      page,
+      page.url().includes("/org/") ? "概要" : "ホーム",
+      null,
+    );
+  }
   await expect(
     page.getByRole("heading", { name: title, exact: true }),
   ).toBeVisible();
@@ -560,10 +578,7 @@ test("two team workspaces keep goals in the selected workspace", async ({
   request,
 }) => {
   await openApp(page);
-  await page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "ワークスペース", exact: true })
-    .click();
+  await openScreen(page, "ワークスペース", "メンバー");
   await expect(
     page.getByRole("heading", { name: "メンバー", exact: true, level: 1 }),
   ).toBeVisible();
@@ -623,13 +638,7 @@ test("mobile navigation opens the workspace manager page and returns home", asyn
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openApp(page);
-  await page
-    .getByRole("button", { name: "メニューを開く", exact: true })
-    .click();
-  await page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "ワークスペース", exact: true })
-    .click();
+  await openScreen(page, "ワークスペース", "メンバー");
   await expect(
     page.getByRole("heading", {
       name: "メンバー",
@@ -711,13 +720,7 @@ test("weekly review saves, finalizes, and remains usable at 390px", async ({
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openApp(page);
-  await page
-    .getByRole("button", { name: "メニューを開く", exact: true })
-    .click();
-  await page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "振り返り", exact: true })
-    .click();
+  await openScreen(page, "振り返り", "振り返り");
   await expect(
     page.getByRole("heading", { name: "週次レビュー", exact: true }),
   ).toBeVisible();

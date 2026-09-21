@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openScreen, showMenu } from "./navigate.mjs";
 
 /**
  * Breaking a goal down, in the browser.
@@ -7,25 +8,8 @@ import { expect, test } from "@playwright/test";
  * has to load it a piece at a time, and has to keep "what makes this happen"
  * and "why am I doing this" as separate answers.
  */
-/** Opens the sidebar, without navigating away from the current context. */
-async function showMenu(page) {
-  const opener = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await opener.isVisible().catch(() => false)) await opener.click();
-}
-
 async function goToBreakdown(page) {
-  await showMenu(page);
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "分解", exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "分解", exact: true, level: 1 }),
-  ).toBeVisible();
+  await openScreen(page, "分解");
 }
 
 async function openBreakdown(page) {

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { showMenu, switchTo } from "./navigate.mjs";
+import { openScreen, showMenu, switchTo } from "./navigate.mjs";
 
 /**
  * Personal memory, in the browser.
@@ -10,19 +10,7 @@ import { showMenu, switchTo } from "./navigate.mjs";
  */
 async function openMemory(page) {
   await page.goto("/");
-  const menu = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await menu.isVisible().catch(() => false)) await menu.click();
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: "記憶", exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "記憶", exact: true, level: 1 }),
-  ).toBeVisible();
+  await openScreen(page, "記憶");
 }
 
 async function personalWorkspaceId(request) {
