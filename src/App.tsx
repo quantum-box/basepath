@@ -647,6 +647,13 @@ export function App() {
   const currentSnapshot = store.snapshots.find(
     (snapshot) => snapshot.workspace_id === currentWorkspace?.id,
   );
+  // The template chooser is onboarding content for an empty workspace. Use
+  // the workspace snapshot rather than the scope-filtered map: a workspace
+  // can already have a plan even when the current map filter hides its goals.
+  const showHomeTemplates =
+    !store.loading &&
+    !!currentWorkspace &&
+    (currentSnapshot?.items.length ?? 0) === 0;
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
@@ -2065,7 +2072,7 @@ export function App() {
                   }}
                 />
               )}
-            {!store.loading && goals.length === 0 && (
+            {showHomeTemplates && (
               <section className="panel templates-panel" id="templates">
                 <div className="section-header">
                   <h2>テンプレートからはじめる</h2>
