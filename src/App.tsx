@@ -55,6 +55,7 @@ import {
   stillAvailable,
   tenantReturnWithSelection,
   type AppContext,
+  type ContextKind,
   type Screen,
 } from "./shared/appContext";
 import { DashboardScreen } from "./DashboardScreen";
@@ -141,6 +142,14 @@ const navigationDescriptions: Record<NavigationLabel, string> = {
   記憶: "あなた自身の記憶。共有ワークスペースへは移動も同期もされません。",
   テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
   メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
+};
+
+// Keep the everyday path visible and put the less frequent destinations behind
+// one entry. The full navigation still exists; the sidebar no longer asks a
+// person to scan every screen before they can reach today's work.
+const primaryNavigationScreens: Record<ContextKind, readonly Screen[]> = {
+  personal: ["home", "today", "goals", "breakdown", "timeline"],
+  organization: ["home", "goals", "breakdown", "dashboard", "goal-review"],
 };
 
 /**
@@ -507,6 +516,7 @@ export function App() {
   const store = useWorkspace();
   const route = new URLSearchParams(window.location.search);
   const [tenantId, setTenantId] = useState(route.get("tenant_id") || "");
+  const [tenantName, setTenantName] = useState("");
   const [selectedId, setSelectedId] = useState(
     route.get("item") || "team~event",
   );
@@ -538,6 +548,7 @@ export function App() {
   const [editBase, setEditBase] = useState<number | null>(null);
   const [menu, setMenu] = useState(false);
   const [sidebar, setSidebar] = useState(false);
+  const [navigationExpanded, setNavigationExpanded] = useState(false);
   const [selectingTenant, setSelectingTenant] = useState(
     window.location.pathname === "/tenants",
   );
@@ -615,6 +626,12 @@ export function App() {
   const personalWorkspaceId = () =>
     resolvePersonalWorkspace("", store.workspaces);
   const navItems = navFor(contextKind);
+  const primaryNavItems = navItems.filter((item) =>
+    primaryNavigationScreens[contextKind].includes(item.screen),
+  );
+  const secondaryNavItems = navItems.filter(
+    (item) => !primaryNavigationScreens[contextKind].includes(item.screen),
+  );
   // The screen that is actually shown. A deep link into a screen this context
   // does not have lands on its home instead of rendering an empty one, because
   // an empty memory screen in an organization answers "is my memory here?"
@@ -622,11 +639,21 @@ export function App() {
   const shownScreen: Screen = screenBelongs(contextKind, screen)
     ? screen
     : landingFor();
+  const secondaryNavigationOpen =
+    navigationExpanded ||
+    secondaryNavItems.some((item) => item.screen === shownScreen);
   const navItem = navItemFor(contextKind, shownScreen);
   const activeNav = navItem.page as NavigationLabel;
   const currentSnapshot = store.snapshots.find(
     (snapshot) => snapshot.workspace_id === currentWorkspace?.id,
   );
+  // The template chooser is onboarding content for an empty workspace. Use
+  // the workspace snapshot rather than the scope-filtered map: a workspace
+  // can already have a plan even when the current map filter hides its goals.
+  const showHomeTemplates =
+    !store.loading &&
+    !!currentWorkspace &&
+    (currentSnapshot?.items.length ?? 0) === 0;
   const workspace = currentWorkspace?.name || "個人";
   const canWrite = (w?: string) =>
     store.workspaces.some((entry) => entry.id === w && entry.role !== "viewer");
@@ -1086,6 +1113,10 @@ export function App() {
         ) {
           tenantReturnRef.current = tenantReturnUrl();
           setTenantId(requestedTenantId);
+          setTenantName(
+            result.tenants.find((tenant) => tenant.id === requestedTenantId)
+              ?.name || "",
+          );
           setSelectingTenant(true);
           replaceTenantSelectionUrl(
             requestedTenantId,
@@ -1093,7 +1124,15 @@ export function App() {
           );
           return;
         }
-        if (!result.selected_tenant_id) return;
+        if (!result.selected_tenant_id) {
+          setTenantName("");
+          return;
+        }
+        setTenantName(
+          result.tenants.find(
+            (tenant) => tenant.id === result.selected_tenant_id,
+          )?.name || "",
+        );
         setTenantId(result.selected_tenant_id);
         if (returnTo && returnTenantId === result.selected_tenant_id) {
           const restored = restoreTenantReturn(returnTo, result.selected_tenant_id);
@@ -1127,7 +1166,14 @@ export function App() {
     store.loading,
     store.me.id,
     store.me.mode,
+    tenantId,
   ]);
+
+  useEffect(() => {
+    if (store.me.mode !== "tachyon") setTenantName("ローカルテナント");
+    else if (store.error?.code === "TENANT_SELECTION_REQUIRED")
+      setTenantName("");
+  }, [store.error?.code, store.me.mode]);
 
   useEffect(() => {
     // The tab title says the context too, so a person with both open in two
@@ -1245,6 +1291,7 @@ export function App() {
     }
     setScreen(target);
     setSidebar(false);
+    setNavigationExpanded(false);
     window.requestAnimationFrame(() => mainRef.current?.focus());
     setModal(null);
     setMenu(false);
@@ -1266,6 +1313,25 @@ export function App() {
       );
     if (item) goTo(item.screen);
   }
+
+  const renderNavButton = (item: (typeof navItems)[number]) => (
+    <button
+      key={item.screen}
+      className={shownScreen === item.screen ? "active" : ""}
+      aria-current={shownScreen === item.screen ? "page" : undefined}
+      onClick={() => goTo(item.screen)}
+    >
+      <Icon
+        name={item.icon}
+        size={23}
+        weight={shownScreen === item.screen ? "fill" : "regular"}
+      />
+      <span>{item.label}</span>
+      {item.screen === "members" && store.invitations.length > 0 && (
+        <span className="invitation-count">{store.invitations.length}</span>
+      )}
+    </button>
+  );
 
   /**
    * Crossing between a person's own Basepath and an organization's.
@@ -1644,7 +1710,12 @@ export function App() {
           <span>PathBase</span>
         </button>
         <div className="workspace-label">
-          <span>現在のワークスペース</span>
+          <span className="workspace-label-copy">
+            <span>現在のワークスペース</span>
+            <small className="tenant-label">
+              テナント: {tenantName || "確認中…"}
+            </small>
+          </span>
           {store.me.mode === "tachyon" && (
             <button
               className="text-link"
@@ -1678,7 +1749,7 @@ export function App() {
             >
               <Icon name="home" size={18} weight="duotone" />
               <span>
-                個人
+                <strong>個人</strong>
                 <small>あなただけのBasepath</small>
               </span>
             </button>
@@ -1693,33 +1764,33 @@ export function App() {
                 >
                   <Icon name="users" size={18} weight="duotone" />
                   <span>
-                    {w.name}
+                    <strong>{w.name}</strong>
                     <small>組織{w.role === "viewer" ? "・閲覧のみ" : ""}</small>
                   </span>
                 </button>
               ))}
           </div>
           <nav className="main-nav" aria-label="メインメニュー">
-            {navItems.map((item) => (
-              <button
-                key={item.screen}
-                className={shownScreen === item.screen ? "active" : ""}
-                aria-current={shownScreen === item.screen ? "page" : undefined}
-                onClick={() => goTo(item.screen)}
-              >
-                <Icon
-                  name={item.icon}
-                  size={23}
-                  weight={shownScreen === item.screen ? "fill" : "regular"}
-                />
-                <span>{item.label}</span>
-                {item.screen === "members" && store.invitations.length > 0 && (
-                  <span className="invitation-count">
-                    {store.invitations.length}
-                  </span>
+            {primaryNavItems.map((item) => renderNavButton(item))}
+            {secondaryNavItems.length > 0 && (
+              <>
+                <button
+                  className={`nav-more-toggle ${secondaryNavigationOpen ? "is-open" : ""}`}
+                  aria-expanded={secondaryNavigationOpen}
+                  aria-controls="secondary-navigation"
+                  onClick={() => setNavigationExpanded((open) => !open)}
+                >
+                  <Icon name="more" size={23} />
+                  <span>その他</span>
+                  <Icon name="down" size={16} className="nav-more-chevron" />
+                </button>
+                {secondaryNavigationOpen && (
+                  <div className="secondary-nav" id="secondary-navigation">
+                    {secondaryNavItems.map((item) => renderNavButton(item))}
+                  </div>
                 )}
-              </button>
-            ))}
+              </>
+            )}
           </nav>
         </div>
         <nav className="utility-nav" aria-label="ユーティリティ">
@@ -2001,36 +2072,38 @@ export function App() {
                   }}
                 />
               )}
-            <section className="panel templates-panel" id="templates">
-              <div className="section-header">
-                <h2>テンプレートからはじめる</h2>
-                <TextLink
-                  onClick={() =>
-                    setModal({ kind: "template", template: "自由形式" })
-                  }
-                >
-                  すべてのテンプレート
-                </TextLink>
-              </div>
-              <div className="template-grid">
-                {templates.map((template) => (
-                  <button
-                    key={template.title}
-                    className={`template-card ${template.color}`}
+            {showHomeTemplates && (
+              <section className="panel templates-panel" id="templates">
+                <div className="section-header">
+                  <h2>テンプレートからはじめる</h2>
+                  <TextLink
                     onClick={() =>
-                      setModal({ kind: "template", template: template.title })
+                      setModal({ kind: "template", template: "自由形式" })
                     }
                   >
-                    <Icon name={template.icon} size={36} />
-                    <span>
-                      <strong>{template.title}</strong>
-                      <small>{template.description}</small>
-                    </span>
-                    <Icon name="arrow" size={16} className="template-arrow" />
-                  </button>
-                ))}
-              </div>
-            </section>
+                    すべてのテンプレート
+                  </TextLink>
+                </div>
+                <div className="template-grid">
+                  {templates.map((template) => (
+                    <button
+                      key={template.title}
+                      className={`template-card ${template.color}`}
+                      onClick={() =>
+                        setModal({ kind: "template", template: template.title })
+                      }
+                    >
+                      <Icon name={template.icon} size={36} />
+                      <span>
+                        <strong>{template.title}</strong>
+                        <small>{template.description}</small>
+                      </span>
+                      <Icon name="arrow" size={16} className="template-arrow" />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
             <div className="dashboard-grid">
               <GoalMap
                 goals={goals}
@@ -2043,11 +2116,6 @@ export function App() {
                 onInitiative={openInitiative}
                 canEdit={canEditMapItem}
                 onAddChild={(id) => openCreateRelative(id, "child")}
-                onAddSibling={(id) => openCreateRelative(id, "sibling")}
-                onEdit={editTreeItem}
-                onMove={moveTreeItem}
-                onMoveUp={(id) => reorderTreeItem(id, -1)}
-                onMoveDown={(id) => reorderTreeItem(id, 1)}
               />
               <div className="left-column">
                 <section className="panel bottom-panel" id="workspace-panels">
@@ -2625,11 +2693,6 @@ export function App() {
             onAddInitiative={() => setModal({ kind: "initiative" })}
             canEditMapItem={canEditMapItem}
             onAddChild={(id) => openCreateRelative(id, "child")}
-            onAddSibling={(id) => openCreateRelative(id, "sibling")}
-            onEditTreeItem={editTreeItem}
-            onMoveTreeItem={moveTreeItem}
-            onMoveUpTreeItem={(id) => reorderTreeItem(id, -1)}
-            onMoveDownTreeItem={(id) => reorderTreeItem(id, 1)}
             onReflectionChange={(value) => {
               setReflection(value);
               localStorage.setItem(reviewDraftKey, value);
@@ -3300,11 +3363,6 @@ type DedicatedScreenProps = {
   onAddInitiative: () => void;
   canEditMapItem: (id: string) => boolean;
   onAddChild?: (id: string) => void;
-  onAddSibling?: (id: string) => void;
-  onEditTreeItem?: (id: string) => void;
-  onMoveTreeItem?: (id: string) => void;
-  onMoveUpTreeItem?: (id: string) => void;
-  onMoveDownTreeItem?: (id: string) => void;
   onReflectionChange: (value: string) => void;
   onSaveReflection: () => void;
 };
@@ -3341,11 +3399,6 @@ function DedicatedScreen({
   onAddInitiative,
   canEditMapItem,
   onAddChild,
-  onAddSibling,
-  onEditTreeItem,
-  onMoveTreeItem,
-  onMoveUpTreeItem,
-  onMoveDownTreeItem,
   onReflectionChange,
   onSaveReflection,
 }: DedicatedScreenProps) {
@@ -3372,11 +3425,6 @@ function DedicatedScreen({
             onInitiative={onOpenInitiative}
             canEdit={canEditMapItem}
             onAddChild={onAddChild}
-            onAddSibling={onAddSibling}
-            onEdit={onEditTreeItem}
-            onMove={onMoveTreeItem}
-            onMoveUp={onMoveUpTreeItem}
-            onMoveDown={onMoveDownTreeItem}
           />
           {selected ? (
             <section

@@ -150,8 +150,24 @@ input[type="checkbox"]:checked::after {
   gap: 6px;
   font-size: 12px;
   font-weight: 500;
-  margin: 16px 8px 7px;
+  margin: 12px 8px 6px;
   color: #475c78;
+}
+.workspace-label-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.tenant-label {
+  display: block;
+  max-width: 155px;
+  overflow: hidden;
+  color: #7b8ca4;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .workspace-label .text-link {
   font-size: 10px;
@@ -260,6 +276,31 @@ input[type="checkbox"]:checked::after {
   background: #eaf1ff;
   color: #1672ff;
   font-weight: 600;
+}
+.nav-more-toggle {
+  color: #5f708b !important;
+  margin-top: 4px;
+}
+.nav-more-toggle .nav-more-chevron {
+  margin-left: auto;
+  transition: transform 0.16s;
+}
+.nav-more-toggle.is-open .nav-more-chevron {
+  transform: rotate(180deg);
+}
+.secondary-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 1px 17px;
+  padding-left: 10px;
+  border-left: 1px solid #e1e9f4;
+}
+.secondary-nav button {
+  height: 38px;
+  padding: 0 10px;
+  gap: 11px;
+  font-size: 13px;
 }
 .utility-nav {
   display: flex;
@@ -737,14 +778,8 @@ input[type="checkbox"]:checked::after {
   height: 100%;
   padding-bottom: 11px;
 }
-.map-node:not(.root).has-actions {
-  padding-bottom: 44px;
-}
 .map-node:not(.root).has-children {
   padding-bottom: 32px;
-}
-.map-node:not(.root).has-actions.has-children {
-  padding-bottom: 44px;
 }
 .map-node:hover {
   box-shadow: 0 4px 14px #829ac21c;
@@ -796,14 +831,8 @@ input[type="checkbox"]:checked::after {
   box-shadow: 0 2px 8px #926bff0d;
   padding: 10px;
 }
-.map-node.goal.is-selected.has-actions {
-  padding: 10px 10px 44px;
-}
 .map-node.goal.is-selected.has-children {
   padding-bottom: 32px;
-}
-.map-node.goal.is-selected.has-actions.has-children {
-  padding-bottom: 44px;
 }
 .node-toggle {
   pointer-events: all;
@@ -832,42 +861,41 @@ input[type="checkbox"]:checked::after {
   color: var(--ink);
   border-color: #c3d2e6;
 }
-.map-node.has-actions ~ .node-toggle {
-  bottom: 45px;
-}
 .map-node.has-children ~ .node-toggle {
   bottom: 3px;
 }
-.map-node.has-actions.has-children ~ .node-toggle {
-  bottom: 45px;
-}
-.map-node-actions {
+.map-node-add {
   position: absolute;
-  left: 2px;
-  right: 2px;
-  bottom: 3px;
+  right: -10px;
+  bottom: -10px;
   z-index: 4;
-  display: flex;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  flex-wrap: wrap;
-  gap: 3px;
-  pointer-events: all;
-}
-.map-node-action {
-  min-height: 19px;
-  max-width: 100%;
-  padding: 1px 4px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
+  width: 21px;
+  height: 21px;
+  padding: 1px;
+  border: 1px solid #c3d2e6;
+  border-radius: 50%;
   background: #fff;
   color: #5b6b82;
-  font-size: 8px;
-  line-height: 1;
   box-shadow: 0 2px 6px #40648814;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(3px, 3px);
+  transition: opacity 120ms ease, transform 120ms ease, color 120ms ease;
 }
-.map-node-action:hover {
+.react-flow__node:hover .map-node-add,
+.react-flow__node:focus-within .map-node-add {
+  opacity: 1;
+  pointer-events: all;
+  transform: translate(0, 0);
+}
+.map-node-add:hover,
+.map-node-add:focus-visible {
   color: var(--ink);
-  border-color: #c3d2e6;
+  border-color: #8da8cf;
+  box-shadow: 0 3px 8px #40648822;
 }
 .node-icon {
   display: flex;
@@ -6310,7 +6338,7 @@ button:disabled {
 .context-switch {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   margin: 0;
   /* Every organization at its full height. The list scrolls with the
      navigation below it, in `.sidebar-nav`, rather than against it. */
@@ -6319,25 +6347,40 @@ button:disabled {
 .context-switch button {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 9px 11px;
+  min-height: 43px;
+  padding: 6px 9px;
   border: 1px solid #e6eaf1;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #fff;
   font: inherit;
   text-align: start;
   cursor: pointer;
 }
+.context-switch button > svg {
+  width: 17px;
+  height: 17px;
+}
 .context-switch button span {
   display: flex;
   flex-direction: column;
-  line-height: 1.35;
+  line-height: 1.25;
   min-width: 0;
+}
+.context-switch button strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-switch button small {
   color: var(--muted);
-  font-size: 11px;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-switch button.active {
   border-color: #b9c6dd;
