@@ -169,12 +169,17 @@ type TreeItem = {
   sourceIndex: number;
 };
 const GAP = 22;
+const MAP_FIT_VIEW_OPTIONS = {
+  padding: 0.1,
+  minZoom: 0.05,
+  maxZoom: 1.35,
+} as const;
 const nodeSize = (item: TreeItem, hasActions: boolean) => {
   const compact = item.kind === "goal"
-    ? { width: 214, height: 65 }
-    : { width: 148, height: 70 };
+    ? { width: 184, height: 62 }
+    : { width: 136, height: 62 };
   return hasActions
-    ? { ...compact, height: compact.height + 51 }
+    ? { ...compact, height: compact.height + 43 }
     : compact;
 };
 const strokeColor = (scope: Scope) =>
@@ -330,9 +335,9 @@ function MapCanvas({
   const { nodes, edges } = useMemo(() => {
     const nodes: MapNode[] = [];
     const edges: Edge[] = [];
-    // A single top-level goal is the root itself; a forest keeps the heading node.
-    const heading = tree.length !== 1;
-    const offset = heading ? 1 : 0;
+    // The panel heading already names the map. Avoid adding a second
+    // always-visible explanatory node above every forest of goals.
+    const offset = 0;
     const isOpen = (item: TreeItem) => !closedIds.has(item.id);
     const childrenOf = (item: TreeItem) => (isOpen(item) ? item.children : []);
     const actionState = (item: TreeItem, siblingIndex: number, siblingCount: number) => {
@@ -375,10 +380,8 @@ function MapCanvas({
     const rowY = (depth: number) => {
       let y = 8;
       for (let current = 0; current < depth; current += 1) {
-        const height = current === 0 && heading
-          ? 62
-          : depthHeights.get(current) ?? 70;
-        y += height + (current === 0 ? (heading ? 48 : 45) : 38);
+        const height = depthHeights.get(current) ?? 70;
+        y += height + (current === 0 ? 45 : 38);
       }
       return y;
     };
@@ -494,20 +497,6 @@ function MapCanvas({
       place(root, cursor, offset, index, tree.length);
       cursor += measure(root) + GAP;
     });
-    if (heading) {
-      const fullWidth = Math.max(cursor - GAP, 220);
-      nodes.unshift({
-        id: "root",
-        type: "goal",
-        position: { x: fullWidth / 2 - 110, y: 8 },
-        data: {
-          kind: "root",
-          title: "自分の目標と行動",
-          subtitle: "つながりを眺めて、次の一歩へ",
-        },
-        style: { width: 220, height: 62 },
-      });
-    }
     return { nodes, edges };
   }, [
     tree,
@@ -528,7 +517,7 @@ function MapCanvas({
     // Establish the baseline after fitting async-loaded data, before animation
     // callbacks can report a percentage relative to an earlier empty graph.
     void flow
-      .fitView({ padding: 0.035, duration: 0, minZoom: 0.05 })
+      .fitView({ ...MAP_FIT_VIEW_OPTIONS, duration: 0 })
       .then(() => {
         setBaseZoom(flow.getZoom());
         setZoom(100);
@@ -614,7 +603,7 @@ function MapCanvas({
           edges={edges}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.035, minZoom: 0.05 }}
+          fitViewOptions={MAP_FIT_VIEW_OPTIONS}
           minZoom={0.05}
           maxZoom={2}
           nodesDraggable={false}

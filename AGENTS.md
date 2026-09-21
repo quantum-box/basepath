@@ -7,6 +7,7 @@
 
 - Preserve the existing PathBase UI, spacing, colors, and overall layout while implementing functionality (user request, 2026-09-12).
 - The goal map is a multi-level tree built from `part_of` relations. Show every level expanded by default (branches may be folded per node), and give the dashboard map the full dashboard width so the whole tree is visible (user request, 2026-09-16).
+- The home view should keep the goal map as the primary content: show the template chooser only until the workspace has a goal, omit the always-visible explanatory root node, keep goal cards compact, and group less-frequent sidebar destinations under a collapsed 「その他」 menu (user feedback, 2026-09-21).
 - Local demo data is a golf-course scenario: the whole goal tree lives in the organization workspace under the top goal 「償却前利益3億円」 (user decision, 2026-09-16).
 - Implement the API and shared application rules in Rust. Keep the application contract documented in `docs/api.md`.
 - Keep local development usable without cloud credentials. Clearly distinguish local storage and sample workspaces from real cloud accounts, invitations, or synchronization.

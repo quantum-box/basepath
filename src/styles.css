@@ -261,6 +261,31 @@ input[type="checkbox"]:checked::after {
   color: #1672ff;
   font-weight: 600;
 }
+.nav-more-toggle {
+  color: #5f708b !important;
+  margin-top: 4px;
+}
+.nav-more-toggle .nav-more-chevron {
+  margin-left: auto;
+  transition: transform 0.16s;
+}
+.nav-more-toggle.is-open .nav-more-chevron {
+  transform: rotate(180deg);
+}
+.secondary-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 1px 17px;
+  padding-left: 10px;
+  border-left: 1px solid #e1e9f4;
+}
+.secondary-nav button {
+  height: 38px;
+  padding: 0 10px;
+  gap: 11px;
+  font-size: 13px;
+}
 .utility-nav {
   display: flex;
   flex-direction: column;
