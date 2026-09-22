@@ -112,8 +112,17 @@ test("the two have different menus, not one menu with rows hidden", async ({
   await openApp(page);
   await places(page).getByRole("button", { name: /個人/ }).click();
   await showMenu(page);
+  const personalMemory = menu(page).getByRole("button", {
+    name: "記憶",
+    exact: true,
+  });
+  if (!(await personalMemory.isVisible())) {
+    await menu(page)
+      .getByRole("button", { name: "その他", exact: true })
+      .click();
+  }
   // Memory lives only in a person's own workspace.
-  await expect(menu(page).getByRole("button", { name: "記憶" })).toBeVisible();
+  await expect(personalMemory).toBeVisible();
   await expect(
     menu(page).getByRole("button", { name: "アラインメント" }),
   ).toHaveCount(0);
@@ -130,9 +139,16 @@ test("the two have different menus, not one menu with rows hidden", async ({
     .getByRole("button", { name: new RegExp(name) })
     .click();
   await showMenu(page);
-  await expect(
-    menu(page).getByRole("button", { name: "アラインメント" }),
-  ).toBeVisible();
+  const organizationAlignment = menu(page).getByRole("button", {
+    name: "アラインメント",
+    exact: true,
+  });
+  if (!(await organizationAlignment.isVisible())) {
+    await menu(page)
+      .getByRole("button", { name: "その他", exact: true })
+      .click();
+  }
+  await expect(organizationAlignment).toBeVisible();
   // An entry leading to an empty memory screen would suggest it could be here.
   await expect(menu(page).getByRole("button", { name: "記憶" })).toHaveCount(0);
 });
@@ -340,7 +356,16 @@ test("the back button crosses back, menu and all", async ({
   await expect(page.locator(".context-breadcrumb")).toContainText("個人");
   await expect(page).toHaveURL(new RegExp("/personal/"));
   await showMenu(page);
-  await expect(menu(page).getByRole("button", { name: "記憶" })).toBeVisible();
+  const personalMemory = menu(page).getByRole("button", {
+    name: "記憶",
+    exact: true,
+  });
+  if (!(await personalMemory.isVisible())) {
+    await menu(page)
+      .getByRole("button", { name: "その他", exact: true })
+      .click();
+  }
+  await expect(personalMemory).toBeVisible();
   await expect(page).not.toHaveURL(new RegExp(`/org/${id}`));
 });
 

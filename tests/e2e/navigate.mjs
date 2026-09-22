@@ -16,6 +16,9 @@ export async function showMenu(page) {
     exact: true,
   });
   if (await opener.isVisible().catch(() => false)) await opener.click();
+  const navigation = page.getByRole("navigation", { name: "メインメニュー" });
+  await expect(navigation).toBeVisible();
+  return navigation;
 }
 
 /** Crosses to a workspace by name, through the top-level switcher. */
@@ -29,15 +32,21 @@ export async function switchTo(page, name) {
 
 /** Opens a screen in the context the app is already in. */
 export async function openScreen(page, label, heading = label) {
-  await showMenu(page);
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: label, exact: true });
+  const navigation = await showMenu(page);
+  const entry = navigation.getByRole("button", { name: label, exact: true });
+  if (!(await entry.isVisible())) {
+    await navigation
+      .getByRole("button", { name: "その他", exact: true })
+      .click();
+  }
+  await expect(entry).toBeVisible();
   await entry.focus();
   await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: heading, exact: true, level: 1 }),
-  ).toBeVisible();
+  if (heading !== null) {
+    await expect(
+      page.getByRole("heading", { name: heading, exact: true, level: 1 }),
+    ).toBeVisible();
+  }
 }
 
 /**

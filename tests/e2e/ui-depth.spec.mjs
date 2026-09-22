@@ -1,24 +1,5 @@
 import { expect, test } from "@playwright/test";
-
-async function openMenu(page) {
-  const opener = page.getByRole("button", {
-    name: "メニューを開く",
-    exact: true,
-  });
-  if (await opener.isVisible().catch(() => false)) await opener.click();
-}
-
-async function openScreen(page, label, heading = label) {
-  await openMenu(page);
-  const entry = page
-    .getByRole("navigation", { name: "メインメニュー" })
-    .getByRole("button", { name: label, exact: true });
-  await entry.focus();
-  await entry.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: heading, exact: true, level: 1 }),
-  ).toBeVisible();
-}
+import { openScreen } from "./navigate.mjs";
 
 async function createWorkspace(page, name) {
   await page.goto("/personal/members");
