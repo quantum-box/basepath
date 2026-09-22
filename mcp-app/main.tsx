@@ -36,6 +36,14 @@ import "../src/shared/planView.css";
 
 const APP_INFO = { name: "Basepath", version: "1.1.0" };
 
+type ChatGptRuntime = {
+  openExternal?: (input: { href: string }) => Promise<unknown> | unknown;
+};
+
+function chatGptRuntime(): ChatGptRuntime | undefined {
+  return (globalThis as typeof globalThis & { openai?: ChatGptRuntime }).openai;
+}
+
 function problemFor(error: HostError | Error) {
   if (error instanceof HostError) {
     if (error.code === "INSUFFICIENT_SCOPE") {
@@ -86,9 +94,12 @@ function isContextPayload(value: unknown): boolean {
 }
 
 type ProposalState = {
+  id: string;
+  workspaceId: string;
   title: string;
   status: string;
   approvalUrl: string | null;
+  autoApplyEligible: boolean;
   assumptions: string[];
   summary: ReturnType<typeof summarize>;
 };
@@ -116,9 +127,12 @@ function proposalFrom(value: unknown): ProposalState | null {
   const change = changeFromPayload(value);
   if (!change) return null;
   return {
+    id: change.id,
+    workspaceId: change.workspaceId,
     title: change.title,
     status: change.status,
     approvalUrl: change.approvalUrl,
+    autoApplyEligible: change.autoApplyEligible,
     assumptions: change.assumptions,
     summary: summarize(change),
   };
@@ -186,6 +200,10 @@ function BasepathApp() {
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
   const [proposal, setProposal] = useState<ProposalState | null>(null);
+  const [proposalActionBusy, setProposalActionBusy] = useState(false);
+  const [proposalActionNotice, setProposalActionNotice] = useState<
+    string | null
+  >(null);
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [problem, setProblem] = useState<ReturnType<typeof problemFor> | null>(
     null,
@@ -368,6 +386,63 @@ function BasepathApp() {
   );
   refreshRef.current = refresh;
 
+  const applyProposal = useCallback(async () => {
+    const current = proposal;
+    if (!current?.autoApplyEligible || proposalActionBusy) return;
+    const host = hostFor();
+    if (!host) return;
+
+    setProposalActionBusy(true);
+    setProposalActionNotice(null);
+    setProblem(null);
+    try {
+      const result = await host.call("pathbase_apply_changes", {
+        workspace_id: current.workspaceId,
+        preview_id: current.id,
+        idempotency_key: `mcp-app-auto-apply:${current.id}`,
+      });
+      if (!isFinishedChange(result)) {
+        setProposalActionNotice(
+          "反映できませんでした。この変更案は事前許可の範囲として反映されませんでした。Basepathで内容を確認してください。",
+        );
+        return;
+      }
+      pendingProposal.current = null;
+      pendingWorkspaceRefresh.current = undefined;
+      setProposal(null);
+      setStale(true);
+      await refresh(current.workspaceId);
+    } catch (caught) {
+      if (caught instanceof HostError) {
+        setProposalActionNotice(`反映できませんでした。${caught.message}`);
+      } else {
+        setProposalActionNotice(
+          `反映できませんでした。${caught instanceof Error ? caught.message : String(caught)}`,
+        );
+      }
+    } finally {
+      setProposalActionBusy(false);
+    }
+  }, [hostFor, proposal, proposalActionBusy, refresh]);
+
+  const openApproval = useCallback((href: string) => {
+    const openExternal = chatGptRuntime()?.openExternal;
+    if (!openExternal) return;
+    setProposalActionNotice(null);
+    try {
+      void Promise.resolve(openExternal({ href })).catch((caught) => {
+        setProposalActionNotice(
+          `承認画面を開けませんでした。${caught instanceof Error ? caught.message : String(caught)}`,
+        );
+      });
+    } catch (caught) {
+      setProposalActionNotice(
+        `承認画面を開けませんでした。${caught instanceof Error ? caught.message : String(caught)}`,
+      );
+    }
+  }, []);
+  const canOpenApproval = typeof chatGptRuntime()?.openExternal === "function";
+
   useEffect(() => {
     if (!isConnected || !app) return;
     const capabilities = app.getHostCapabilities();
@@ -399,7 +474,11 @@ function BasepathApp() {
         loading={loading}
         stale={stale}
         problem={problem ? { ...problem, retry: () => void refresh() } : null}
+        notice={proposalActionNotice}
         proposal={proposal}
+        onOpenApproval={canOpenApproval ? openApproval : undefined}
+        onApplyProposal={applyProposal}
+        proposalActionBusy={proposalActionBusy}
         onExpand={() => void refresh(workspaceRef.current, 200)}
         showHeader={false}
         showWorkspaceSwitcher={false}

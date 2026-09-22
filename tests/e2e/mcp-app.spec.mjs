@@ -213,6 +213,97 @@ test("shows a conversation proposal as an uncommitted goal tree", async ({
   await expect(app.getByText("個人の目標")).toBeVisible();
 });
 
+test("reflects only a proposal covered by a pre-authorized range", async ({
+  page,
+}) => {
+  const app = await openHarness(page);
+
+  await page.evaluate(() => {
+    window.__fixtures = {
+      ...(window.__fixtures ?? {}),
+      pathbase_apply_changes: {
+        changeset: {
+          id: "change-auto",
+          workspace_id: "personal",
+          status: "applied",
+          changes: [],
+        },
+        auto_applied: true,
+      },
+    };
+  });
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      {
+        id: "change-auto",
+        workspace_id: "personal",
+        title: "事前許可された追加",
+        status: "pending",
+        auto_apply_eligible: true,
+        assumptions: [],
+        changes: [
+          {
+            id: "draft-auto",
+            title: "平日の予約枠を増やす",
+            effect: "created",
+            before: null,
+            after: {
+              id: "draft-auto",
+              title: "平日の予約枠を増やす",
+              kind: "action",
+              state: "active",
+              fields: {},
+            },
+          },
+        ],
+        preview_graph: {
+          items: [
+            {
+              id: "draft-auto",
+              title: "平日の予約枠を増やす",
+              kind: "action",
+              state: "active",
+              fields: {},
+            },
+          ],
+          relations: [],
+          truncated: false,
+          limit: 200,
+        },
+      },
+      { workspace_id: "personal" },
+    );
+  });
+
+  await expect(
+    app.getByRole("button", {
+      name: "事前許可の範囲で反映",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    app.getByRole("link", { name: "Basepathで内容を確認" }),
+  ).toHaveCount(0);
+
+  await app
+    .getByRole("button", {
+      name: "事前許可の範囲で反映",
+      exact: true,
+    })
+    .click();
+
+  await expect(app.getByText("未反映")).toBeHidden();
+  const requests = await page.evaluate(() => window.__requests);
+  expect(requests).toContainEqual({
+    name: "pathbase_apply_changes",
+    arguments: {
+      workspace_id: "personal",
+      preview_id: "change-auto",
+      idempotency_key: "mcp-app-auto-apply:change-auto",
+    },
+  });
+});
+
 test("refreshes context when an explicit workspace is not cached", async ({
   page,
 }) => {

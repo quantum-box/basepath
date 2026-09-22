@@ -500,6 +500,41 @@
 .plan-proposal-link:focus-visible {
   text-decoration: underline;
 }
+.plan-proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.plan-proposal-button {
+  border: 1px solid var(--plan-accent);
+  border-radius: 999px;
+  padding: 7px 11px;
+  background: var(--plan-accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.plan-proposal-button.secondary {
+  background: transparent;
+  color: var(--plan-accent);
+}
+.plan-proposal-button:hover:not(:disabled),
+.plan-proposal-button:focus-visible {
+  filter: brightness(0.94);
+}
+.plan-proposal-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.plan-proposal-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--plan-muted);
+  font-size: 11px;
+}
 .plan-action-title {
   flex: 1 1 10ch;
   min-width: 0;

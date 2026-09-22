@@ -16,9 +16,11 @@ different mechanism on purpose.
 | May this actor touch this workspace? | The existing workspace membership check, re-read on every operation | `api/src/storage.rs` |
 
 A granted scope is still not an approved change. Everything an MCP client
-writes is a proposal; a person reviews the specific changeset in Basepath and
-approves it there. `pathbase.apply` only allows applying a changeset that was
-already approved, by the person who approved it.
+writes is a proposal; normally a person reviews the specific changeset in
+Basepath and approves it there. A person may instead set a bounded auto-apply
+range in Basepath in advance; `pathbase.apply` then allows a matching pending
+changeset only after the person explicitly asks the conversation to reflect it.
+The server re-checks that range on the apply request.
 
 ## Connecting
 
@@ -64,7 +66,7 @@ client, which was always its own state to hold.
 | A tool outside the granted scopes | `403 INSUFFICIENT_SCOPE` | Scope is checked before the tool's arguments are even validated, so an unauthorized caller learns nothing about the tool. |
 | A disconnected client reusing a still-valid token | `403 CONNECTION_REVOKED` | The delegation is read from the shared database on every request, not cached in a process. |
 | Naming someone else's workspace in the arguments | `404` | Workspace membership is re-checked per operation; arguments never confer access. |
-| Applying a changeset the person did not approve | `403 APPROVAL_REQUIRED` | Unchanged business rule: an agent's own claim of approval is not approval. |
+| Applying a changeset the person did not approve or pre-authorize by range | `403 APPROVAL_REQUIRED` | Unchanged business rule: an agent's own claim of approval is not approval. |
 | Asking Basepath to manage its own delegation | `404` | The connection routes refuse an agent actor outright. |
 | Passing a flag that says "approved" | ignored | Approval is a stored, versioned record tied to the changeset's digest and the approving person. |
 

@@ -195,9 +195,12 @@ export type ActionRequest = {
 };
 
 export type PlanProposal = {
+  id: string;
+  workspaceId: string;
   title: string;
   status: string;
   approvalUrl: string | null;
+  autoApplyEligible: boolean;
   assumptions: string[];
   summary: {
     created: number;
@@ -342,6 +345,12 @@ export type PlanViewProps = {
   notice?: string | null;
   /** A conversation proposal rendered as a clearly uncommitted tree. */
   proposal?: PlanProposal | null;
+  /** Opens the Basepath approval screen through the host when available. */
+  onOpenApproval?: (url: string) => void;
+  /** Reflects a proposal covered by a Basepath-authored auto-apply range. */
+  onApplyProposal?: () => void;
+  /** Disables the range-backed action while the host call is in flight. */
+  proposalActionBusy?: boolean;
   onExpand?: () => void;
   /** MCP Apps uses the tree as its only content and hides the other panels. */
   showHeader?: boolean;
@@ -367,6 +376,9 @@ export function PlanViewPanel({
   busyAction,
   notice,
   proposal,
+  onOpenApproval,
+  onApplyProposal,
+  proposalActionBusy = false,
   onExpand,
   showHeader = true,
   showWorkspaceSwitcher = true,
@@ -385,6 +397,10 @@ export function PlanViewPanel({
       ? findNode(view.nodes, tree.selected)
       : null;
   }, [showDetails, view.nodes, tree.selected]);
+  const canApplyProposal = Boolean(
+    proposal?.autoApplyEligible && onApplyProposal,
+  );
+  const hasProposalActions = Boolean(canApplyProposal || proposal?.approvalUrl);
 
   if (problem) {
     return (
@@ -502,15 +518,49 @@ export function PlanViewPanel({
               </ul>
             </details>
           )}
-          {proposal.approvalUrl && (
-            <a
-              className="plan-proposal-link"
-              href={proposal.approvalUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Basepathで内容を確認・承認
-            </a>
+          {hasProposalActions && (
+            <div className="plan-proposal-actions">
+              {canApplyProposal && (
+                <>
+                  <button
+                    type="button"
+                    className="plan-proposal-button"
+                    disabled={proposalActionBusy}
+                    onClick={onApplyProposal}
+                  >
+                    {proposalActionBusy
+                      ? "事前許可の範囲で反映中…"
+                      : "事前許可の範囲で反映"}
+                  </button>
+                  <p className="plan-proposal-note">
+                    Basepathで事前に許可した範囲に入る案です。範囲の判定はサーバーが行います。
+                  </p>
+                </>
+              )}
+              {proposal.approvalUrl &&
+                (onOpenApproval ? (
+                  <button
+                    type="button"
+                    className="plan-proposal-button secondary"
+                    onClick={() => onOpenApproval(proposal.approvalUrl!)}
+                  >
+                    {proposal.autoApplyEligible
+                      ? "Basepathで内容を確認"
+                      : "Basepathで承認する"}
+                  </button>
+                ) : (
+                  <a
+                    className="plan-proposal-link"
+                    href={proposal.approvalUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {proposal.autoApplyEligible
+                      ? "Basepathで内容を確認"
+                      : "Basepathで内容を確認・承認"}
+                  </a>
+                ))}
+            </div>
           )}
         </section>
       )}

@@ -97,6 +97,7 @@ toolのannotationsは実際の副作用に合わせています。変更案はDE
 `ui://basepath/plan-v3.html` を開きます。更新前の `plan-v2.html` もlegacy aliasとして読み取れます。UIはツール入力・結果の `workspace_id` を使い、指定がない場合だけ個人を安定したフォールバックとして表示します。組織を指定した読取や `part_of` のツリー結果では、個人画面を残さず組織の目標ツリーへ切り替えます。目標ツリーは、コンパクトなリスト表示とReact Flow風のマップ表示を切り替えられます。
 
 変更案には引き続き`approval_url`（Basepathの絶対URL）と`where_to_approve`が付き、ChatGPTは構造化データとtextから差分と承認先を説明できます。認可はRust側で毎回行われ、表示や要約は権限の代替ではありません。
+Basepathで事前許可した範囲に入る変更案だけは、本人が会話で承認・反映を明示した場合にMCP Appsのボタンまたは`pathbase_apply_changes`から反映できます。サーバーは接続・ワークスペース・期限・全操作の範囲を毎回再確認します。
 
 discovery用に`/.well-known/oauth-protected-resource/...`（RFC 9728）と`/.well-known/oauth-authorization-server`（RFC 8414）を公開し、未認証時は`WWW-Authenticate: Bearer ... resource_metadata="..."`を返します。API GatewayがこのヘッダーをリネームするのでWorkerが元に戻します。脅威モデルと拒否する操作の一覧は[docs/mcp-authorization.md](docs/mcp-authorization.md)にあります。ChatGPT Workからの接続・提案・承認後の再読取・事前許可範囲の自動適用は2026-09-20に確認済みです。MCP Appsの目標ツリー表示はUI更新後の実host再確認が必要です。
 
