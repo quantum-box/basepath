@@ -323,7 +323,7 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 - `PATCH /v1/settings`：compact、notifications、timezoneをすべて指定。タイムゾーンはIANA識別子です。
 - `POST /v1/workspaces/{w}/exports`：空オブジェクト。schema_version=1のJSONを返します。
 - `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビューを再検証して追加します。同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。
-- `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。
+- `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。通常セッション、または`pathbase.read`を持つMCP接続の成功応答には、シミュレーション後の目標ツリーを`preview_graph`として含めます。形は`{items, relations, truncated, limit}`で、`items`と`relations`は操作をSAVEPOINT内で反映した状態、`truncated`と`limit`は通常のグラフ取得と同じ上限情報です。上限に達した場合も、提案で変更・作成された項目と、その`part_of`上位経路を優先して含め、残りを作成順で補います。`pathbase.propose`だけを持つMCP接続には既存の計画データを返さないため、このフィールドを含めません。このフィールドは会話中の可視化専用で、保存されたchangesetには含まれません。`GET /changesets`や`GET /changesets/{id}`で後から再取得できる値ではありません。
 - `POST …/changesets/{id}/approve`：`hash`（任意）。人のアプリ操作のみが承認できます。**承認がそのまま適用です。**同じトランザクションで操作を実行し、`status`は`applied`になります。承認だけして反映されていない状態は作られません。2段階に分かれているのはAIが適用する経路のためで、人に二度押させるためではありませんでした。
 - `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。承認時に適用されるようになる前に承認された案のための経路で、すでに適用済みのものには`already_applied: true`を返し、何も書きません。**本人が事前に決めた範囲に入る案は、個別の承認なしでもここで適用されます**（下記）。
 

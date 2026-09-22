@@ -28,6 +28,37 @@ test("renders one compact goal tree from the MCP tool result", async ({
   expect(calls).not.toContain("pathbase_get_week");
 });
 
+test("does not treat a today result as a replacement goal graph", async ({
+  page,
+}) => {
+  const app = await openHarness(page);
+
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      {
+        local_date: "2026-09-22",
+        items: [
+          {
+            item: {
+              id: "today-only",
+              title: "今日だけの行動",
+              kind: "action",
+              state: "active",
+              fields: {},
+            },
+            completion: null,
+          },
+        ],
+      },
+      { workspace_id: "personal" },
+    );
+  });
+
+  await expect(app.getByText("個人の目標")).toBeVisible();
+  await expect(app.getByText("個人の行動")).toBeVisible();
+  await expect(app.getByText("今日だけの行動")).toHaveCount(0);
+});
+
 test("switches between the nested list and a React Flow-style map", async ({
   page,
 }) => {
@@ -92,6 +123,94 @@ test("switches the visible tree when the tool names an organization workspace", 
   ).toBeVisible();
   await expect(app.getByText("償却前利益3億円")).toBeVisible();
   await expect(app.getByText("個人の目標")).toBeHidden();
+});
+
+test("shows a conversation proposal as an uncommitted goal tree", async ({
+  page,
+}) => {
+  const app = await openHarness(page);
+
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      {
+        id: "change-1",
+        workspace_id: "personal",
+        title: "会話からの戦略案",
+        status: "pending",
+        approval_url: "https://basepath.example/changes/personal/change-1",
+        assumptions: ["まず既存顧客から着手する"],
+        changes: [
+          {
+            id: "draft-goal",
+            title: "既存顧客の継続率を上げる",
+            effect: "created",
+            before: null,
+            after: {
+              id: "draft-goal",
+              title: "既存顧客の継続率を上げる",
+              kind: "outcome",
+              state: "active",
+              fields: {},
+            },
+          },
+        ],
+        preview_graph: {
+          items: [
+            {
+              id: "draft-goal",
+              title: "既存顧客の継続率を上げる",
+              kind: "outcome",
+              state: "active",
+              fields: {},
+            },
+          ],
+          relations: [],
+          truncated: false,
+          limit: 200,
+        },
+      },
+      { workspace_id: "personal" },
+    );
+  });
+
+  await expect(
+    app.getByRole("region", { name: "会話からの変更案" }),
+  ).toBeVisible();
+  await expect(app.getByText("会話からの戦略案")).toBeVisible();
+  await expect(app.getByText("既存顧客の継続率を上げる")).toBeVisible();
+  await expect(app.getByText("未反映")).toBeVisible();
+  await expect(
+    app.getByRole("link", { name: "Basepathで内容を確認・承認" }),
+  ).toHaveAttribute(
+    "href",
+    "https://basepath.example/changes/personal/change-1",
+  );
+
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      { local_date: "2026-09-22", items: [] },
+      { workspace_id: "personal" },
+    );
+  });
+  await expect(app.getByText("未反映")).toBeVisible();
+  await expect(app.getByText("既存顧客の継続率を上げる")).toBeVisible();
+
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      {
+        changeset: {
+          id: "change-1",
+          workspace_id: "personal",
+          status: "applied",
+          changes: [],
+        },
+        already_applied: true,
+      },
+      { workspace_id: "personal" },
+    );
+  });
+  await expect(app.getByText("未反映")).toBeHidden();
+  await expect(app.getByText("個人の目標")).toBeVisible();
 });
 
 test("refreshes context when an explicit workspace is not cached", async ({
@@ -192,9 +311,7 @@ test("refreshes context when an explicit workspace is not cached", async ({
   await expect(
     app.getByText("権限付与後の部分ツリー", { exact: true }),
   ).toBeVisible();
-  await expect(
-    app.getByText("権限付与後の部分ツリーの下位"),
-  ).toBeVisible();
+  await expect(app.getByText("権限付与後の部分ツリーの下位")).toBeVisible();
   await expect(app.getByText("再取得された全体ツリー")).toBeHidden();
   await expect(app.getByText("個人の目標")).toBeHidden();
 });

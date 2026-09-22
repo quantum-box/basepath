@@ -23,6 +23,11 @@ import {
   workspaceIdFrom,
   type PlanView,
 } from "../src/shared/viewModel";
+import {
+  changeSetFrom,
+  summarize,
+  type ChangeSet,
+} from "../src/shared/changeView";
 import { PlanViewPanel } from "../src/shared/PlanView";
 import { useTreeState } from "../src/shared/useTreeState";
 import { PlanFlow } from "./PlanFlow";
@@ -65,6 +70,10 @@ function problemFor(error: HostError | Error) {
 function isGraphPayload(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const source = value as Record<string, unknown>;
+  // Today/week results also have an `items` array, but each entry is an
+  // action wrapper rather than a plan node. A graph always carries either
+  // its relations or the focused `nodes` shape, including an empty relation
+  // list for a one-node preview.
   return Array.isArray(source.relations) || Array.isArray(source.nodes);
 }
 
@@ -76,6 +85,57 @@ function isContextPayload(value: unknown): boolean {
   );
 }
 
+type ProposalState = {
+  title: string;
+  status: string;
+  approvalUrl: string | null;
+  assumptions: string[];
+  summary: ReturnType<typeof summarize>;
+};
+
+type PendingProposal = {
+  proposal: ProposalState;
+  payload: unknown;
+  workspaceId?: string;
+};
+
+function changeFromPayload(value: unknown): ChangeSet | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  return changeSetFrom(value) ?? changeSetFrom(source.changeset);
+}
+
+function previewGraphFrom(value: unknown): unknown | null {
+  if (!value || typeof value !== "object") return null;
+  const graph = (value as Record<string, unknown>).preview_graph;
+  return isGraphPayload(graph) ? graph : null;
+}
+
+function proposalFrom(value: unknown): ProposalState | null {
+  if (!previewGraphFrom(value)) return null;
+  const change = changeFromPayload(value);
+  if (!change) return null;
+  return {
+    title: change.title,
+    status: change.status,
+    approvalUrl: change.approvalUrl,
+    assumptions: change.assumptions,
+    summary: summarize(change),
+  };
+}
+
+function isFinishedChange(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const source = value as Record<string, unknown>;
+  const change = changeFromPayload(value);
+  return (
+    source.already_applied === true ||
+    source.auto_applied === true ||
+    change?.status === "applied" ||
+    change?.status === "rejected"
+  );
+}
+
 function mergeToolPayload(
   current: PlanView,
   payload: unknown,
@@ -84,13 +144,22 @@ function mergeToolPayload(
   const context = isContextPayload(payload)
     ? buildPlanView({ context: payload, workspaceId })
     : null;
-  const graph = isGraphPayload(payload)
-    ? buildPlanView({ graph: payload, workspaceId })
+  const graphPayload =
+    previewGraphFrom(payload) ?? (isGraphPayload(payload) ? payload : null);
+  const graph = graphPayload
+    ? buildPlanView({ graph: graphPayload, workspaceId })
     : null;
   return {
     ...current,
     workspaces: context?.workspaces ?? current.workspaces,
-    workspace: context?.workspace ?? current.workspace,
+    workspace:
+      context?.workspace ??
+      (workspaceId
+        ? (current.workspaces.find(
+            (candidate) => candidate.id === workspaceId,
+          ) ?? null)
+        : null) ??
+      current.workspace,
     nodes: graph?.nodes ?? current.nodes,
     truncated: graph?.truncated ?? current.truncated,
     limit: graph?.limit || current.limit,
@@ -116,6 +185,7 @@ function BasepathApp() {
   const [view, setView] = useState<PlanView>(emptyPlanView);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
+  const [proposal, setProposal] = useState<ProposalState | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const [problem, setProblem] = useState<ReturnType<typeof problemFor> | null>(
     null,
@@ -124,13 +194,10 @@ function BasepathApp() {
   const viewRef = useRef(view);
   const generation = useRef(0);
   const refreshRef = useRef<
-    (
-      workspaceId?: string,
-      limit?: number,
-      preservedGraph?: unknown,
-    ) => void
+    (workspaceId?: string, limit?: number, preservedGraph?: unknown) => void
   >(() => undefined);
   const pendingWorkspaceRefresh = useRef<string | undefined>(undefined);
+  const pendingProposal = useRef<PendingProposal | null>(null);
   const tree = useTreeState(view.workspace?.id ?? "");
 
   useEffect(() => {
@@ -163,6 +230,46 @@ function BasepathApp() {
       created.ontoolresult = (params) => {
         try {
           const payload = structuredResult(params);
+          const nextProposal = proposalFrom(payload);
+          if (nextProposal) {
+            pendingWorkspaceRefresh.current = undefined;
+            const workspaceId =
+              workspaceIdFrom(payload) ?? workspaceRef.current;
+            if (!viewRef.current.workspace) {
+              pendingProposal.current = {
+                proposal: nextProposal,
+                payload,
+                workspaceId,
+              };
+              setLoading(true);
+              setStale(true);
+              void refreshRef.current(workspaceId);
+              return;
+            }
+            generation.current += 1;
+            pendingProposal.current = null;
+            const next = mergeToolPayload(
+              viewRef.current,
+              payload,
+              workspaceId,
+            );
+            viewRef.current = next;
+            setView(next);
+            setProposal(nextProposal);
+            setLoading(false);
+            setProblem(null);
+            setStale(false);
+            return;
+          }
+          if (isFinishedChange(payload)) {
+            pendingWorkspaceRefresh.current = undefined;
+            pendingProposal.current = null;
+            setProposal(null);
+            setStale(true);
+            setLoading(true);
+            void refreshRef.current(workspaceIdFrom(payload));
+            return;
+          }
           const refreshWorkspace = pendingWorkspaceRefresh.current;
           if (refreshWorkspace && !isGraphPayload(payload)) {
             pendingWorkspaceRefresh.current = undefined;
@@ -191,6 +298,10 @@ function BasepathApp() {
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
           viewRef.current = next;
           setView(next);
+          // Context, Today, and Week results can arrive after a proposal was
+          // rendered. They do not replace the saved graph, so keep the draft
+          // marker until a committed graph or finished change arrives.
+          if (isGraphPayload(payload)) setProposal(null);
           setLoading(false);
           setProblem(null);
           setStale(false);
@@ -212,11 +323,7 @@ function BasepathApp() {
   }, [app]);
 
   const refresh = useCallback(
-    async (
-      workspaceId?: string,
-      limit?: number,
-      preservedGraph?: unknown,
-    ) => {
+    async (workspaceId?: string, limit?: number, preservedGraph?: unknown) => {
       const host = hostFor();
       if (!host) return;
       const currentGeneration = ++generation.current;
@@ -236,9 +343,22 @@ function BasepathApp() {
       }
       if (result.view.workspace)
         workspaceRef.current = result.view.workspace.id;
-      const next = preservedGraph
-        ? mergeToolPayload(result.view, preservedGraph, workspaceId)
-        : result.view;
+      const pending = pendingProposal.current;
+      let next: PlanView;
+      if (pending) {
+        pendingProposal.current = null;
+        next = mergeToolPayload(
+          result.view,
+          pending.payload,
+          pending.workspaceId,
+        );
+        setProposal(pending.proposal);
+      } else {
+        next = preservedGraph
+          ? mergeToolPayload(result.view, preservedGraph, workspaceId)
+          : result.view;
+        setProposal(null);
+      }
       viewRef.current = next;
       setView(next);
       setLoading(false);
@@ -279,6 +399,7 @@ function BasepathApp() {
         loading={loading}
         stale={stale}
         problem={problem ? { ...problem, retry: () => void refresh() } : null}
+        proposal={proposal}
         onExpand={() => void refresh(workspaceRef.current, 200)}
         showHeader={false}
         showWorkspaceSwitcher={false}

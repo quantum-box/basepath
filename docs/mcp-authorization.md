@@ -107,7 +107,10 @@ nothing, because there is nothing in a process worth keeping.
 
 ## MCP Apps plan-tree contract
 
-The MCP server publishes one reusable resource, `ui://basepath/plan-v2.html`.
+The MCP server publishes one reusable resource, `ui://basepath/plan-v3.html`.
+The previous `ui://basepath/plan-v2.html` URI remains readable as a legacy
+alias, but new tool metadata advertises v3 so hosts do not reuse a cached
+widget that predates conversation proposals.
 Plan-reading tools carry `_meta.ui.resourceUri` and the ChatGPT compatibility
 alias `openai/outputTemplate`; the widget renders the selected workspace's
 goal tree from the tool result. It does not publish separate personal and
@@ -189,7 +192,9 @@ limits, open-redirect refusal, PKCE binding, code replay, refresh rotation,
 per-resource audience, and revocation — and
 `tests/e2e/oauth-consent.spec.mjs` drives the consent screen in a browser.
 
-**Not yet verified against a real host.** Connecting ChatGPT or Claude to this
-endpoint is PLT-4823 and PLT-4824. Until those are done, treat "the contract is
-implemented and tested"
-and "a host can connect" as different claims.
+ChatGPT Work (GPT-5.6 Sol, Basepath plugin 1.0.0) connected to the production
+endpoint on 2026-09-20 and completed the documented read/propose/approve flow.
+The MCP Apps tree presentation still needs a fresh real-host check after the
+widget update in this change. Claude has not been verified. Treat
+"the contract is implemented and tested" and "the updated widget is rendered
+by every host" as different claims.

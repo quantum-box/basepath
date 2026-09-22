@@ -194,6 +194,19 @@ export type ActionRequest = {
   intent: "complete" | "skip";
 };
 
+export type PlanProposal = {
+  title: string;
+  status: string;
+  approvalUrl: string | null;
+  assumptions: string[];
+  summary: {
+    created: number;
+    updated: number;
+    deleted: number;
+    unknown: number;
+  };
+};
+
 function Actions({
   actions,
   localDate,
@@ -327,6 +340,8 @@ export type PlanViewProps = {
   busyAction?: string | null;
   /** Result of the last proposal, shown verbatim rather than assumed. */
   notice?: string | null;
+  /** A conversation proposal rendered as a clearly uncommitted tree. */
+  proposal?: PlanProposal | null;
   onExpand?: () => void;
   /** MCP Apps uses the tree as its only content and hides the other panels. */
   showHeader?: boolean;
@@ -351,6 +366,7 @@ export function PlanViewPanel({
   onPropose,
   busyAction,
   notice,
+  proposal,
   onExpand,
   showHeader = true,
   showWorkspaceSwitcher = true,
@@ -405,6 +421,7 @@ export function PlanViewPanel({
     <div
       className="plan-panel"
       data-stale={stale ? "true" : undefined}
+      data-proposal={proposal ? "true" : undefined}
       data-workspace-scope={view.workspace.scope || undefined}
     >
       {showHeader && (
@@ -448,6 +465,54 @@ export function PlanViewPanel({
         <p className="plan-notice" role="status">
           {notice}
         </p>
+      )}
+      {proposal && (
+        <section className="plan-proposal" aria-label="会話からの変更案">
+          <div className="plan-proposal-heading">
+            <div>
+              <span className="plan-eyebrow">CONVERSATION DRAFT</span>
+              <h3>{proposal.title}</h3>
+            </div>
+            <span className="plan-proposal-status">未反映</span>
+          </div>
+          <p>
+            会話で整理した案を表示しています。まだBasepathの計画には反映されていません。
+          </p>
+          <ul className="plan-proposal-summary">
+            {proposal.summary.created > 0 && (
+              <li>追加 {proposal.summary.created}件</li>
+            )}
+            {proposal.summary.updated > 0 && (
+              <li>更新 {proposal.summary.updated}件</li>
+            )}
+            {proposal.summary.deleted > 0 && (
+              <li>削除 {proposal.summary.deleted}件</li>
+            )}
+            {proposal.summary.unknown > 0 && (
+              <li>確認が必要 {proposal.summary.unknown}件</li>
+            )}
+          </ul>
+          {proposal.assumptions.length > 0 && (
+            <details>
+              <summary>この案の前提 {proposal.assumptions.length}件</summary>
+              <ul>
+                {proposal.assumptions.map((assumption) => (
+                  <li key={assumption}>{assumption}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {proposal.approvalUrl && (
+            <a
+              className="plan-proposal-link"
+              href={proposal.approvalUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Basepathで内容を確認・承認
+            </a>
+          )}
+        </section>
       )}
       <section
         className="plan-tree-section"

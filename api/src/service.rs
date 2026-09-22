@@ -36,6 +36,21 @@ pub struct Actor {
     /// whichever connection it came from.
     pub connection: Option<String>,
 }
+
+struct HandleOptions {
+    fingerprint_override: Option<String>,
+    include_preview_graph: bool,
+}
+
+impl HandleOptions {
+    fn normal() -> Self {
+        Self {
+            fingerprint_override: None,
+            include_preview_graph: true,
+        }
+    }
+}
+
 /// The tenant local preview acts in.
 ///
 /// Local preview never authenticates against Tachyon, so it has no tenant of
@@ -2055,8 +2070,37 @@ impl Service {
         body: Value,
         key: Option<&str>,
     ) -> Result<Value> {
-        self.handle_internal(actor, (method, path), query, body, key, None)
-            .await
+        self.handle_internal(
+            actor,
+            (method, path),
+            query,
+            body,
+            key,
+            HandleOptions::normal(),
+        )
+        .await
+    }
+    pub async fn handle_with_preview_graph(
+        &self,
+        actor: &Actor,
+        route: (&str, &str),
+        query: &HashMap<String, String>,
+        body: Value,
+        key: Option<&str>,
+        include_preview_graph: bool,
+    ) -> Result<Value> {
+        self.handle_internal(
+            actor,
+            route,
+            query,
+            body,
+            key,
+            HandleOptions {
+                fingerprint_override: None,
+                include_preview_graph,
+            },
+        )
+        .await
     }
     pub async fn handle_derived(
         &self,
@@ -2073,7 +2117,10 @@ impl Service {
             &HashMap::new(),
             operation.body,
             key,
-            Some(fingerprint),
+            HandleOptions {
+                fingerprint_override: Some(fingerprint),
+                include_preview_graph: true,
+            },
         )
         .await
     }
@@ -2084,9 +2131,10 @@ impl Service {
         query: &HashMap<String, String>,
         body: Value,
         key: Option<&str>,
-        fingerprint_override: Option<String>,
+        options: HandleOptions,
     ) -> Result<Value> {
         let (method, path) = route;
+        let include_preview_graph = options.include_preview_graph;
         let parts: Vec<_> = path.trim_matches('/').split('/').collect();
         let w = if parts.get(1) == Some(&"workspaces") {
             parts.get(2).copied().unwrap_or("")
@@ -2125,7 +2173,16 @@ impl Service {
                 tx = self.db.begin_read().await?;
                 authorize(&mut tx, actor, w, workspace_write).await?;
             }
-            return dispatch(&mut tx, actor, method, path, query, &body).await;
+            return dispatch_with_preview_graph(
+                &mut tx,
+                actor,
+                method,
+                path,
+                query,
+                &body,
+                include_preview_graph,
+            )
+            .await;
         }
         let key = key
             .filter(|k| !k.is_empty() && k.len() <= 200)
@@ -2148,7 +2205,9 @@ impl Service {
                 "画面での承認が必要です",
             ));
         }
-        let fp = fingerprint_override.unwrap_or_else(|| fingerprint(method, path, &body));
+        let fp = options
+            .fingerprint_override
+            .unwrap_or_else(|| fingerprint(method, path, &body));
         let mut tx = self.db.begin_write().await?;
         // Serialize writers of this workspace before reading anything, so a
         // read-then-write sequence cannot interleave with another execution
@@ -2189,11 +2248,23 @@ impl Service {
                     "この再送キーは別の入力で使用されています",
                 ));
             }
-            let response: Value = serde_json::from_str(&row.text(1)?)?;
+            let mut response: Value = serde_json::from_str(&row.text(1)?)?;
             crate::collaboration::authorize_replay(&mut tx, method, &parts, &response).await?;
+            if !include_preview_graph {
+                strip_preview_graph(&mut response);
+            }
             return Ok(response);
         }
-        let result = dispatch(&mut tx, actor, method, path, query, &body).await?;
+        let result = dispatch_with_preview_graph(
+            &mut tx,
+            actor,
+            method,
+            path,
+            query,
+            &body,
+            include_preview_graph,
+        )
+        .await?;
         tx.execute(
             "INSERT INTO idempotency(actor,workspace_id,`key`,fingerprint,response,created_at) \
              VALUES(?,?,?,?,?,?)",
@@ -2233,7 +2304,27 @@ pub fn dispatch<'a>(
     query: &'a HashMap<String, String>,
     body: &'a Value,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
-    Box::pin(dispatch_inner(tx, actor, method, path, query, body))
+    dispatch_with_preview_graph(tx, actor, method, path, query, body, true)
+}
+
+pub fn dispatch_with_preview_graph<'a>(
+    tx: &'a mut Tx,
+    actor: &'a Actor,
+    method: &'a str,
+    path: &'a str,
+    query: &'a HashMap<String, String>,
+    body: &'a Value,
+    include_preview_graph: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
+    Box::pin(dispatch_inner(
+        tx,
+        actor,
+        method,
+        path,
+        query,
+        body,
+        include_preview_graph,
+    ))
 }
 
 async fn dispatch_inner(
@@ -2243,6 +2334,7 @@ async fn dispatch_inner(
     path: &str,
     query: &HashMap<String, String>,
     body: &Value,
+    include_preview_graph: bool,
 ) -> Result<Value> {
     let p: Vec<_> = path.trim_matches('/').split('/').collect();
     if crate::collaboration::routes(method, &p) {
@@ -2546,22 +2638,7 @@ async fn dispatch_inner(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(200)
                 .clamp(1, 200);
-            let items: Vec<Item> = list(tx, w, "items").await?;
-            let relations: Vec<Relation> = list(tx, w, "relations").await?;
-            let items: Vec<_> = items
-                .into_iter()
-                .filter(|i| i.archived_at.is_none())
-                .collect();
-            let total = items.len();
-            let items: Vec<_> = items.into_iter().take(limit).collect();
-            let ids: HashSet<_> = items.iter().map(|i| i.id.as_str()).collect();
-            let edges: Vec<_> = relations
-                .into_iter()
-                .filter(|r| {
-                    ids.contains(r.source_id.as_str()) && ids.contains(r.target_id.as_str())
-                })
-                .collect();
-            Ok(json!({"items":items,"relations":edges,"truncated":total>limit,"limit":limit}))
+            graph_snapshot(tx, w, limit).await
         }
         ("GET", "calendar", "", "") => {
             let start = query
@@ -3866,7 +3943,9 @@ async fn dispatch_inner(
         }
         ("POST", "templates", id, "apply") => apply_template(tx, actor, w, id, body).await,
         ("POST", "onboarding", "complete", "") => complete_onboarding(tx, actor, w, body).await,
-        ("POST", "changesets", "preview", "") => preview(tx, actor, w, body).await,
+        ("POST", "changesets", "preview", "") => {
+            preview(tx, actor, w, body, include_preview_graph).await
+        }
         // Approval is a person's act, and only a person's.
         //
         // An MCP client's call — whether the model made it or a button in the
@@ -4166,7 +4245,146 @@ async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
     }
     Ok(format!("{:x}", Sha256::digest(parts)))
 }
-async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value> {
+
+/// Returns the graph as it exists in the current transaction.
+///
+/// The transaction may be inside the preview savepoint, so callers can use
+/// this to show a proposed tree without committing it. Keeping the snapshot
+/// builder shared with the normal graph route makes the preview and the
+/// committed view use the same archive, limit, and relation rules.
+async fn graph_snapshot(tx: &mut Tx, w: &str, requested_limit: usize) -> Result<Value> {
+    graph_snapshot_with_priority(tx, w, requested_limit, &[]).await
+}
+
+/// Returns a graph while keeping nodes touched by a proposal visible.
+///
+/// The normal graph is ordered by creation sequence. That is a useful stable
+/// slice for a reader, but it would hide a new item once a workspace already
+/// has `limit` active items: the simulated create is appended after them.
+/// Preview callers therefore supply the changed node ids first; each node's
+/// `part_of` ancestors are retained next, and the remaining space is filled
+/// with the normal creation-order slice.
+async fn graph_snapshot_with_priority(
+    tx: &mut Tx,
+    w: &str,
+    requested_limit: usize,
+    priority_ids: &[String],
+) -> Result<Value> {
+    let limit = requested_limit.clamp(1, 200);
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let active: Vec<_> = items
+        .into_iter()
+        .filter(|item| item.archived_at.is_none())
+        .collect();
+    let total = active.len();
+    let active_ids: HashSet<&str> = active.iter().map(|item| item.id.as_str()).collect();
+    let mut ordered_priority = Vec::new();
+    let mut selected_ids = HashSet::new();
+    for priority in priority_ids {
+        let mut current = priority.as_str();
+        let mut visited = HashSet::new();
+        loop {
+            if active_ids.contains(current) && selected_ids.insert(current.to_owned()) {
+                ordered_priority.push(current.to_owned());
+            }
+            if !visited.insert(current.to_owned()) {
+                break;
+            }
+            let Some(parent) = relations.iter().find(|relation| {
+                relation.relation_type == "part_of" && relation.source_id == current
+            }) else {
+                break;
+            };
+            current = parent.target_id.as_str();
+        }
+    }
+    let mut selected = Vec::with_capacity(limit.min(total));
+    for id in ordered_priority {
+        if selected.len() == limit {
+            break;
+        }
+        if let Some(item) = active.iter().find(|item| item.id == id) {
+            selected.push(item.clone());
+        }
+    }
+    for item in &active {
+        if selected.len() == limit {
+            break;
+        }
+        if selected_ids.insert(item.id.clone()) {
+            selected.push(item.clone());
+        }
+    }
+    let items = selected;
+    let ids: HashSet<_> = items.iter().map(|item| item.id.as_str()).collect();
+    let relations: Vec<_> = relations
+        .into_iter()
+        .filter(|relation| {
+            ids.contains(relation.source_id.as_str()) && ids.contains(relation.target_id.as_str())
+        })
+        .collect();
+    Ok(json!({
+        "items": items,
+        "relations": relations,
+        "truncated": total > limit,
+        "limit": limit,
+    }))
+}
+
+fn graph_priority_ids(ops: &[Operation], changes: &[Value]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for op in ops {
+        let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
+        if parts
+            .get(3)
+            .is_some_and(|collection| matches!(*collection, "items" | "actions"))
+        {
+            if let Some(id) = parts.get(4) {
+                add_graph_priority_str(&mut ids, id);
+            }
+        }
+        for key in ["item_id", "parent_id", "source_id", "target_id"] {
+            add_graph_priority(&mut ids, op.body.get(key));
+        }
+    }
+    for change in changes {
+        add_graph_priority(&mut ids, change.get("id"));
+        for field in ["before", "after"] {
+            let Some(snapshot) = change.get(field) else {
+                continue;
+            };
+            for key in ["id", "item_id", "source_id", "target_id"] {
+                add_graph_priority(&mut ids, snapshot.get(key));
+            }
+        }
+    }
+    ids
+}
+
+fn add_graph_priority(ids: &mut Vec<String>, value: Option<&Value>) {
+    let Some(id) = value.and_then(Value::as_str).filter(|id| !id.is_empty()) else {
+        return;
+    };
+    add_graph_priority_str(ids, id);
+}
+
+fn add_graph_priority_str(ids: &mut Vec<String>, id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    if !ids.iter().any(|existing| existing == id) {
+        ids.push(id.to_owned());
+    }
+}
+
+async fn preview(
+    tx: &mut Tx,
+    actor: &Actor,
+    w: &str,
+    b: &Value,
+    include_preview_graph: bool,
+) -> Result<Value> {
     only(b, &["operations", "title", "assumptions"])?;
     let ops: Vec<Operation> = serde_json::from_value(b["operations"].clone())?;
     if ops.is_empty() || ops.len() > 100 {
@@ -4263,6 +4481,15 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
             }
         }
     }
+    // Keep the simulated tree in the response, but not in the persisted
+    // changeset. It lets an MCP App visualize the conversation's proposal
+    // immediately while keeping the committed plan untouched until approval.
+    let preview_graph = if include_preview_graph && validation.is_ok() {
+        let priority_ids = graph_priority_ids(&ops, &changes);
+        Some(graph_snapshot_with_priority(tx, w, 200, &priority_ids).await?)
+    } else {
+        None
+    };
     tx.rollback_to_savepoint("preview_validation").await?;
     validation?;
     // What the AI assumed, in its own words, kept next to the diff. A person
@@ -4287,7 +4514,16 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     let mut c = c;
     let rule = crate::auto_apply::in_force(tx, actor, w).await?;
     mark_auto_apply(&rule, &mut c);
+    if let Some(graph) = preview_graph {
+        c["preview_graph"] = graph;
+    }
     Ok(c)
+}
+
+fn strip_preview_graph(value: &mut Value) {
+    if let Value::Object(fields) = value {
+        fields.remove("preview_graph");
+    }
 }
 
 /// The newest revision recorded for the week containing `week_start`.

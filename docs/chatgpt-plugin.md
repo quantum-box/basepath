@@ -137,10 +137,14 @@ Publish** (workspace admin only).
 
 ## MCP Apps plan surface
 
-Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan-v2.html`,
+Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan-v3.html`,
 and plan-reading tools point to it through `_meta.ui.resourceUri` plus the
 ChatGPT compatibility alias `openai/outputTemplate`. Every `tools/call`
 response still carries the same information in two model-facing forms:
+
+The previous `ui://basepath/plan-v2.html` URI remains readable as a legacy alias,
+but new tool metadata advertises v3 so hosts do not reuse a cached widget that
+predates conversation proposals.
 
 - `structuredContent` contains stable identifiers, workspace scope, graph
   relations, truncation markers, and change-set fields for reliable follow-up
@@ -155,6 +159,16 @@ organization tree when an organization `workspace_id` or `part_of` breakdown
 arrives. Folding and the selected view mode are local UI state; the server
 remains authoritative and the MCP surface does not show separate action or
 detail panels.
+
+Proposal tools use the same resource as the committed tree. A preview response
+from a normal session or a read-scoped MCP connection also carries a
+transaction-only `preview_graph`, so the widget can show the strategy that was
+just discussed with dashed nodes and an explicit `未反映` label. A
+proposal-only MCP connection does not receive this field, because proposing
+does not grant read access to the existing plan. The graph is not written into
+the plan and is not stored in the changeset. An approval or rejection result
+refreshes the committed tree, so the conversation surface does not leave the
+person looking at a stale proposal.
 
 Change sets still carry an absolute `approval_url` and `where_to_approve`, so
 ChatGPT can explain the diff and direct the person to Basepath. A conversation

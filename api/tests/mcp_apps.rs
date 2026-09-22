@@ -2,8 +2,10 @@
 //!
 //! Basepath returns structured data and a text representation from every tool,
 //! and the plan-reading tools point at one reusable embedded tree surface.
+use pathbase_api::service::{Actor, Service};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -96,11 +98,11 @@ async fn tools_and_resources_publish_one_tree_surface() {
     assert!(!listed.is_empty());
     let mut ui_tools = 0;
     for tool in listed {
-        if tool["_meta"]["ui"]["resourceUri"] == "ui://basepath/plan-v2.html" {
+        if tool["_meta"]["ui"]["resourceUri"] == "ui://basepath/plan-v3.html" {
             ui_tools += 1;
             assert_eq!(
                 tool["_meta"]["openai/outputTemplate"],
-                "ui://basepath/plan-v2.html"
+                "ui://basepath/plan-v3.html"
             );
         }
         assert!(
@@ -116,12 +118,27 @@ async fn tools_and_resources_publish_one_tree_surface() {
         ui_tools >= 3,
         "plan-reading tools must open the tree: {ui_tools}"
     );
+    for name in [
+        "pathbase_preview_changes",
+        "pathbase_propose_plan",
+        "pathbase_apply_changes",
+        "pathbase_reject_change",
+    ] {
+        let tool = listed
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("tool missing: {name}"));
+        assert_eq!(
+            tool["_meta"]["ui"]["resourceUri"], "ui://basepath/plan-v3.html",
+            "proposal lifecycle should refresh the same tree surface: {name}"
+        );
+    }
 
     let resources = client.request(3, "resources/list", json!({}));
     let listed_resources = resources["resources"].as_array().unwrap();
     let ui = listed_resources
         .iter()
-        .find(|resource| resource["uri"] == "ui://basepath/plan-v2.html")
+        .find(|resource| resource["uri"] == "ui://basepath/plan-v3.html")
         .unwrap_or_else(|| panic!("tree resource missing: {listed_resources:?}"));
     assert_eq!(ui["mimeType"], "text/html;profile=mcp-app");
     assert!(ui["_meta"]["ui"]["csp"].is_object());
@@ -135,7 +152,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
     let resource = client.request(
         4,
         "resources/read",
-        json!({"uri":"ui://basepath/plan-v2.html"}),
+        json!({"uri":"ui://basepath/plan-v3.html"}),
     );
     assert_eq!(
         resource["contents"][0]["mimeType"],
@@ -150,6 +167,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
     // Keep resource names from the short-lived split-surface release readable
     // without advertising separate personal and organization screens again.
     for uri in [
+        "ui://basepath/plan-v2.html",
         "ui://basepath/plan.html",
         "ui://basepath/personal/plan.html",
         "ui://basepath/organization/plan.html",
@@ -229,6 +247,14 @@ async fn every_change_set_carries_somewhere_to_go() {
         change["approval_url"],
         json!(format!("https://basepath.example/changes/personal/{id}"))
     );
+    let preview_graph = change["preview_graph"]
+        .as_object()
+        .unwrap_or_else(|| panic!("proposal must carry a preview graph: {proposed}"));
+    assert!(preview_graph["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["title"] == "朝の散歩"));
     let instruction = change["where_to_approve"].as_str().unwrap();
     assert!(instruction.contains("URL"), "{instruction}");
     assert!(instruction.contains("Basepath"), "{instruction}");
@@ -247,6 +273,9 @@ async fn every_change_set_carries_somewhere_to_go() {
         listed["structuredContent"]["items"][0]["approval_url"],
         change["approval_url"]
     );
+    assert!(listed["structuredContent"]["items"][0]
+        .get("preview_graph")
+        .is_none());
     let read = call(
         &mut client,
         12,
@@ -262,4 +291,74 @@ async fn every_change_set_carries_somewhere_to_go() {
         read["structuredContent"]["auto_apply_eligible"],
         json!(false)
     );
+}
+
+#[tokio::test]
+async fn preview_graph_keeps_proposed_items_inside_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("large-preview.sqlite3");
+    let service = Service::open(&db.to_string_lossy()).await.unwrap();
+    service.initialize(false).await.unwrap();
+    let actor = Actor::local();
+    let path = "/v1/workspaces/personal/items";
+    let parent = service
+        .handle(
+            &actor,
+            "POST",
+            path,
+            &HashMap::new(),
+            json!({"kind":"outcome","title":"Preview root"}),
+            Some("fixture-parent"),
+        )
+        .await
+        .unwrap();
+    for index in 0..199 {
+        service
+            .handle(
+                &actor,
+                "POST",
+                path,
+                &HashMap::new(),
+                json!({"kind":"action","title":format!("Existing {index}")}),
+                Some(&format!("fixture-{index}")),
+            )
+            .await
+            .unwrap();
+    }
+    drop(service);
+
+    let mut client = start(&db);
+    let proposed = client.request(
+        20,
+        "tools/call",
+        json!({"name":"pathbase_preview_changes","arguments":{
+            "workspace_id":"personal",
+            "title":"Large plan proposal",
+            "idempotency_key":"large-preview",
+            "operations":[{"method":"POST","path":path,"body":{
+                "kind":"action",
+                "title":"Proposed child",
+                "parent_id":parent["id"]
+            }}]
+        }}),
+    );
+    assert_eq!(proposed["isError"], false, "{proposed}");
+    let graph = &proposed["structuredContent"]["preview_graph"];
+    let items = graph["items"].as_array().unwrap();
+    assert_eq!(items.len(), 200);
+    let child = items
+        .iter()
+        .find(|item| item["title"] == "Proposed child")
+        .expect("the proposed item must stay visible in a truncated graph");
+    assert!(items.iter().any(|item| item["id"] == parent["id"]));
+    assert_eq!(graph["truncated"], json!(true));
+    assert!(graph["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|relation| {
+            relation["type"] == "part_of"
+                && relation["source_id"] == child["id"]
+                && relation["target_id"] == parent["id"]
+        }));
 }
