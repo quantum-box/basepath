@@ -62,6 +62,17 @@ function authorizeUrl(clientId, redirect, challenge, scope) {
 /** The host's callback, which only has to exist for the browser to land on. */
 const REDIRECT = "http://127.0.0.1:1425/e2e-oauth-callback";
 
+async function openSettings(page) {
+  const settings = page
+    .getByRole("navigation", { name: "ユーティリティ" })
+    .getByRole("button", { name: "設定", exact: true });
+  await settings.focus();
+  await settings.press("Enter");
+  const screen = page.locator(".settings-page");
+  await expect(screen).toBeVisible();
+  return screen;
+}
+
 test("the screen names the client and what it is asking for", async ({
   page,
   request,
@@ -234,15 +245,10 @@ test("a granted connection is listed in settings and can be disconnected there",
   await page.waitForURL((url) => url.pathname === "/e2e-oauth-callback");
 
   await page.goto("/");
-  const settings = page
-    .getByRole("navigation", { name: "ユーティリティ" })
-    .getByRole("button", { name: "設定", exact: true });
-  await settings.focus();
-  await settings.press("Enter");
+  const settingsPage = await openSettings(page);
   // Scoped to the connections list: the same panel now also lists this client
   // under the ranges below it, and that is a different question.
-  const dialog = page.getByRole("dialog");
-  const entry = dialog
+  const entry = settingsPage
     .locator(".mcp-connections > ul > li", { hasText: "E2E AI host" })
     .last();
   await expect(entry).toBeVisible();
@@ -281,13 +287,9 @@ test("a person can set, narrow and remove a range that skips per-change approval
   await page.waitForURL((url) => url.pathname === "/e2e-oauth-callback");
 
   await page.goto("/");
-  const settings = page
-    .getByRole("navigation", { name: "ユーティリティ" })
-    .getByRole("button", { name: "設定", exact: true });
-  await settings.focus();
-  await settings.press("Enter");
+  const settingsPage = await openSettings(page);
 
-  const ranges = page.getByRole("dialog").locator(".auto-apply");
+  const ranges = settingsPage.locator(".auto-apply");
   await expect(ranges).toBeVisible();
   // The edges are stated while the permission is being granted, not in a
   // document somewhere else.
@@ -356,13 +358,9 @@ test("a second workspace's range is visible and revocable, not hidden behind the
   await page.waitForURL((url) => url.pathname === "/e2e-oauth-callback");
 
   await page.goto("/");
-  const settings = page
-    .getByRole("navigation", { name: "ユーティリティ" })
-    .getByRole("button", { name: "設定", exact: true });
-  await settings.focus();
-  await settings.press("Enter");
+  const settingsPage = await openSettings(page);
 
-  const ranges = page.getByRole("dialog").locator(".auto-apply");
+  const ranges = settingsPage.locator(".auto-apply");
   const entry = ranges.locator("ul > li", { hasText: "E2E 二つの範囲" }).last();
   const picker = entry.getByLabel("ワークスペース");
   // The save control specifically: the granted ranges above it each carry a
