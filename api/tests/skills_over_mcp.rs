@@ -243,7 +243,7 @@ async fn a_host_without_the_extension_can_still_read_the_instructions() {
         "{uris:?}"
     );
     assert!(
-        uris.contains(&"ui://basepath/plan-v2.html"),
+        uris.contains(&"ui://basepath/plan-v3.html"),
         "the plan tree resource must be published: {uris:?}"
     );
 

@@ -96,11 +96,11 @@ async fn tools_and_resources_publish_one_tree_surface() {
     assert!(!listed.is_empty());
     let mut ui_tools = 0;
     for tool in listed {
-        if tool["_meta"]["ui"]["resourceUri"] == "ui://basepath/plan-v2.html" {
+        if tool["_meta"]["ui"]["resourceUri"] == "ui://basepath/plan-v3.html" {
             ui_tools += 1;
             assert_eq!(
                 tool["_meta"]["openai/outputTemplate"],
-                "ui://basepath/plan-v2.html"
+                "ui://basepath/plan-v3.html"
             );
         }
         assert!(
@@ -127,7 +127,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
             .find(|tool| tool["name"] == name)
             .unwrap_or_else(|| panic!("tool missing: {name}"));
         assert_eq!(
-            tool["_meta"]["ui"]["resourceUri"], "ui://basepath/plan-v2.html",
+            tool["_meta"]["ui"]["resourceUri"], "ui://basepath/plan-v3.html",
             "proposal lifecycle should refresh the same tree surface: {name}"
         );
     }
@@ -136,7 +136,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
     let listed_resources = resources["resources"].as_array().unwrap();
     let ui = listed_resources
         .iter()
-        .find(|resource| resource["uri"] == "ui://basepath/plan-v2.html")
+        .find(|resource| resource["uri"] == "ui://basepath/plan-v3.html")
         .unwrap_or_else(|| panic!("tree resource missing: {listed_resources:?}"));
     assert_eq!(ui["mimeType"], "text/html;profile=mcp-app");
     assert!(ui["_meta"]["ui"]["csp"].is_object());
@@ -150,7 +150,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
     let resource = client.request(
         4,
         "resources/read",
-        json!({"uri":"ui://basepath/plan-v2.html"}),
+        json!({"uri":"ui://basepath/plan-v3.html"}),
     );
     assert_eq!(
         resource["contents"][0]["mimeType"],
@@ -165,6 +165,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
     // Keep resource names from the short-lived split-surface release readable
     // without advertising separate personal and organization screens again.
     for uri in [
+        "ui://basepath/plan-v2.html",
         "ui://basepath/plan.html",
         "ui://basepath/personal/plan.html",
         "ui://basepath/organization/plan.html",

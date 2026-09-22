@@ -94,7 +94,7 @@ toolのannotationsは実際の副作用に合わせています。変更案はDE
 
 このMCPサーバーは**1つの埋め込みMCP Apps UI**を使います。`tools/call` は引き続き
 `structuredContent` と text を返し、目標を読むツールは共通の
-`ui://basepath/plan-v2.html` を開きます。UIはツール入力・結果の `workspace_id` を使い、指定がない場合だけ個人を安定したフォールバックとして表示します。組織を指定した読取や `part_of` のツリー結果では、個人画面を残さず組織の目標ツリーへ切り替えます。目標ツリーは、コンパクトなリスト表示とReact Flow風のマップ表示を切り替えられます。
+`ui://basepath/plan-v3.html` を開きます。更新前の `plan-v2.html` もlegacy aliasとして読み取れます。UIはツール入力・結果の `workspace_id` を使い、指定がない場合だけ個人を安定したフォールバックとして表示します。組織を指定した読取や `part_of` のツリー結果では、個人画面を残さず組織の目標ツリーへ切り替えます。目標ツリーは、コンパクトなリスト表示とReact Flow風のマップ表示を切り替えられます。
 
 変更案には引き続き`approval_url`（Basepathの絶対URL）と`where_to_approve`が付き、ChatGPTは構造化データとtextから差分と承認先を説明できます。認可はRust側で毎回行われ、表示や要約は権限の代替ではありません。
 

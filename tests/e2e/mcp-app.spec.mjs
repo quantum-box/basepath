@@ -28,6 +28,37 @@ test("renders one compact goal tree from the MCP tool result", async ({
   expect(calls).not.toContain("pathbase_get_week");
 });
 
+test("does not treat a today result as a replacement goal graph", async ({
+  page,
+}) => {
+  const app = await openHarness(page);
+
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      {
+        local_date: "2026-09-22",
+        items: [
+          {
+            item: {
+              id: "today-only",
+              title: "今日だけの行動",
+              kind: "action",
+              state: "active",
+              fields: {},
+            },
+            completion: null,
+          },
+        ],
+      },
+      { workspace_id: "personal" },
+    );
+  });
+
+  await expect(app.getByText("個人の目標")).toBeVisible();
+  await expect(app.getByText("個人の行動")).toBeVisible();
+  await expect(app.getByText("今日だけの行動")).toHaveCount(0);
+});
+
 test("switches between the nested list and a React Flow-style map", async ({
   page,
 }) => {

@@ -107,7 +107,10 @@ nothing, because there is nothing in a process worth keeping.
 
 ## MCP Apps plan-tree contract
 
-The MCP server publishes one reusable resource, `ui://basepath/plan-v2.html`.
+The MCP server publishes one reusable resource, `ui://basepath/plan-v3.html`.
+The previous `ui://basepath/plan-v2.html` URI remains readable as a legacy
+alias, but new tool metadata advertises v3 so hosts do not reuse a cached
+widget that predates conversation proposals.
 Plan-reading tools carry `_meta.ui.resourceUri` and the ChatGPT compatibility
 alias `openai/outputTemplate`; the widget renders the selected workspace's
 goal tree from the tool result. It does not publish separate personal and

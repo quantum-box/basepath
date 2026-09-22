@@ -70,11 +70,11 @@ function problemFor(error: HostError | Error) {
 function isGraphPayload(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const source = value as Record<string, unknown>;
-  return (
-    Array.isArray(source.items) ||
-    Array.isArray(source.relations) ||
-    Array.isArray(source.nodes)
-  );
+  // Today/week results also have an `items` array, but each entry is an
+  // action wrapper rather than a plan node. A graph always carries either
+  // its relations or the focused `nodes` shape, including an empty relation
+  // list for a one-node preview.
+  return Array.isArray(source.relations) || Array.isArray(source.nodes);
 }
 
 function isContextPayload(value: unknown): boolean {
