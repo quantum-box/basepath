@@ -80,6 +80,15 @@ test("the Lambda entrypoint stays a separate binary", async () => {
   assert.match(e2e, new RegExp(`target/debug/${API_BINARY}`));
 });
 
+test("the production Lambda uses the shared session store", async () => {
+  const source = await read("api/src/bin/lambda.rs");
+  assert.match(
+    source,
+    /TachyonAuth::for_runtime_from_env[\s\S]*?\.with_database\(service\.db\.clone\(\)\)/,
+    "the production auth client must be connected to the shared DB so sessions can refresh",
+  );
+});
+
 const binary = path.resolve(
   process.env.PATHBASE_SMOKE_API_BIN ||
     path.join(root, `api/target/debug/${API_BINARY}`),

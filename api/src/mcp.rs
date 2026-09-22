@@ -43,7 +43,6 @@ fn ui_resource_meta() -> Value {
         "openai/widgetDescription": "A compact goal tree for the selected Basepath workspace.",
     })
 }
-
 fn ui_resource(tool: &str) -> Option<&'static str> {
     match tool {
         "pathbase_get_context"
