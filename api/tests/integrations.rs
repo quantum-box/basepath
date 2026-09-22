@@ -29,6 +29,7 @@ struct MockState {
     expires: Arc<Mutex<i64>>,
     token_lifetime: Arc<Mutex<i64>>,
     cognito_token: Arc<Mutex<String>>,
+    refresh_token: Arc<Mutex<String>>,
 }
 async fn mock(
     State(s): State<MockState>,
@@ -52,7 +53,7 @@ async fn mock(
             // Renewal is the same endpoint with a different flow. A refresh
             // token this pool did not issue is refused, like the real one.
             if request["AuthFlow"]=="REFRESH_TOKEN_AUTH" {
-                if request["AuthParameters"]["REFRESH_TOKEN"]!="test-refresh-token" {
+                if request["AuthParameters"]["REFRESH_TOKEN"] != *s.refresh_token.lock().unwrap() {
                     return (StatusCode::BAD_REQUEST,Json(json!({"__type":"com.amazon.coral.service#NotAuthorizedException"}))).into_response();
                 }
                 let mut header=jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);header.kid=Some("test-key".into());
@@ -71,7 +72,7 @@ async fn mock(
             let key=jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("fixtures/oidc-test-key.pem")).unwrap();
             let access_token=jsonwebtoken::encode(&header,&claims,&key).unwrap();
             *s.cognito_token.lock().unwrap()=access_token.clone();
-            Json(json!({"AuthenticationResult":{"AccessToken":access_token,"ExpiresIn":*s.token_lifetime.lock().unwrap(),"TokenType":"Bearer","RefreshToken":"test-refresh-token"}})).into_response()
+            Json(json!({"AuthenticationResult":{"AccessToken":access_token,"ExpiresIn":*s.token_lifetime.lock().unwrap(),"TokenType":"Bearer","RefreshToken":s.refresh_token.lock().unwrap().clone()}})).into_response()
         },
         "/oauth2/login"=> {
             assert_eq!(method, Method::POST);
@@ -169,6 +170,7 @@ async fn upstream() -> (MockState, tokio::task::JoinHandle<()>) {
         expires: Arc::new(Mutex::new(chrono::Utc::now().timestamp() + 3600)),
         token_lifetime: Arc::new(Mutex::new(3600)),
         cognito_token: Default::default(),
+        refresh_token: Arc::new(Mutex::new("test-refresh-token".into())),
     };
     let router = Router::new().fallback(mock).with_state(s.clone());
     let handle = tokio::spawn(async {
@@ -1037,5 +1039,44 @@ async fn a_session_is_renewed_instead_of_ending_with_its_access_token() {
     assert_eq!(
         auth.session(&headers).await.err().map(|error| error.status),
         Some(401)
+    );
+}
+
+#[tokio::test]
+async fn a_database_session_can_store_a_large_refresh_token() {
+    let (s, _h) = upstream().await;
+    *s.refresh_token.lock().unwrap() = format!("refresh-token-{}", "x".repeat(5000));
+    let dir = tempfile::tempdir().unwrap();
+    let service = pathbase_api::service::Service::open(
+        &dir.path().join("large-refresh.sqlite3").to_string_lossy(),
+    )
+    .await
+    .unwrap();
+    let auth = TachyonAuth::new(AuthConfig {
+        issuer: s.base.clone(),
+        client_id: "pathbase-test".into(),
+        client_secret: None,
+        redirect_uri: "http://localhost:1420/api/auth/callback".into(),
+        public_url: "http://localhost:1420".into(),
+        tachyon_api_url: s.base.clone(),
+        cognito_client_id: Some("cognito-test-client".into()),
+        cognito_issuer: Some(format!("{}/pool", s.base)),
+    })
+    .await
+    .unwrap()
+    .with_database(service.db.clone());
+
+    let cookie = auth
+        .direct_login("test-user", "test-password")
+        .await
+        .unwrap();
+    assert!(cookie.contains("pathbase_session=s1."), "{cookie}");
+    assert!(cookie.len() < 3800, "the browser cookie must stay small");
+
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", cookie.split(';').next().unwrap().parse().unwrap());
+    assert_eq!(
+        auth.session(&headers).await.unwrap().identity.id,
+        "us_verified"
     );
 }

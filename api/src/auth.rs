@@ -508,7 +508,10 @@ impl TachyonAuth {
             .map_err(|_| unavailable())?;
         let mut sealed = nonce.to_vec();
         sealed.extend(ciphertext);
-        let encoded = URL_SAFE_NO_PAD.encode(sealed);
+        Ok(URL_SAFE_NO_PAD.encode(sealed))
+    }
+    fn seal_cookie_session(&self, session: &SessionEnvelope) -> Result<String> {
+        let encoded = self.seal_session(session)?;
         if encoded.len() > 3800 {
             return Err(ApiError::new(
                 503,
@@ -1012,7 +1015,7 @@ impl TachyonAuth {
             // A refresh token would have to ride in the cookie, and a cookie
             // that renews itself forever is the thing this avoids.
             envelope.refresh_token = None;
-            let value = self.seal_session(&envelope)?;
+            let value = self.seal_cookie_session(&envelope)?;
             return Ok(self.cookie_header("pathbase_session", &value, max_age));
         };
         let id = random();
@@ -1242,7 +1245,7 @@ impl TachyonAuth {
                 self.update_session(&id, &envelope).await?;
                 format!("{}{id}", Self::STORED_PREFIX)
             }
-            (None, _) => self.seal_session(&envelope)?,
+            (None, _) => self.seal_cookie_session(&envelope)?,
         };
         Ok((
             tenant,
