@@ -28,8 +28,6 @@ import {
   type Item,
   type RecordEntry,
 } from "./api";
-import { FieldIntegration } from "./FieldIntegration";
-import { McpConnections } from "./McpConnections";
 import { ChangeApproval, changeRouteFromPath } from "./ChangeApproval";
 import { OAuthConsent, isConsentPath } from "./OAuthConsent";
 import { WorkspaceMembers } from "./WorkspaceMembers";
@@ -40,6 +38,7 @@ import { WeeklyReviewScreen } from "./WeeklyReview";
 import { PlanningScreen } from "./PlanningScreen";
 import { AlignmentScreen } from "./AlignmentScreen";
 import { BreakdownScreen } from "./BreakdownScreen";
+import { SettingsScreen } from "./SettingsScreen";
 import type { BreakdownNode } from "./shared/breakdownView";
 import {
   contextLabel,
@@ -66,7 +65,6 @@ import {
   ItemEditor,
   MetricEditor,
   RelationsEditor,
-  StorageSettings,
   ItemList,
   Evaluation,
 } from "./Features";
@@ -86,7 +84,6 @@ type ModalState =
     }
   | { kind: "moveItem"; id: string; workspaceId: string; parentId: string | null }
   | { kind: "members" }
-  | { kind: "settings" }
   | { kind: "learnings" }
   | { kind: "activity" }
   | { kind: "editGoal" }
@@ -109,6 +106,7 @@ const navigation = [
   { label: "記憶", icon: "bulb" },
   { label: "テンプレート", icon: "stack" },
   { label: "メンバー", icon: "users" },
+  { label: "設定", icon: "settings" },
 ] as const;
 type NavigationLabel = (typeof navigation)[number]["label"];
 
@@ -126,6 +124,7 @@ const navigationRoutes: Record<NavigationLabel, string> = {
   記憶: "memory",
   テンプレート: "templates",
   メンバー: "members",
+  設定: "settings",
 };
 
 const navigationDescriptions: Record<NavigationLabel, string> = {
@@ -142,6 +141,7 @@ const navigationDescriptions: Record<NavigationLabel, string> = {
   記憶: "あなた自身の記憶。共有ワークスペースへは移動も同期もされません。",
   テンプレート: "目的に合う型を選んで、新しい目標をすぐに始められます。",
   メンバー: "一緒に取り組むメンバーと、チームの状況を確認します。",
+  設定: "表示・連携・バックアップなど、PathBaseの使い方を整えます。",
 };
 
 // Keep the everyday path visible and put the less frequent destinations behind
@@ -630,7 +630,9 @@ export function App() {
     primaryNavigationScreens[contextKind].includes(item.screen),
   );
   const secondaryNavItems = navItems.filter(
-    (item) => !primaryNavigationScreens[contextKind].includes(item.screen),
+    (item) =>
+      !primaryNavigationScreens[contextKind].includes(item.screen) &&
+      item.screen !== "settings",
   );
   // The screen that is actually shown. A deep link into a screen this context
   // does not have lands on its home instead of rendering an empty one, because
@@ -1816,7 +1818,7 @@ export function App() {
           <button
             onClick={() => {
               setSidebar(false);
-              setModal({ kind: "settings" });
+              navigate("設定");
             }}
           >
             <Icon name="settings" size={22} />
@@ -2526,6 +2528,13 @@ export function App() {
           </div>
         ) : activeNav === "記憶" ? (
           <MemoryScreen store={store} workspace={currentWorkspace} />
+        ) : activeNav === "設定" ? (
+          <SettingsScreen
+            store={store}
+            workspaceId={currentWorkspace?.id || "personal"}
+            workspaceName={workspace}
+            onSelectItem={(id) => setModal({ kind: "initiativeDetail", id })}
+          />
         ) : activeNav === "目標レビュー" ? (
           <ReviewScreen store={store} workspace={currentWorkspace} />
         ) : activeNav === "ダッシュボード" ? (
@@ -2745,21 +2754,19 @@ export function App() {
                   ? "取り組みを追加"
                   : modal.kind === "members"
                     ? "ワークスペースのメンバー"
-                    : modal.kind === "settings"
-                      ? "設定"
-                      : modal.kind === "learnings"
-                        ? "最近の学び"
-                        : modal.kind === "activity"
-                          ? "アクティビティ"
-                          : modal.kind === "editGoal"
-                            ? "目標を編集"
-                            : modal.kind === "metrics"
-                              ? "成果と手応えを記録"
-                              : modal.kind === "relations"
-                                ? "項目のつながり"
-                                : modal.kind === "aiSuggestions"
-                                  ? "AIによる次の行動・振り返り提案"
-                                  : "項目の詳細"
+                    : modal.kind === "learnings"
+                      ? "最近の学び"
+                      : modal.kind === "activity"
+                        ? "アクティビティ"
+                        : modal.kind === "editGoal"
+                          ? "目標を編集"
+                          : modal.kind === "metrics"
+                            ? "成果と手応えを記録"
+                            : modal.kind === "relations"
+                              ? "項目のつながり"
+                              : modal.kind === "aiSuggestions"
+                                ? "AIによる次の行動・振り返り提案"
+                                : "項目の詳細"
           }
         >
           {store.error && (
@@ -3234,22 +3241,6 @@ export function App() {
               workspaceId={currentWorkspace?.id}
               onSelect={selectWorkspace}
             />
-          )}
-          {modal.kind === "settings" && (
-            <>
-              <FieldIntegration
-                store={store}
-                workspaceId={currentWorkspace?.id || "personal"}
-              />
-              <McpConnections store={store} />
-              <StorageSettings
-                store={store}
-                workspaceId={currentWorkspace?.id || "personal"}
-                onSelect={(id) => {
-                  setModal({ kind: "initiativeDetail", id });
-                }}
-              />
-            </>
           )}
           {modal.kind === "metrics" && selectedRaw && (
             <fieldset disabled={!canWrite(selectedRaw.workspace_id)}>
