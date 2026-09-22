@@ -123,7 +123,25 @@ jobs:
 
   browser:
     name: Browser integration tests
+    if: ${{ always() }}
+    needs: browser_shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every browser shard to pass
+        run: |
+          if [ "${{ needs.browser_shard.result }}" != "success" ]; then
+            echo "Browser integration shards did not all pass: ${{ needs.browser_shard.result }}"
+            exit 1
+          fi
+
+  browser_shard:
+    name: Browser integration tests / shard ${{ matrix.shard }}/4
     needs: api
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -143,14 +161,14 @@ jobs:
         env:
           PATHBASE_SMOKE_API_BIN: .cache/e2e-api/pathbase-api
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - run: npm run test:e2e -- --shard=${{ matrix.shard }}/4
         env:
           PATHBASE_E2E_API_BIN: .cache/e2e-api/pathbase-api
-      - name: Upload browser failure report and traces
+      - name: Upload browser shard failure report and traces
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: browser-failure-report
+          name: browser-failure-report-${{ matrix.shard }}
           path: |
             playwright-report/
             test-results/
