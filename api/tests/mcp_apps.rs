@@ -116,6 +116,21 @@ async fn tools_and_resources_publish_one_tree_surface() {
         ui_tools >= 3,
         "plan-reading tools must open the tree: {ui_tools}"
     );
+    for name in [
+        "pathbase_preview_changes",
+        "pathbase_propose_plan",
+        "pathbase_apply_changes",
+        "pathbase_reject_change",
+    ] {
+        let tool = listed
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("tool missing: {name}"));
+        assert_eq!(
+            tool["_meta"]["ui"]["resourceUri"], "ui://basepath/plan-v2.html",
+            "proposal lifecycle should refresh the same tree surface: {name}"
+        );
+    }
 
     let resources = client.request(3, "resources/list", json!({}));
     let listed_resources = resources["resources"].as_array().unwrap();
@@ -229,6 +244,14 @@ async fn every_change_set_carries_somewhere_to_go() {
         change["approval_url"],
         json!(format!("https://basepath.example/changes/personal/{id}"))
     );
+    let preview_graph = change["preview_graph"]
+        .as_object()
+        .unwrap_or_else(|| panic!("proposal must carry a preview graph: {proposed}"));
+    assert!(preview_graph["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["title"] == "朝の散歩"));
     let instruction = change["where_to_approve"].as_str().unwrap();
     assert!(instruction.contains("URL"), "{instruction}");
     assert!(instruction.contains("Basepath"), "{instruction}");
@@ -247,6 +270,9 @@ async fn every_change_set_carries_somewhere_to_go() {
         listed["structuredContent"]["items"][0]["approval_url"],
         change["approval_url"]
     );
+    assert!(listed["structuredContent"]["items"][0]
+        .get("preview_graph")
+        .is_none());
     let read = call(
         &mut client,
         12,

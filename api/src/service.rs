@@ -2546,22 +2546,7 @@ async fn dispatch_inner(
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(200)
                 .clamp(1, 200);
-            let items: Vec<Item> = list(tx, w, "items").await?;
-            let relations: Vec<Relation> = list(tx, w, "relations").await?;
-            let items: Vec<_> = items
-                .into_iter()
-                .filter(|i| i.archived_at.is_none())
-                .collect();
-            let total = items.len();
-            let items: Vec<_> = items.into_iter().take(limit).collect();
-            let ids: HashSet<_> = items.iter().map(|i| i.id.as_str()).collect();
-            let edges: Vec<_> = relations
-                .into_iter()
-                .filter(|r| {
-                    ids.contains(r.source_id.as_str()) && ids.contains(r.target_id.as_str())
-                })
-                .collect();
-            Ok(json!({"items":items,"relations":edges,"truncated":total>limit,"limit":limit}))
+            graph_snapshot(tx, w, limit).await
         }
         ("GET", "calendar", "", "") => {
             let start = query
@@ -4166,6 +4151,38 @@ async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
     }
     Ok(format!("{:x}", Sha256::digest(parts)))
 }
+
+/// Returns the graph as it exists in the current transaction.
+///
+/// The transaction may be inside the preview savepoint, so callers can use
+/// this to show a proposed tree without committing it. Keeping the snapshot
+/// builder shared with the normal graph route makes the preview and the
+/// committed view use the same archive, limit, and relation rules.
+async fn graph_snapshot(tx: &mut Tx, w: &str, requested_limit: usize) -> Result<Value> {
+    let limit = requested_limit.clamp(1, 200);
+    let items: Vec<Item> = list(tx, w, "items").await?;
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let items: Vec<_> = items
+        .into_iter()
+        .filter(|item| item.archived_at.is_none())
+        .collect();
+    let total = items.len();
+    let items: Vec<_> = items.into_iter().take(limit).collect();
+    let ids: HashSet<_> = items.iter().map(|item| item.id.as_str()).collect();
+    let relations: Vec<_> = relations
+        .into_iter()
+        .filter(|relation| {
+            ids.contains(relation.source_id.as_str()) && ids.contains(relation.target_id.as_str())
+        })
+        .collect();
+    Ok(json!({
+        "items": items,
+        "relations": relations,
+        "truncated": total > limit,
+        "limit": limit,
+    }))
+}
+
 async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value> {
     only(b, &["operations", "title", "assumptions"])?;
     let ops: Vec<Operation> = serde_json::from_value(b["operations"].clone())?;
@@ -4263,6 +4280,14 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
             }
         }
     }
+    // Keep the simulated tree in the response, but not in the persisted
+    // changeset. It lets an MCP App visualize the conversation's proposal
+    // immediately while keeping the committed plan untouched until approval.
+    let preview_graph = if validation.is_ok() {
+        Some(graph_snapshot(tx, w, 200).await?)
+    } else {
+        None
+    };
     tx.rollback_to_savepoint("preview_validation").await?;
     validation?;
     // What the AI assumed, in its own words, kept next to the diff. A person
@@ -4287,6 +4312,9 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     let mut c = c;
     let rule = crate::auto_apply::in_force(tx, actor, w).await?;
     mark_auto_apply(&rule, &mut c);
+    if let Some(graph) = preview_graph {
+        c["preview_graph"] = graph;
+    }
     Ok(c)
 }
 

@@ -40,6 +40,9 @@
 .plan-panel[data-stale="true"] {
   opacity: 0.72;
 }
+.plan-panel[data-proposal="true"] .plan-node-row {
+  border-style: dashed;
+}
 .plan-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -429,6 +432,73 @@
 .plan-notice {
   border-inline-start: 2px solid var(--plan-accent);
   padding-inline-start: 8px;
+}
+.plan-proposal {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--plan-accent) 45%, var(--plan-line));
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--plan-accent) 8%, var(--plan-surface));
+}
+.plan-proposal-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.plan-proposal-heading h3 {
+  margin: 2px 0 0;
+  font-size: 14px;
+}
+.plan-proposal-status {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--plan-accent) 50%, var(--plan-line));
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--plan-accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.plan-proposal p {
+  margin: 0;
+  color: var(--plan-muted);
+  font-size: 12px;
+}
+.plan-proposal-summary,
+.plan-proposal details ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin: 0;
+  padding: 0;
+  color: var(--plan-muted);
+  font-size: 11px;
+  list-style: none;
+}
+.plan-proposal details {
+  color: var(--plan-muted);
+  font-size: 11px;
+}
+.plan-proposal summary {
+  cursor: pointer;
+}
+.plan-proposal details ul {
+  display: grid;
+  margin-top: 5px;
+  padding-inline-start: 16px;
+  list-style: disc;
+}
+.plan-proposal-link {
+  justify-self: start;
+  color: var(--plan-accent);
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.plan-proposal-link:hover,
+.plan-proposal-link:focus-visible {
+  text-decoration: underline;
 }
 .plan-action-title {
   flex: 1 1 10ch;

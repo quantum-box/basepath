@@ -156,6 +156,13 @@ arrives. Folding and the selected view mode are local UI state; the server
 remains authoritative and the MCP surface does not show separate action or
 detail panels.
 
+Proposal tools use the same resource as the committed tree. A preview response
+also carries a transaction-only `preview_graph`, so the widget can show the
+strategy that was just discussed with dashed nodes and an explicit `未反映`
+label. It is not written into the plan and is not stored in the changeset. An
+approval or rejection result refreshes the committed tree, so the conversation
+surface does not leave the person looking at a stale proposal.
+
 Change sets still carry an absolute `approval_url` and `where_to_approve`, so
 ChatGPT can explain the diff and direct the person to Basepath. A conversation
 rendering or summary never grants permission and never replaces the server's
