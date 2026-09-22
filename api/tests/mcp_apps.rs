@@ -2,8 +2,10 @@
 //!
 //! Basepath returns structured data and a text representation from every tool,
 //! and the plan-reading tools point at one reusable embedded tree surface.
+use pathbase_api::service::{Actor, Service};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -289,4 +291,74 @@ async fn every_change_set_carries_somewhere_to_go() {
         read["structuredContent"]["auto_apply_eligible"],
         json!(false)
     );
+}
+
+#[tokio::test]
+async fn preview_graph_keeps_proposed_items_inside_the_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("large-preview.sqlite3");
+    let service = Service::open(&db.to_string_lossy()).await.unwrap();
+    service.initialize(false).await.unwrap();
+    let actor = Actor::local();
+    let path = "/v1/workspaces/personal/items";
+    let parent = service
+        .handle(
+            &actor,
+            "POST",
+            path,
+            &HashMap::new(),
+            json!({"kind":"outcome","title":"Preview root"}),
+            Some("fixture-parent"),
+        )
+        .await
+        .unwrap();
+    for index in 0..199 {
+        service
+            .handle(
+                &actor,
+                "POST",
+                path,
+                &HashMap::new(),
+                json!({"kind":"action","title":format!("Existing {index}")}),
+                Some(&format!("fixture-{index}")),
+            )
+            .await
+            .unwrap();
+    }
+    drop(service);
+
+    let mut client = start(&db);
+    let proposed = client.request(
+        20,
+        "tools/call",
+        json!({"name":"pathbase_preview_changes","arguments":{
+            "workspace_id":"personal",
+            "title":"Large plan proposal",
+            "idempotency_key":"large-preview",
+            "operations":[{"method":"POST","path":path,"body":{
+                "kind":"action",
+                "title":"Proposed child",
+                "parent_id":parent["id"]
+            }}]
+        }}),
+    );
+    assert_eq!(proposed["isError"], false, "{proposed}");
+    let graph = &proposed["structuredContent"]["preview_graph"];
+    let items = graph["items"].as_array().unwrap();
+    assert_eq!(items.len(), 200);
+    let child = items
+        .iter()
+        .find(|item| item["title"] == "Proposed child")
+        .expect("the proposed item must stay visible in a truncated graph");
+    assert!(items.iter().any(|item| item["id"] == parent["id"]));
+    assert_eq!(graph["truncated"], json!(true));
+    assert!(graph["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|relation| {
+            relation["type"] == "part_of"
+                && relation["source_id"] == child["id"]
+                && relation["target_id"] == parent["id"]
+        }));
 }

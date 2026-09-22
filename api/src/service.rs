@@ -4253,15 +4253,70 @@ async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
 /// builder shared with the normal graph route makes the preview and the
 /// committed view use the same archive, limit, and relation rules.
 async fn graph_snapshot(tx: &mut Tx, w: &str, requested_limit: usize) -> Result<Value> {
+    graph_snapshot_with_priority(tx, w, requested_limit, &[]).await
+}
+
+/// Returns a graph while keeping nodes touched by a proposal visible.
+///
+/// The normal graph is ordered by creation sequence. That is a useful stable
+/// slice for a reader, but it would hide a new item once a workspace already
+/// has `limit` active items: the simulated create is appended after them.
+/// Preview callers therefore supply the changed node ids first; each node's
+/// `part_of` ancestors are retained next, and the remaining space is filled
+/// with the normal creation-order slice.
+async fn graph_snapshot_with_priority(
+    tx: &mut Tx,
+    w: &str,
+    requested_limit: usize,
+    priority_ids: &[String],
+) -> Result<Value> {
     let limit = requested_limit.clamp(1, 200);
     let items: Vec<Item> = list(tx, w, "items").await?;
     let relations: Vec<Relation> = list(tx, w, "relations").await?;
-    let items: Vec<_> = items
+    let active: Vec<_> = items
         .into_iter()
         .filter(|item| item.archived_at.is_none())
         .collect();
-    let total = items.len();
-    let items: Vec<_> = items.into_iter().take(limit).collect();
+    let total = active.len();
+    let active_ids: HashSet<&str> = active.iter().map(|item| item.id.as_str()).collect();
+    let mut ordered_priority = Vec::new();
+    let mut selected_ids = HashSet::new();
+    for priority in priority_ids {
+        let mut current = priority.as_str();
+        let mut visited = HashSet::new();
+        loop {
+            if active_ids.contains(current) && selected_ids.insert(current.to_owned()) {
+                ordered_priority.push(current.to_owned());
+            }
+            if !visited.insert(current.to_owned()) {
+                break;
+            }
+            let Some(parent) = relations.iter().find(|relation| {
+                relation.relation_type == "part_of" && relation.source_id == current
+            }) else {
+                break;
+            };
+            current = parent.target_id.as_str();
+        }
+    }
+    let mut selected = Vec::with_capacity(limit.min(total));
+    for id in ordered_priority {
+        if selected.len() == limit {
+            break;
+        }
+        if let Some(item) = active.iter().find(|item| item.id == id) {
+            selected.push(item.clone());
+        }
+    }
+    for item in &active {
+        if selected.len() == limit {
+            break;
+        }
+        if selected_ids.insert(item.id.clone()) {
+            selected.push(item.clone());
+        }
+    }
+    let items = selected;
     let ids: HashSet<_> = items.iter().map(|item| item.id.as_str()).collect();
     let relations: Vec<_> = relations
         .into_iter()
@@ -4275,6 +4330,52 @@ async fn graph_snapshot(tx: &mut Tx, w: &str, requested_limit: usize) -> Result<
         "truncated": total > limit,
         "limit": limit,
     }))
+}
+
+fn graph_priority_ids(ops: &[Operation], changes: &[Value]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for op in ops {
+        let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
+        if parts
+            .get(3)
+            .is_some_and(|collection| matches!(*collection, "items" | "actions"))
+        {
+            if let Some(id) = parts.get(4) {
+                add_graph_priority_str(&mut ids, id);
+            }
+        }
+        for key in ["item_id", "parent_id", "source_id", "target_id"] {
+            add_graph_priority(&mut ids, op.body.get(key));
+        }
+    }
+    for change in changes {
+        add_graph_priority(&mut ids, change.get("id"));
+        for field in ["before", "after"] {
+            let Some(snapshot) = change.get(field) else {
+                continue;
+            };
+            for key in ["id", "item_id", "source_id", "target_id"] {
+                add_graph_priority(&mut ids, snapshot.get(key));
+            }
+        }
+    }
+    ids
+}
+
+fn add_graph_priority(ids: &mut Vec<String>, value: Option<&Value>) {
+    let Some(id) = value.and_then(Value::as_str).filter(|id| !id.is_empty()) else {
+        return;
+    };
+    add_graph_priority_str(ids, id);
+}
+
+fn add_graph_priority_str(ids: &mut Vec<String>, id: &str) {
+    if id.is_empty() {
+        return;
+    }
+    if !ids.iter().any(|existing| existing == id) {
+        ids.push(id.to_owned());
+    }
 }
 
 async fn preview(
@@ -4384,7 +4485,8 @@ async fn preview(
     // changeset. It lets an MCP App visualize the conversation's proposal
     // immediately while keeping the committed plan untouched until approval.
     let preview_graph = if include_preview_graph && validation.is_ok() {
-        Some(graph_snapshot(tx, w, 200).await?)
+        let priority_ids = graph_priority_ids(&ops, &changes);
+        Some(graph_snapshot_with_priority(tx, w, 200, &priority_ids).await?)
     } else {
         None
     };
