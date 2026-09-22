@@ -173,7 +173,12 @@ person looking at a stale proposal.
 Change sets still carry an absolute `approval_url` and `where_to_approve`, so
 ChatGPT can explain the diff and direct the person to Basepath. A conversation
 rendering or summary never grants permission and never replaces the server's
-authorization checks.
+authorization checks. When the server marks a pending proposal
+`auto_apply_eligible: true`, the widget can also offer a range-backed
+「事前許可の範囲で反映」 action, and the model can call
+`pathbase_apply_changes` after the person explicitly asks to approve or reflect
+it in the conversation. The server re-checks the Basepath-authored range on
+every call; an eligible flag or a widget click is not proof by itself.
 
 ## What happens when something goes wrong
 

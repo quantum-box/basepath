@@ -60,16 +60,19 @@ a decision they have already made.
 | See or summarize the diff | yes | yes |
 | Propose / re-propose | yes | yes |
 | Withdraw a proposal | yes, through a tool call | yes |
-| **Approve** (which applies) | **no** | yes |
+| **Approve one specific proposal** (which applies) | **no** | yes |
+| **Reflect a proposal inside a range set in Basepath in advance** | yes, only after the person explicitly asks | the range is set and revoked here |
 | Apply a change set approved before approving applied | yes, if *that person* approved it | yes |
 
 Withdrawing is allowed through the reject tool call because it only discards a proposal:
 nothing is applied, and anyone can propose again.
 
-Applying is allowed through the apply tool because the server checks that the change set
-was approved **by this same actor**, with a digest matching its current
-content, before the expiry, against an unchanged plan. A tool call cannot cause an
-apply the person did not already authorize.
+Applying is allowed through the apply tool because the server checks either that the
+change set was approved **by this same actor**, with a digest matching its current
+content, before the expiry, against an unchanged plan, or that the pending proposal
+is fully covered by the active range this same connection received from Basepath.
+A tool call cannot create either kind of authorization: the person approved the
+specific proposal in Basepath, or they set the bounded range there in advance.
 
 In practice there is now nothing for it to apply: the approval did that. The
 path remains for change sets approved before this was so, and an apply that
@@ -201,8 +204,9 @@ The MCP server returns each change set as structured data and text. The host
 may render or summarize it, but the result always carries `approval_url` — the
 absolute Basepath link — and `where_to_approve`, so the model can tell the
 person exactly where the decision happens. The embedded MCP App is a plan-tree
-surface, not an approval surface; it does not replace the Basepath approval
-screen or turn a widget click into evidence.
+surface. It does not replace the Basepath approval screen or turn a widget click
+into evidence; it only exposes a range-backed reflection trigger when the server
+has already said the proposal is inside a range set in Basepath.
 
 ## The diff a person sees
 
