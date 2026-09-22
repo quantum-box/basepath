@@ -123,6 +123,10 @@ function BasepathApp() {
   const workspaceRef = useRef<string | undefined>(undefined);
   const viewRef = useRef(view);
   const generation = useRef(0);
+  const refreshRef = useRef<(workspaceId?: string, limit?: number) => void>(
+    () => undefined,
+  );
+  const pendingWorkspaceRefresh = useRef<string | undefined>(undefined);
   const tree = useTreeState(view.workspace?.id ?? "");
 
   useEffect(() => {
@@ -143,6 +147,7 @@ function BasepathApp() {
             // let its result clear the loading state while old nodes remain
             // under the new workspace name.
             generation.current += 1;
+            pendingWorkspaceRefresh.current = workspaceId;
             const next = clearForWorkspace(viewRef.current, workspaceId);
             viewRef.current = next;
             setView(next);
@@ -154,6 +159,15 @@ function BasepathApp() {
       created.ontoolresult = (params) => {
         try {
           const payload = structuredResult(params);
+          const refreshWorkspace = pendingWorkspaceRefresh.current;
+          if (refreshWorkspace && !isGraphPayload(payload)) {
+            pendingWorkspaceRefresh.current = undefined;
+            setLoading(true);
+            setStale(true);
+            void refreshRef.current(refreshWorkspace);
+            return;
+          }
+          pendingWorkspaceRefresh.current = undefined;
           const workspaceId = workspaceIdFrom(payload) ?? workspaceRef.current;
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
           viewRef.current = next;
@@ -205,6 +219,7 @@ function BasepathApp() {
     },
     [hostFor],
   );
+  refreshRef.current = refresh;
 
   useEffect(() => {
     if (!isConnected || !app) return;
