@@ -147,6 +147,31 @@ async fn tools_and_resources_publish_one_tree_surface() {
         .unwrap()
         .contains("id=\"root\""));
 
+    // Keep resource names from the short-lived split-surface release readable
+    // without advertising separate personal and organization screens again.
+    for uri in [
+        "ui://basepath/plan.html",
+        "ui://basepath/personal/plan.html",
+        "ui://basepath/organization/plan.html",
+    ] {
+        let legacy = client.request(7, "resources/read", json!({"uri": uri}));
+        assert_eq!(legacy["contents"][0]["uri"], uri);
+        assert_eq!(
+            legacy["contents"][0]["mimeType"],
+            "text/html;profile=mcp-app"
+        );
+        assert!(legacy["contents"][0]["_meta"]["ui"]["csp"].is_object());
+    }
+    for uri in [
+        "ui://basepath/personal/plan.skybridge.html",
+        "ui://basepath/organization/plan.skybridge.html",
+    ] {
+        let legacy = client.request(8, "resources/read", json!({"uri": uri}));
+        assert_eq!(legacy["contents"][0]["uri"], uri);
+        assert_eq!(legacy["contents"][0]["mimeType"], "text/html+skybridge");
+        assert!(legacy["contents"][0]["_meta"]["ui"]["csp"].is_object());
+    }
+
     // The model-facing result keeps both forms: structured data for reliable
     // follow-up calls and text for hosts that only forward MCP content.
     let context = client.request(
