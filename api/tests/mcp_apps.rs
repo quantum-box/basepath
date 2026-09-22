@@ -96,11 +96,11 @@ async fn tools_and_resources_publish_one_tree_surface() {
     assert!(!listed.is_empty());
     let mut ui_tools = 0;
     for tool in listed {
-        if tool["_meta"]["ui"]["resourceUri"] == "ui://basepath/plan.html" {
+        if tool["_meta"]["ui"]["resourceUri"] == "ui://basepath/plan-v2.html" {
             ui_tools += 1;
             assert_eq!(
                 tool["_meta"]["openai/outputTemplate"],
-                "ui://basepath/plan.html"
+                "ui://basepath/plan-v2.html"
             );
         }
         assert!(
@@ -121,7 +121,7 @@ async fn tools_and_resources_publish_one_tree_surface() {
     let listed_resources = resources["resources"].as_array().unwrap();
     let ui = listed_resources
         .iter()
-        .find(|resource| resource["uri"] == "ui://basepath/plan.html")
+        .find(|resource| resource["uri"] == "ui://basepath/plan-v2.html")
         .unwrap_or_else(|| panic!("tree resource missing: {listed_resources:?}"));
     assert_eq!(ui["mimeType"], "text/html;profile=mcp-app");
     assert!(ui["_meta"]["ui"]["csp"].is_object());
@@ -135,12 +135,13 @@ async fn tools_and_resources_publish_one_tree_surface() {
     let resource = client.request(
         4,
         "resources/read",
-        json!({"uri":"ui://basepath/plan.html"}),
+        json!({"uri":"ui://basepath/plan-v2.html"}),
     );
     assert_eq!(
         resource["contents"][0]["mimeType"],
         "text/html;profile=mcp-app"
     );
+    assert!(resource["contents"][0]["_meta"]["ui"]["csp"].is_object());
     assert!(resource["contents"][0]["text"]
         .as_str()
         .unwrap()

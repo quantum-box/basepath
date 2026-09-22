@@ -25,9 +25,24 @@ use std::sync::Arc;
 /// is carried by the tool input/result, while the widget renders the selected
 /// workspace's tree instead of publishing separate personal and organization
 /// screens.
-pub const UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
+// UI resource URIs are cache keys in ChatGPT. Bump the URI when the embedded
+// document changes so a host does not keep an older template after a deploy.
+pub const UI_RESOURCE_URI: &str = "ui://basepath/plan-v2.html";
+/// Keep the previous URI readable for conversations that already reference it.
+const LEGACY_UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
 pub const UI_RESOURCE_MIME: &str = "text/html;profile=mcp-app";
 const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
+
+fn ui_resource_meta() -> Value {
+    json!({
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+            "prefersBorder": true,
+        },
+        "openai/widgetCSP": {"connect_domains": [], "resource_domains": []},
+        "openai/widgetDescription": "A compact goal tree for the selected Basepath workspace.",
+    })
+}
 
 fn ui_resource(tool: &str) -> Option<&'static str> {
     match tool {
@@ -1176,14 +1191,7 @@ impl ServerHandler for Mcp {
             "name": "Basepath plan tree",
             "description": "One compact plan surface. It renders the personal or organization workspace named by the tool result.",
             "mimeType": UI_RESOURCE_MIME,
-            "_meta": {
-                "ui": {
-                    "csp": {"connectDomains": [], "resourceDomains": []},
-                    "prefersBorder": true,
-                },
-                "openai/widgetCSP": {"connect_domains": [], "resource_domains": []},
-                "openai/widgetDescription": "A compact goal tree for the selected Basepath workspace.",
-            },
+            "_meta": ui_resource_meta(),
         })];
         resources.extend(crate::skills::resources());
         Ok(serde_json::from_value(json!({ "resources": resources })).unwrap())
@@ -1200,12 +1208,13 @@ impl ServerHandler for Mcp {
         r: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        if r.uri == UI_RESOURCE_URI {
+        if r.uri == UI_RESOURCE_URI || r.uri == LEGACY_UI_RESOURCE_URI {
             return Ok(serde_json::from_value(json!({
                 "contents": [{
-                    "uri": UI_RESOURCE_URI,
+                    "uri": r.uri,
                     "mimeType": UI_RESOURCE_MIME,
                     "text": UI_RESOURCE_HTML,
+                    "_meta": ui_resource_meta(),
                 }]
             }))
             .unwrap());

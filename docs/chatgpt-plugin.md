@@ -137,7 +137,7 @@ Publish** (workspace admin only).
 
 ## MCP Apps plan surface
 
-Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan.html`,
+Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan-v2.html`,
 and plan-reading tools point to it through `_meta.ui.resourceUri` plus the
 ChatGPT compatibility alias `openai/outputTemplate`. Every `tools/call`
 response still carries the same information in two model-facing forms:

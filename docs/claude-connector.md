@@ -27,7 +27,7 @@ indefinitely. The full argument and the refusals are in
 
 ### Data and tree presentation
 
-The server publishes one `ui://basepath/plan.html` resource. Workspace scope,
+The server publishes one `ui://basepath/plan-v2.html` resource. Workspace scope,
 graph relations, truncation, and change approval links remain explicit in the
 returned data; the widget adds only folding and selection state and never
 decides authorization.
