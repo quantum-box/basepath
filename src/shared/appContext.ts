@@ -34,7 +34,8 @@ export type Screen =
   | "dashboard"
   | "goal-review"
   | "templates"
-  | "members";
+  | "members"
+  | "settings";
 
 export type NavItem = {
   screen: Screen;
@@ -91,6 +92,7 @@ export const PERSONAL_NAV: NavItem[] = [
     page: "メンバー",
     icon: "users",
   },
+  { screen: "settings", label: "設定", page: "設定", icon: "settings" },
 ];
 
 /**
@@ -137,6 +139,7 @@ export const ORGANIZATION_NAV: NavItem[] = [
     icon: "stack",
   },
   { screen: "members", label: "メンバー", page: "メンバー", icon: "users" },
+  { screen: "settings", label: "設定", page: "設定", icon: "settings" },
 ];
 
 export function navFor(kind: ContextKind): NavItem[] {

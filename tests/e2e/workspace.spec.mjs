@@ -356,6 +356,7 @@ for (const failure of [
     await expect(page.getByText("Tachyonでログイン中")).toBeVisible();
 
     await page.getByRole("button", { name: "設定", exact: true }).click();
+    await expect(page.locator(".settings-page")).toBeVisible();
     await page
       .getByText("Fieldの営業タスク・成果指標", { exact: true })
       .click();
@@ -370,7 +371,9 @@ for (const failure of [
     await expect(
       page.getByLabel("Tachyonユーザー名またはメールアドレス"),
     ).not.toBeVisible();
-    await expect(page).toHaveURL(/\/personal\/home\?tenant_id=tn_selected$/);
+    await expect(page).toHaveURL(
+      /\/personal\/settings\?tenant_id=tn_selected$/,
+    );
   });
 }
 
@@ -681,38 +684,43 @@ test("settings explains that an AI connection must be allowed first", async ({
     .getByRole("button", { name: "設定", exact: true });
   await settings.focus();
   await settings.press("Enter");
-  const dialog = page.getByRole("dialog");
+  const settingsPage = page.locator(".settings-page");
   await expect(
-    dialog.getByRole("heading", { name: "AIクライアントの接続" }),
+    settingsPage.getByRole("heading", { name: "AIクライアントの接続" }),
   ).toBeVisible();
   // The screen states the two things a person needs before deciding: an AI
   // client they have not allowed can read nothing, and allowing one still does
   // not let it change the plan on its own.
   await expect(
-    dialog.getByText("許可していないAIクライアントは何も読み取れません", {
+    settingsPage.getByText("許可していないAIクライアントは何も読み取れません", {
       exact: false,
     }),
   ).toBeVisible();
   await expect(
-    dialog.getByText("あなたが差分を確認して承認するまで反映されません", {
+    settingsPage.getByText("あなたが差分を確認して承認するまで反映されません", {
       exact: false,
     }),
   ).toBeVisible();
 });
 
-test("closing settings returns keyboard focus to its trigger", async ({
-  page,
-}) => {
+test("settings is a page with a browser-history path", async ({ page }) => {
   await openApp(page);
   const settings = page
     .getByRole("navigation", { name: "ユーティリティ" })
     .getByRole("button", { name: "設定", exact: true });
   await settings.focus();
   await settings.press("Enter");
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toBeHidden();
-  await expect(settings).toBeFocused();
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page).toHaveURL(/\/personal\/settings(?:\?tenant_id=[^&]+)?$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/personal\/home(?:\?tenant_id=[^&]+)?$/);
+  await expect(
+    page.getByRole("heading", {
+      name: "やりたいことを、動ける形に。",
+      exact: true,
+    }),
+  ).toBeVisible();
 });
 
 test("weekly review saves, finalizes, and remains usable at 390px", async ({
