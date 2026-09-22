@@ -123,9 +123,13 @@ function BasepathApp() {
   const workspaceRef = useRef<string | undefined>(undefined);
   const viewRef = useRef(view);
   const generation = useRef(0);
-  const refreshRef = useRef<(workspaceId?: string, limit?: number) => void>(
-    () => undefined,
-  );
+  const refreshRef = useRef<
+    (
+      workspaceId?: string,
+      limit?: number,
+      preservedGraph?: unknown,
+    ) => void
+  >(() => undefined);
   const pendingWorkspaceRefresh = useRef<string | undefined>(undefined);
   const tree = useTreeState(view.workspace?.id ?? "");
 
@@ -176,11 +180,12 @@ function BasepathApp() {
             : true;
           if (workspaceId && !workspaceIsKnown) {
             // The host may send a graph for a workspace that was just granted
-            // while this iframe was open. Refresh context before rendering it;
-            // otherwise the graph would be paired with a null workspace.
+            // while this iframe was open. Refresh context before rendering it,
+            // then reapply this graph so a focused breakdown is not replaced
+            // by the full graph fetched during the context refresh.
             setLoading(true);
             setStale(true);
-            void refreshRef.current(workspaceId);
+            void refreshRef.current(workspaceId, undefined, payload);
             return;
           }
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
@@ -207,7 +212,11 @@ function BasepathApp() {
   }, [app]);
 
   const refresh = useCallback(
-    async (workspaceId?: string, limit?: number) => {
+    async (
+      workspaceId?: string,
+      limit?: number,
+      preservedGraph?: unknown,
+    ) => {
       const host = hostFor();
       if (!host) return;
       const currentGeneration = ++generation.current;
@@ -227,7 +236,11 @@ function BasepathApp() {
       }
       if (result.view.workspace)
         workspaceRef.current = result.view.workspace.id;
-      setView(result.view);
+      const next = preservedGraph
+        ? mergeToolPayload(result.view, preservedGraph, workspaceId)
+        : result.view;
+      viewRef.current = next;
+      setView(next);
       setLoading(false);
       setStale(false);
     },

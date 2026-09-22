@@ -124,8 +124,8 @@ test("refreshes context when an explicit workspace is not cached", async ({
       organization: {
         items: [
           {
-            id: "o1",
-            title: "権限付与後の組織目標",
+            id: "full-o1",
+            title: "再取得された全体ツリー",
             kind: "outcome",
             state: "active",
             fields: {},
@@ -163,16 +163,22 @@ test("refreshes context when an explicit workspace is not cached", async ({
   await page.evaluate(async () => {
     await window.__pushToolResult(
       {
-        items: [
+        nodes: [
           {
-            id: "o1",
-            title: "権限付与後の組織目標",
+            id: "focused-o1",
+            title: "権限付与後の部分ツリー",
             kind: "outcome",
             state: "active",
-            fields: {},
+            parent_id: null,
+          },
+          {
+            id: "focused-o2",
+            title: "権限付与後の部分ツリーの下位",
+            kind: "initiative",
+            state: "active",
+            parent_id: "focused-o1",
           },
         ],
-        relations: [],
         truncated: false,
         limit: 200,
       },
@@ -183,7 +189,13 @@ test("refreshes context when an explicit workspace is not cached", async ({
   await expect(
     app.locator('.plan-panel[data-workspace-scope="組織"]'),
   ).toBeVisible();
-  await expect(app.getByText("権限付与後の組織目標")).toBeVisible();
+  await expect(
+    app.getByText("権限付与後の部分ツリー", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    app.getByText("権限付与後の部分ツリーの下位"),
+  ).toBeVisible();
+  await expect(app.getByText("再取得された全体ツリー")).toBeHidden();
   await expect(app.getByText("個人の目標")).toBeHidden();
 });
 
