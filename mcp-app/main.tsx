@@ -97,6 +97,21 @@ function mergeToolPayload(
   };
 }
 
+function clearForWorkspace(current: PlanView, workspaceId: string): PlanView {
+  return {
+    ...current,
+    workspace:
+      current.workspaces.find((candidate) => candidate.id === workspaceId) ??
+      null,
+    nodes: [],
+    truncated: false,
+    limit: 0,
+    localDate: "",
+    actions: [],
+    week: null,
+  };
+}
+
 function BasepathApp() {
   const [view, setView] = useState<PlanView>(emptyPlanView);
   const [loading, setLoading] = useState(true);
@@ -121,14 +136,17 @@ function BasepathApp() {
       created.ontoolinput = (input) => {
         const workspaceId = workspaceIdFrom(input);
         if (workspaceId) {
+          const changed = workspaceRef.current !== workspaceId;
           workspaceRef.current = workspaceId;
-          const workspace = viewRef.current.workspaces.find(
-            (candidate) => candidate.id === workspaceId,
-          );
-          if (workspace) {
-            const next = { ...viewRef.current, workspace };
+          if (changed) {
+            // A non-graph tool can arrive after a workspace switch. Do not
+            // let its result clear the loading state while old nodes remain
+            // under the new workspace name.
+            generation.current += 1;
+            const next = clearForWorkspace(viewRef.current, workspaceId);
             viewRef.current = next;
             setView(next);
+            setLoading(true);
           }
         }
         setStale(true);
