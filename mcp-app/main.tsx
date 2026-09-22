@@ -123,9 +123,13 @@ function BasepathApp() {
   const workspaceRef = useRef<string | undefined>(undefined);
   const viewRef = useRef(view);
   const generation = useRef(0);
-  const refreshRef = useRef<(workspaceId?: string, limit?: number) => void>(
-    () => undefined,
-  );
+  const refreshRef = useRef<
+    (
+      workspaceId?: string,
+      limit?: number,
+      preservedGraph?: unknown,
+    ) => void
+  >(() => undefined);
   const pendingWorkspaceRefresh = useRef<string | undefined>(undefined);
   const tree = useTreeState(view.workspace?.id ?? "");
 
@@ -169,6 +173,21 @@ function BasepathApp() {
           }
           pendingWorkspaceRefresh.current = undefined;
           const workspaceId = workspaceIdFrom(payload) ?? workspaceRef.current;
+          const workspaceIsKnown = workspaceId
+            ? viewRef.current.workspaces.some(
+                (workspace) => workspace.id === workspaceId,
+              )
+            : true;
+          if (workspaceId && !workspaceIsKnown) {
+            // The host may send a graph for a workspace that was just granted
+            // while this iframe was open. Refresh context before rendering it,
+            // then reapply this graph so a focused breakdown is not replaced
+            // by the full graph fetched during the context refresh.
+            setLoading(true);
+            setStale(true);
+            void refreshRef.current(workspaceId, undefined, payload);
+            return;
+          }
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
           viewRef.current = next;
           setView(next);
@@ -193,7 +212,11 @@ function BasepathApp() {
   }, [app]);
 
   const refresh = useCallback(
-    async (workspaceId?: string, limit?: number) => {
+    async (
+      workspaceId?: string,
+      limit?: number,
+      preservedGraph?: unknown,
+    ) => {
       const host = hostFor();
       if (!host) return;
       const currentGeneration = ++generation.current;
@@ -213,7 +236,11 @@ function BasepathApp() {
       }
       if (result.view.workspace)
         workspaceRef.current = result.view.workspace.id;
-      setView(result.view);
+      const next = preservedGraph
+        ? mergeToolPayload(result.view, preservedGraph, workspaceId)
+        : result.view;
+      viewRef.current = next;
+      setView(next);
       setLoading(false);
       setStale(false);
     },
@@ -245,22 +272,25 @@ function BasepathApp() {
   }, [error]);
 
   return (
-    <PlanViewPanel
-      view={view}
-      tree={tree}
-      loading={loading}
-      stale={stale}
-      problem={problem ? { ...problem, retry: () => void refresh() } : null}
-      onExpand={() => void refresh(workspaceRef.current, 200)}
-      showWorkspaceSwitcher={false}
-      showDetails={false}
-      showActions={false}
-      showWeek={false}
-      flowContent={<PlanFlow roots={view.nodes} tree={tree} />}
-      showViewToggle
-      viewMode={viewMode}
-      onViewModeChange={setViewMode}
-    />
+    <main className="mcp-app-surface">
+      <PlanViewPanel
+        view={view}
+        tree={tree}
+        loading={loading}
+        stale={stale}
+        problem={problem ? { ...problem, retry: () => void refresh() } : null}
+        onExpand={() => void refresh(workspaceRef.current, 200)}
+        showHeader={false}
+        showWorkspaceSwitcher={false}
+        showDetails={false}
+        showActions={false}
+        showWeek={false}
+        flowContent={<PlanFlow roots={view.nodes} tree={tree} />}
+        showViewToggle
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+      />
+    </main>
   );
 }
 

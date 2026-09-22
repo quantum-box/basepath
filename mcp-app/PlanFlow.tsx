@@ -4,10 +4,13 @@ import {
   Handle,
   Position,
   ReactFlow,
+  ReactFlowProvider,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
+import { useCallback, useEffect, useState } from "react";
 import type { PlanNode } from "../src/shared/viewModel";
 import type { TreeState } from "../src/shared/useTreeState";
 import { countNodes } from "../src/shared/viewModel";
@@ -30,6 +33,11 @@ const NODE_WIDTH = 196;
 const NODE_HEIGHT = 82;
 const HORIZONTAL_GAP = 28;
 const VERTICAL_GAP = 48;
+const FIT_VIEW_OPTIONS = {
+  padding: 0.1,
+  minZoom: 0.05,
+  maxZoom: 1.1,
+} as const;
 
 function kindLabel(kind: PlanNode["kind"]) {
   switch (kind) {
@@ -189,13 +197,45 @@ export function PlanFlow({
   const graph = buildFlowGraph(roots, tree);
   if (graph.nodes.length === 0) return null;
   return (
+    <ReactFlowProvider>
+      <PlanFlowCanvas graph={graph} tree={tree} />
+    </ReactFlowProvider>
+  );
+}
+
+function PlanFlowCanvas({
+  graph,
+  tree,
+}: {
+  graph: { nodes: FlowNode[]; edges: Edge[] };
+  tree: TreeState;
+}) {
+  const flow = useReactFlow<FlowNode>();
+  const [overviewRequest, setOverviewRequest] = useState(0);
+
+  useEffect(() => {
+    if (overviewRequest === 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      void flow.fitView(FIT_VIEW_OPTIONS);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [flow, overviewRequest]);
+
+  const showOverview = useCallback(() => {
+    tree.openAll();
+    setOverviewRequest((current) => current + 1);
+  }, [tree]);
+
+  return (
     <div className="mcp-plan-flow" aria-label="目標マップ">
       <ReactFlow<FlowNode>
         nodes={graph.nodes}
         edges={graph.edges}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.18, minZoom: 0.3, maxZoom: 1.1 }}
+        fitViewOptions={FIT_VIEW_OPTIONS}
+        // Keep custom node controls clickable without making the map selectable.
+        onNodeClick={() => undefined}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
@@ -205,8 +245,15 @@ export function PlanFlow({
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={22} size={1} />
-        <Controls showInteractive={false} />
+        <Controls showFitView={false} showInteractive={false} />
       </ReactFlow>
+      <button
+        type="button"
+        className="mcp-flow-overview"
+        onClick={showOverview}
+      >
+        全体表示
+      </button>
     </div>
   );
 }

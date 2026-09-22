@@ -329,6 +329,7 @@ export type PlanViewProps = {
   notice?: string | null;
   onExpand?: () => void;
   /** MCP Apps uses the tree as its only content and hides the other panels. */
+  showHeader?: boolean;
   showWorkspaceSwitcher?: boolean;
   showDetails?: boolean;
   showActions?: boolean;
@@ -351,6 +352,7 @@ export function PlanViewPanel({
   busyAction,
   notice,
   onExpand,
+  showHeader = true,
   showWorkspaceSwitcher = true,
   showDetails = true,
   showActions = true,
@@ -400,37 +402,43 @@ export function PlanViewPanel({
     view.workspace.id === "personal" || view.workspace.scope === "個人";
   const contextLabel = isPersonal ? "個人の計画" : "組織の計画";
   return (
-    <div className="plan-panel" data-stale={stale ? "true" : undefined}>
-      <header className="plan-header">
-        <div className="plan-heading">
-          <span className="plan-eyebrow">いま見ている場所</span>
-          <div className="plan-title-row">
-            <span
-              className={`plan-context-mark ${isPersonal ? "personal" : "organization"}`}
-              aria-hidden="true"
-            >
-              {isPersonal ? "●" : "◆"}
-            </span>
-            <h2>{view.workspace.name}</h2>
+    <div
+      className="plan-panel"
+      data-stale={stale ? "true" : undefined}
+      data-workspace-scope={view.workspace.scope || undefined}
+    >
+      {showHeader && (
+        <header className="plan-header">
+          <div className="plan-heading">
+            <span className="plan-eyebrow">いま見ている場所</span>
+            <div className="plan-title-row">
+              <span
+                className={`plan-context-mark ${isPersonal ? "personal" : "organization"}`}
+                aria-hidden="true"
+              >
+                {isPersonal ? "●" : "◆"}
+              </span>
+              <h2>{view.workspace.name}</h2>
+            </div>
+            <p>{contextLabel} · 目標から行動までをひとつのツリーで表示</p>
           </div>
-          <p>{contextLabel} · 目標から行動までをひとつのツリーで表示</p>
-        </div>
-        <div className="plan-header-meta">
-          <span className="plan-scope-chip">
-            {view.workspace.scope || (isPersonal ? "個人" : "組織")}
-          </span>
-          {view.workspace.role && (
-            <span className="plan-role">{view.workspace.role}</span>
+          <div className="plan-header-meta">
+            <span className="plan-scope-chip">
+              {view.workspace.scope || (isPersonal ? "個人" : "組織")}
+            </span>
+            {view.workspace.role && (
+              <span className="plan-role">{view.workspace.role}</span>
+            )}
+          </div>
+          {showWorkspaceSwitcher && (
+            <WorkspaceSwitcher
+              workspaces={view.workspaces}
+              current={view.workspace}
+              onSelect={onSelectWorkspace}
+            />
           )}
-        </div>
-        {showWorkspaceSwitcher && (
-          <WorkspaceSwitcher
-            workspaces={view.workspaces}
-            current={view.workspace}
-            onSelect={onSelectWorkspace}
-          />
-        )}
-      </header>
+        </header>
+      )}
       {stale && (
         <p className="plan-stale" role="status">
           新しい結果が届いています。表示は1つ前の内容です。
