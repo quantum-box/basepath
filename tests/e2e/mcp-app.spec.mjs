@@ -16,7 +16,7 @@ test("renders one compact goal tree from the MCP tool result", async ({
   page,
 }) => {
   const app = await openHarness(page);
-  await expect(app.getByRole("heading", { name: "個人" })).toBeVisible();
+  await expect(app.locator(".plan-header")).toHaveCount(0);
   await expect(app.getByText("個人の目標")).toBeVisible();
   await expect(app.getByText("個人の行動")).toBeVisible();
   await expect(app.getByRole("heading", { name: "目標ツリー" })).toBeVisible();
@@ -39,10 +39,16 @@ test("switches between the nested list and a React Flow-style map", async ({
   await expect(app.locator(".plan-tree")).toHaveCount(0);
   await expect(app.locator(".react-flow__edge")).toHaveCount(1);
   await expect(app.getByRole("button", { name: "Zoom In" })).toBeVisible();
+  await expect(app.getByRole("button", { name: "全体表示" })).toBeVisible();
   await expect(app.getByText("個人の目標")).toBeVisible();
   await expect(
     app.getByRole("button", { name: "個人の目標の下位を閉じる" }),
   ).toBeVisible();
+
+  await app.getByRole("button", { name: "個人の目標の下位を閉じる" }).click();
+  await expect(app.getByText("個人の行動")).toBeHidden();
+  await app.getByRole("button", { name: "全体表示" }).click();
+  await expect(app.getByText("個人の行動")).toBeVisible();
 
   await app.getByRole("button", { name: "リスト表示" }).click();
   await expect(app.locator(".plan-tree")).toBeVisible();
@@ -52,7 +58,7 @@ test("switches the visible tree when the tool names an organization workspace", 
   page,
 }) => {
   const app = await openHarness(page);
-  await expect(app.getByRole("heading", { name: "個人" })).toBeVisible();
+  await expect(app.locator(".plan-header")).toHaveCount(0);
 
   await page.evaluate(async () => {
     await window.__pushToolResult(
@@ -82,7 +88,7 @@ test("switches the visible tree when the tool names an organization workspace", 
   });
 
   await expect(
-    app.getByRole("heading", { name: "ゴルフ場運営" }),
+    app.locator('.plan-panel[data-workspace-scope="組織"]'),
   ).toBeVisible();
   await expect(app.getByText("償却前利益3億円")).toBeVisible();
   await expect(app.getByText("個人の目標")).toBeHidden();
@@ -101,7 +107,7 @@ test("folds and opens a branch without leaving the tree surface", async ({
 
 test("renders a focused breakdown as the same goal tree", async ({ page }) => {
   const app = await openHarness(page);
-  await expect(app.getByRole("heading", { name: "個人" })).toBeVisible();
+  await expect(app.locator(".plan-header")).toHaveCount(0);
   await page.evaluate(async () => {
     await window.__pushToolResult(
       {
@@ -143,7 +149,7 @@ test("explains an unavailable host instead of rendering a blank plan", async ({
 test("stays readable in a narrow conversation pane", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 720 });
   const app = await openHarness(page);
-  await expect(app.getByRole("heading", { name: "個人" })).toBeVisible();
+  await expect(app.getByRole("heading", { name: "目標ツリー" })).toBeVisible();
   const overflow = await page
     .frameLocator("#app")
     .locator("body")

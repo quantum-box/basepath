@@ -1,15 +1,23 @@
 /* Page-level rules for the single MCP App plan surface. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 body {
   margin: 0;
-  color: var(--text-primary, currentColor);
-  background: var(--background-primary, transparent);
-  font-family: var(--font-sans, system-ui, sans-serif);
+  min-width: 0;
+  color: #162947;
+  background: #f7f9fc;
+  font-family:
+    "Noto Sans JP",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Hiragino Sans",
+    system-ui,
+    sans-serif;
   font-size: 14px;
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
 
 .mcp-plan-flow {
@@ -145,4 +153,326 @@ body {
     height: 390px;
     min-height: 260px;
   }
+}
+
+/*
+ * The host supplies useful semantic variables, but the embedded plan should
+ * still feel like PathBase rather than like an unrelated host card. Keep the
+ * app's light visual system scoped to this surface so the shared PlanView
+ * remains safe for the desktop application too.
+ */
+.mcp-app-surface {
+  --pathbase-ink: #162947;
+  --pathbase-heading: #102443;
+  --pathbase-muted: #73829b;
+  --pathbase-line: #eaf0f6;
+  --pathbase-blue: #217aff;
+  --pathbase-blue-tint: #edf6ff;
+  --pathbase-blue-border: #d4e9ff;
+  --pathbase-purple: #8660ec;
+  --pathbase-purple-tint: #f5f0ff;
+  --pathbase-purple-border: #e7dfff;
+  --pathbase-green: #00a67b;
+  --pathbase-green-tint: #eaf8f2;
+  --pathbase-green-border: #d5f1e4;
+  --pathbase-surface: #ffffffed;
+  --pathbase-surface-strong: #f4f6fa;
+
+  --text-primary: var(--pathbase-ink);
+  --text-secondary: var(--pathbase-muted);
+  --border-primary: var(--pathbase-line);
+  --accent-primary: var(--pathbase-blue);
+  --background-primary: #f7f9fc;
+  --background-secondary: var(--pathbase-surface);
+  --background-tertiary: var(--pathbase-surface-strong);
+
+  width: 100%;
+  min-height: 100%;
+  color: var(--pathbase-ink);
+  background: #f7f9fc;
+}
+
+.mcp-app-surface .plan-panel {
+  --plan-text: var(--pathbase-ink);
+  --plan-muted: var(--pathbase-muted);
+  --plan-line: var(--pathbase-line);
+  --plan-accent: var(--pathbase-blue);
+  --plan-surface: var(--pathbase-surface);
+  --plan-surface-strong: var(--pathbase-surface-strong);
+
+  max-width: none;
+  margin: 0;
+  padding: 14px 15px 20px;
+  gap: 9px;
+}
+
+.mcp-app-surface .plan-header,
+.mcp-app-surface .plan-tree-section {
+  border-color: #eaf0f5;
+  border-radius: 12px;
+  background: var(--pathbase-surface);
+  box-shadow: 0 3px 12px #27476703;
+}
+
+.mcp-app-surface .plan-header {
+  padding: 15px 16px;
+}
+
+.mcp-app-surface .plan-header h2 {
+  color: var(--pathbase-heading);
+  font-size: 20px;
+  letter-spacing: -0.015em;
+}
+
+.mcp-app-surface .plan-heading p {
+  color: #7d8ca3;
+  font-size: 11px;
+}
+
+.mcp-app-surface .plan-eyebrow,
+.mcp-app-surface .plan-tree-count {
+  color: #7d8ca3;
+}
+
+.mcp-app-surface .plan-context-mark,
+.mcp-app-surface .plan-scope-chip {
+  color: var(--pathbase-blue);
+  background: var(--pathbase-blue-tint);
+  border-color: var(--pathbase-blue-border);
+}
+
+.mcp-app-surface .plan-context-mark {
+  border-radius: 9px;
+}
+
+.mcp-app-surface .plan-role {
+  color: var(--pathbase-muted);
+}
+
+.mcp-app-surface .plan-tree-section {
+  padding: 15px 16px;
+}
+
+.mcp-app-surface .plan-section-heading h3 {
+  color: var(--pathbase-heading);
+  font-size: 15px;
+}
+
+.mcp-app-surface .plan-view-toggle {
+  gap: 0;
+  padding: 1px;
+  border: 0;
+  border-radius: 7px;
+  background: #f4f6fa;
+}
+
+.mcp-app-surface .plan-view-toggle button {
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: #8390a3;
+  font-size: 11px;
+}
+
+.mcp-app-surface .plan-view-toggle button[aria-pressed="true"] {
+  color: #2180ff;
+  background: #e5efff;
+  box-shadow: none;
+}
+
+.mcp-app-surface .plan-node-row {
+  min-height: 42px;
+  padding-block: 9px;
+  border-color: var(--pathbase-blue-border);
+  border-radius: 10px;
+  color: #273c5a;
+  background: var(--pathbase-blue-tint);
+  box-shadow: 0 2px 6px #1c5c9602;
+}
+
+.mcp-app-surface .plan-node-row:hover {
+  border-color: #abcaf6;
+  background: #e8f2ff;
+  transform: translateY(-1px);
+}
+
+.mcp-app-surface .plan-node-kind {
+  color: var(--pathbase-blue);
+  border-color: var(--pathbase-blue-border);
+  background: #ffffffa8;
+}
+
+.mcp-app-surface .plan-node-state,
+.mcp-app-surface .plan-node-due,
+.mcp-app-surface .plan-node-assessment,
+.mcp-app-surface .plan-node-folded {
+  color: #61748b;
+}
+
+.mcp-app-surface .plan-node-toggle {
+  color: #5b6b82;
+}
+
+.mcp-app-surface .plan-node-toggle:hover,
+.mcp-app-surface .plan-node-toggle:focus-visible {
+  color: var(--pathbase-ink);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope="組織"] {
+  --plan-accent: var(--pathbase-green);
+  --plan-node-tint: var(--pathbase-green-tint);
+  --plan-node-border: var(--pathbase-green-border);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope="チーム"] {
+  --plan-accent: var(--pathbase-purple);
+  --plan-node-tint: var(--pathbase-purple-tint);
+  --plan-node-border: var(--pathbase-purple-border);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope="個人"] {
+  --plan-accent: var(--pathbase-blue);
+  --plan-node-tint: var(--pathbase-blue-tint);
+  --plan-node-border: var(--pathbase-blue-border);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope] .plan-context-mark,
+.mcp-app-surface .plan-panel[data-workspace-scope] .plan-scope-chip {
+  color: var(--plan-accent);
+  background: color-mix(in srgb, var(--plan-accent) 10%, white);
+  border-color: color-mix(in srgb, var(--plan-accent) 22%, white);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope] .plan-node-row {
+  border-color: var(--plan-node-border);
+  background: var(--plan-node-tint);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope] .plan-node-row:hover {
+  border-color: color-mix(in srgb, var(--plan-accent) 42%, white);
+  background: color-mix(in srgb, var(--plan-accent) 12%, white);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope] .plan-node-kind {
+  color: var(--plan-accent);
+  border-color: var(--plan-node-border);
+}
+
+.mcp-app-surface .mcp-plan-flow {
+  position: relative;
+  min-height: 300px;
+  border-color: #eaf0f5;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 8px #27476703;
+}
+
+.mcp-app-surface .mcp-plan-flow .react-flow {
+  --xy-edge-stroke-default: #bdcce0;
+  --xy-edge-stroke-width-default: 1.4;
+  --xy-background-color: #fff;
+  --xy-background-pattern-dots-color: #e8eef5;
+  --xy-background-pattern-dots-color-default: #e8eef5;
+  background: #fff;
+}
+
+.mcp-app-surface .mcp-plan-flow .react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  opacity: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.mcp-app-surface .mcp-flow-node {
+  border-color: var(--pathbase-blue-border);
+  border-radius: 12px;
+  color: #273c5a;
+  background: var(--pathbase-blue-tint);
+  box-shadow: 0 2px 6px #1c5c9602;
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope="組織"] .mcp-flow-node {
+  border-color: var(--pathbase-green-border);
+  background: var(--pathbase-green-tint);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope="チーム"] .mcp-flow-node {
+  border-color: var(--pathbase-purple-border);
+  background: var(--pathbase-purple-tint);
+}
+
+.mcp-app-surface .mcp-flow-node-kind {
+  color: var(--pathbase-blue);
+}
+
+.mcp-app-surface .plan-panel[data-workspace-scope="組織"] .mcp-flow-node-kind {
+  color: var(--pathbase-green);
+}
+
+.mcp-app-surface
+  .plan-panel[data-workspace-scope="チーム"]
+  .mcp-flow-node-kind {
+  color: var(--pathbase-purple);
+}
+
+.mcp-app-surface .mcp-flow-node-meta {
+  color: #61748b;
+}
+
+.mcp-app-surface .mcp-flow-node-toggle {
+  border-color: var(--pathbase-line);
+  color: #5b6b82;
+  background: #fff;
+}
+
+.mcp-app-surface .mcp-plan-flow .react-flow__controls {
+  border-color: #dce4ef;
+  border-radius: 7px;
+  box-shadow: 0 2px 6px #40648814;
+}
+
+.mcp-app-surface .mcp-plan-flow .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  border-bottom-color: #e8edf5;
+  color: #314763;
+  background: #fff;
+}
+
+.mcp-app-surface .mcp-plan-flow .react-flow__controls-button:hover {
+  background: #f2f6fd;
+}
+
+.mcp-app-surface .mcp-flow-overview {
+  position: absolute;
+  z-index: 5;
+  top: 12px;
+  right: 12px;
+  padding: 6px 10px;
+  border: 1px solid #dce4ef;
+  border-radius: 7px;
+  color: #314763;
+  background: #fff;
+  box-shadow: 0 2px 6px #40648814;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mcp-app-surface .mcp-flow-overview:hover,
+.mcp-app-surface .mcp-flow-overview:focus-visible {
+  border-color: #abcaf6;
+  color: #217aff;
+  background: #f2f6fd;
+}
+
+.mcp-app-surface .plan-problem button,
+.mcp-app-surface .plan-expand-all,
+.mcp-app-surface .plan-truncated button {
+  border-color: #dce4ef;
+  color: #314763;
+  background: #fff;
 }

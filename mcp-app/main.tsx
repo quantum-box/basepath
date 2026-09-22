@@ -245,22 +245,25 @@ function BasepathApp() {
   }, [error]);
 
   return (
-    <PlanViewPanel
-      view={view}
-      tree={tree}
-      loading={loading}
-      stale={stale}
-      problem={problem ? { ...problem, retry: () => void refresh() } : null}
-      onExpand={() => void refresh(workspaceRef.current, 200)}
-      showWorkspaceSwitcher={false}
-      showDetails={false}
-      showActions={false}
-      showWeek={false}
-      flowContent={<PlanFlow roots={view.nodes} tree={tree} />}
-      showViewToggle
-      viewMode={viewMode}
-      onViewModeChange={setViewMode}
-    />
+    <main className="mcp-app-surface">
+      <PlanViewPanel
+        view={view}
+        tree={tree}
+        loading={loading}
+        stale={stale}
+        problem={problem ? { ...problem, retry: () => void refresh() } : null}
+        onExpand={() => void refresh(workspaceRef.current, 200)}
+        showHeader={false}
+        showWorkspaceSwitcher={false}
+        showDetails={false}
+        showActions={false}
+        showWeek={false}
+        flowContent={<PlanFlow roots={view.nodes} tree={tree} />}
+        showViewToggle
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+      />
+    </main>
   );
 }
 
