@@ -169,6 +169,20 @@ function BasepathApp() {
           }
           pendingWorkspaceRefresh.current = undefined;
           const workspaceId = workspaceIdFrom(payload) ?? workspaceRef.current;
+          const workspaceIsKnown = workspaceId
+            ? viewRef.current.workspaces.some(
+                (workspace) => workspace.id === workspaceId,
+              )
+            : true;
+          if (workspaceId && !workspaceIsKnown) {
+            // The host may send a graph for a workspace that was just granted
+            // while this iframe was open. Refresh context before rendering it;
+            // otherwise the graph would be paired with a null workspace.
+            setLoading(true);
+            setStale(true);
+            void refreshRef.current(workspaceId);
+            return;
+          }
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
           viewRef.current = next;
           setView(next);

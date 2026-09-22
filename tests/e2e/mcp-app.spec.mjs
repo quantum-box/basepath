@@ -94,6 +94,99 @@ test("switches the visible tree when the tool names an organization workspace", 
   await expect(app.getByText("個人の目標")).toBeHidden();
 });
 
+test("refreshes context when an explicit workspace is not cached", async ({
+  page,
+}) => {
+  const personal = {
+    id: "personal",
+    name: "個人",
+    scope: "個人",
+    timezone: "Asia/Tokyo",
+    role: "owner",
+  };
+  const fixtures = {
+    pathbase_get_context: { workspaces: [personal] },
+    pathbase_get_graph: {
+      personal: {
+        items: [
+          {
+            id: "p1",
+            title: "個人の目標",
+            kind: "outcome",
+            state: "active",
+            fields: {},
+          },
+        ],
+        relations: [],
+        truncated: false,
+        limit: 200,
+      },
+      organization: {
+        items: [
+          {
+            id: "o1",
+            title: "権限付与後の組織目標",
+            kind: "outcome",
+            state: "active",
+            fields: {},
+          },
+        ],
+        relations: [],
+        truncated: false,
+        limit: 200,
+      },
+    },
+  };
+  const app = await openHarness(page, { fixtures });
+  await expect(app.getByText("個人の目標")).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__fixtures.pathbase_get_context = {
+      workspaces: [
+        {
+          id: "personal",
+          name: "個人",
+          scope: "個人",
+          timezone: "Asia/Tokyo",
+          role: "owner",
+        },
+        {
+          id: "organization",
+          name: "ゴルフ場運営",
+          scope: "組織",
+          timezone: "Asia/Tokyo",
+          role: "editor",
+        },
+      ],
+    };
+  });
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
+      {
+        items: [
+          {
+            id: "o1",
+            title: "権限付与後の組織目標",
+            kind: "outcome",
+            state: "active",
+            fields: {},
+          },
+        ],
+        relations: [],
+        truncated: false,
+        limit: 200,
+      },
+      { workspace_id: "organization" },
+    );
+  });
+
+  await expect(
+    app.locator('.plan-panel[data-workspace-scope="組織"]'),
+  ).toBeVisible();
+  await expect(app.getByText("権限付与後の組織目標")).toBeVisible();
+  await expect(app.getByText("個人の目標")).toBeHidden();
+});
+
 test("folds and opens a branch without leaving the tree surface", async ({
   page,
 }) => {
