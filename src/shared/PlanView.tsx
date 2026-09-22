@@ -397,6 +397,10 @@ export function PlanViewPanel({
       ? findNode(view.nodes, tree.selected)
       : null;
   }, [showDetails, view.nodes, tree.selected]);
+  const canApplyProposal = Boolean(
+    proposal?.autoApplyEligible && onApplyProposal,
+  );
+  const hasProposalActions = Boolean(canApplyProposal || proposal?.approvalUrl);
 
   if (problem) {
     return (
@@ -514,9 +518,9 @@ export function PlanViewPanel({
               </ul>
             </details>
           )}
-          {proposal.approvalUrl && (
+          {hasProposalActions && (
             <div className="plan-proposal-actions">
-              {proposal.autoApplyEligible && onApplyProposal && (
+              {canApplyProposal && (
                 <>
                   <button
                     type="button"
@@ -533,28 +537,29 @@ export function PlanViewPanel({
                   </p>
                 </>
               )}
-              {onOpenApproval ? (
-                <button
-                  type="button"
-                  className="plan-proposal-button secondary"
-                  onClick={() => onOpenApproval(proposal.approvalUrl!)}
-                >
-                  {proposal.autoApplyEligible
-                    ? "Basepathで内容を確認"
-                    : "Basepathで承認する"}
-                </button>
-              ) : (
-                <a
-                  className="plan-proposal-link"
-                  href={proposal.approvalUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {proposal.autoApplyEligible
-                    ? "Basepathで内容を確認"
-                    : "Basepathで内容を確認・承認"}
-                </a>
-              )}
+              {proposal.approvalUrl &&
+                (onOpenApproval ? (
+                  <button
+                    type="button"
+                    className="plan-proposal-button secondary"
+                    onClick={() => onOpenApproval(proposal.approvalUrl!)}
+                  >
+                    {proposal.autoApplyEligible
+                      ? "Basepathで内容を確認"
+                      : "Basepathで承認する"}
+                  </button>
+                ) : (
+                  <a
+                    className="plan-proposal-link"
+                    href={proposal.approvalUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {proposal.autoApplyEligible
+                      ? "Basepathで内容を確認"
+                      : "Basepathで内容を確認・承認"}
+                  </a>
+                ))}
             </div>
           )}
         </section>

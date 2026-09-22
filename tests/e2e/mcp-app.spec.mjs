@@ -240,7 +240,6 @@ test("reflects only a proposal covered by a pre-authorized range", async ({
         title: "事前許可された追加",
         status: "pending",
         auto_apply_eligible: true,
-        approval_url: "https://basepath.example/changes/personal/change-auto",
         assumptions: [],
         changes: [
           {
@@ -284,10 +283,7 @@ test("reflects only a proposal covered by a pre-authorized range", async ({
   ).toBeVisible();
   await expect(
     app.getByRole("link", { name: "Basepathで内容を確認" }),
-  ).toHaveAttribute(
-    "href",
-    "https://basepath.example/changes/personal/change-auto",
-  );
+  ).toHaveCount(0);
 
   await app
     .getByRole("button", {
