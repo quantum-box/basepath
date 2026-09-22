@@ -188,6 +188,15 @@ test("shows a conversation proposal as an uncommitted goal tree", async ({
 
   await page.evaluate(async () => {
     await window.__pushToolResult(
+      { local_date: "2026-09-22", items: [] },
+      { workspace_id: "personal" },
+    );
+  });
+  await expect(app.getByText("未反映")).toBeVisible();
+  await expect(app.getByText("既存顧客の継続率を上げる")).toBeVisible();
+
+  await page.evaluate(async () => {
+    await window.__pushToolResult(
       {
         changeset: {
           id: "change-1",

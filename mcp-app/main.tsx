@@ -298,7 +298,10 @@ function BasepathApp() {
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
           viewRef.current = next;
           setView(next);
-          if (!pendingProposal.current) setProposal(null);
+          // Context, Today, and Week results can arrive after a proposal was
+          // rendered. They do not replace the saved graph, so keep the draft
+          // marker until a committed graph or finished change arrives.
+          if (isGraphPayload(payload)) setProposal(null);
           setLoading(false);
           setProblem(null);
           setStale(false);
