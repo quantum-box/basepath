@@ -36,6 +36,21 @@ pub struct Actor {
     /// whichever connection it came from.
     pub connection: Option<String>,
 }
+
+struct HandleOptions {
+    fingerprint_override: Option<String>,
+    include_preview_graph: bool,
+}
+
+impl HandleOptions {
+    fn normal() -> Self {
+        Self {
+            fingerprint_override: None,
+            include_preview_graph: true,
+        }
+    }
+}
+
 /// The tenant local preview acts in.
 ///
 /// Local preview never authenticates against Tachyon, so it has no tenant of
@@ -2055,14 +2070,20 @@ impl Service {
         body: Value,
         key: Option<&str>,
     ) -> Result<Value> {
-        self.handle_with_preview_graph(actor, method, path, query, body, key, true)
-            .await
+        self.handle_internal(
+            actor,
+            (method, path),
+            query,
+            body,
+            key,
+            HandleOptions::normal(),
+        )
+        .await
     }
     pub async fn handle_with_preview_graph(
         &self,
         actor: &Actor,
-        method: &str,
-        path: &str,
+        route: (&str, &str),
         query: &HashMap<String, String>,
         body: Value,
         key: Option<&str>,
@@ -2070,12 +2091,14 @@ impl Service {
     ) -> Result<Value> {
         self.handle_internal(
             actor,
-            (method, path),
+            route,
             query,
             body,
             key,
-            None,
-            include_preview_graph,
+            HandleOptions {
+                fingerprint_override: None,
+                include_preview_graph,
+            },
         )
         .await
     }
@@ -2094,8 +2117,10 @@ impl Service {
             &HashMap::new(),
             operation.body,
             key,
-            Some(fingerprint),
-            true,
+            HandleOptions {
+                fingerprint_override: Some(fingerprint),
+                include_preview_graph: true,
+            },
         )
         .await
     }
@@ -2106,10 +2131,10 @@ impl Service {
         query: &HashMap<String, String>,
         body: Value,
         key: Option<&str>,
-        fingerprint_override: Option<String>,
-        include_preview_graph: bool,
+        options: HandleOptions,
     ) -> Result<Value> {
         let (method, path) = route;
+        let include_preview_graph = options.include_preview_graph;
         let parts: Vec<_> = path.trim_matches('/').split('/').collect();
         let w = if parts.get(1) == Some(&"workspaces") {
             parts.get(2).copied().unwrap_or("")
@@ -2180,7 +2205,9 @@ impl Service {
                 "画面での承認が必要です",
             ));
         }
-        let fp = fingerprint_override.unwrap_or_else(|| fingerprint(method, path, &body));
+        let fp = options
+            .fingerprint_override
+            .unwrap_or_else(|| fingerprint(method, path, &body));
         let mut tx = self.db.begin_write().await?;
         // Serialize writers of this workspace before reading anything, so a
         // read-then-write sequence cannot interleave with another execution

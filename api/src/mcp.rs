@@ -679,8 +679,7 @@ impl Mcp {
             .service
             .handle_with_preview_graph(
                 &actor,
-                method,
-                &path,
+                (method, &path),
                 &q,
                 body,
                 args["idempotency_key"].as_str(),
