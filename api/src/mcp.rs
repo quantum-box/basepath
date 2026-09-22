@@ -25,10 +25,46 @@ use std::sync::Arc;
 /// is carried by the tool input/result, while the widget renders the selected
 /// workspace's tree instead of publishing separate personal and organization
 /// screens.
-pub const UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
+// UI resource URIs are cache keys in ChatGPT. Bump the URI when the embedded
+// document changes so a host does not keep an older template after a deploy.
+pub const UI_RESOURCE_URI: &str = "ui://basepath/plan-v2.html";
+/// Keep the previous URI readable for conversations that already reference it.
+const LEGACY_UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
+// These aliases were advertised by an earlier version before the plan tree
+// became one reusable surface. Keep them readable for conversations that
+// cached those resource names, without advertising separate screens again.
+const LEGACY_UI_RESOURCE_PERSONAL_URI: &str = "ui://basepath/personal/plan.html";
+const LEGACY_UI_RESOURCE_ORGANIZATION_URI: &str = "ui://basepath/organization/plan.html";
+const LEGACY_UI_RESOURCE_PERSONAL_OPENAI_URI: &str = "ui://basepath/personal/plan.skybridge.html";
+const LEGACY_UI_RESOURCE_ORGANIZATION_OPENAI_URI: &str =
+    "ui://basepath/organization/plan.skybridge.html";
+const LEGACY_UI_RESOURCE_OPENAI_MIME: &str = "text/html+skybridge";
 pub const UI_RESOURCE_MIME: &str = "text/html;profile=mcp-app";
 const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
 
+fn ui_resource_mime(uri: &str) -> Option<&'static str> {
+    match uri {
+        UI_RESOURCE_URI
+        | LEGACY_UI_RESOURCE_URI
+        | LEGACY_UI_RESOURCE_PERSONAL_URI
+        | LEGACY_UI_RESOURCE_ORGANIZATION_URI => Some(UI_RESOURCE_MIME),
+        LEGACY_UI_RESOURCE_PERSONAL_OPENAI_URI | LEGACY_UI_RESOURCE_ORGANIZATION_OPENAI_URI => {
+            Some(LEGACY_UI_RESOURCE_OPENAI_MIME)
+        }
+        _ => None,
+    }
+}
+
+fn ui_resource_meta() -> Value {
+    json!({
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+            "prefersBorder": true,
+        },
+        "openai/widgetCSP": {"connect_domains": [], "resource_domains": []},
+        "openai/widgetDescription": "A compact goal tree for the selected Basepath workspace.",
+    })
+}
 fn ui_resource(tool: &str) -> Option<&'static str> {
     match tool {
         "pathbase_get_context"
@@ -1176,14 +1212,7 @@ impl ServerHandler for Mcp {
             "name": "Basepath plan tree",
             "description": "One compact plan surface. It renders the personal or organization workspace named by the tool result.",
             "mimeType": UI_RESOURCE_MIME,
-            "_meta": {
-                "ui": {
-                    "csp": {"connectDomains": [], "resourceDomains": []},
-                    "prefersBorder": true,
-                },
-                "openai/widgetCSP": {"connect_domains": [], "resource_domains": []},
-                "openai/widgetDescription": "A compact goal tree for the selected Basepath workspace.",
-            },
+            "_meta": ui_resource_meta(),
         })];
         resources.extend(crate::skills::resources());
         Ok(serde_json::from_value(json!({ "resources": resources })).unwrap())
@@ -1200,12 +1229,13 @@ impl ServerHandler for Mcp {
         r: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        if r.uri == UI_RESOURCE_URI {
+        if let Some(mime_type) = ui_resource_mime(r.uri.as_str()) {
             return Ok(serde_json::from_value(json!({
                 "contents": [{
-                    "uri": UI_RESOURCE_URI,
-                    "mimeType": UI_RESOURCE_MIME,
+                    "uri": r.uri,
+                    "mimeType": mime_type,
                     "text": UI_RESOURCE_HTML,
+                    "_meta": ui_resource_meta(),
                 }]
             }))
             .unwrap());

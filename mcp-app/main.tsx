@@ -97,6 +97,21 @@ function mergeToolPayload(
   };
 }
 
+function clearForWorkspace(current: PlanView, workspaceId: string): PlanView {
+  return {
+    ...current,
+    workspace:
+      current.workspaces.find((candidate) => candidate.id === workspaceId) ??
+      null,
+    nodes: [],
+    truncated: false,
+    limit: 0,
+    localDate: "",
+    actions: [],
+    week: null,
+  };
+}
+
 function BasepathApp() {
   const [view, setView] = useState<PlanView>(emptyPlanView);
   const [loading, setLoading] = useState(true);
@@ -108,6 +123,10 @@ function BasepathApp() {
   const workspaceRef = useRef<string | undefined>(undefined);
   const viewRef = useRef(view);
   const generation = useRef(0);
+  const refreshRef = useRef<(workspaceId?: string, limit?: number) => void>(
+    () => undefined,
+  );
+  const pendingWorkspaceRefresh = useRef<string | undefined>(undefined);
   const tree = useTreeState(view.workspace?.id ?? "");
 
   useEffect(() => {
@@ -121,14 +140,18 @@ function BasepathApp() {
       created.ontoolinput = (input) => {
         const workspaceId = workspaceIdFrom(input);
         if (workspaceId) {
+          const changed = workspaceRef.current !== workspaceId;
           workspaceRef.current = workspaceId;
-          const workspace = viewRef.current.workspaces.find(
-            (candidate) => candidate.id === workspaceId,
-          );
-          if (workspace) {
-            const next = { ...viewRef.current, workspace };
+          if (changed) {
+            // A non-graph tool can arrive after a workspace switch. Do not
+            // let its result clear the loading state while old nodes remain
+            // under the new workspace name.
+            generation.current += 1;
+            pendingWorkspaceRefresh.current = workspaceId;
+            const next = clearForWorkspace(viewRef.current, workspaceId);
             viewRef.current = next;
             setView(next);
+            setLoading(true);
           }
         }
         setStale(true);
@@ -136,6 +159,15 @@ function BasepathApp() {
       created.ontoolresult = (params) => {
         try {
           const payload = structuredResult(params);
+          const refreshWorkspace = pendingWorkspaceRefresh.current;
+          if (refreshWorkspace && !isGraphPayload(payload)) {
+            pendingWorkspaceRefresh.current = undefined;
+            setLoading(true);
+            setStale(true);
+            void refreshRef.current(refreshWorkspace);
+            return;
+          }
+          pendingWorkspaceRefresh.current = undefined;
           const workspaceId = workspaceIdFrom(payload) ?? workspaceRef.current;
           const next = mergeToolPayload(viewRef.current, payload, workspaceId);
           viewRef.current = next;
@@ -187,6 +219,7 @@ function BasepathApp() {
     },
     [hostFor],
   );
+  refreshRef.current = refresh;
 
   useEffect(() => {
     if (!isConnected || !app) return;
