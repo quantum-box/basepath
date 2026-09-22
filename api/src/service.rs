@@ -2055,8 +2055,29 @@ impl Service {
         body: Value,
         key: Option<&str>,
     ) -> Result<Value> {
-        self.handle_internal(actor, (method, path), query, body, key, None)
+        self.handle_with_preview_graph(actor, method, path, query, body, key, true)
             .await
+    }
+    pub async fn handle_with_preview_graph(
+        &self,
+        actor: &Actor,
+        method: &str,
+        path: &str,
+        query: &HashMap<String, String>,
+        body: Value,
+        key: Option<&str>,
+        include_preview_graph: bool,
+    ) -> Result<Value> {
+        self.handle_internal(
+            actor,
+            (method, path),
+            query,
+            body,
+            key,
+            None,
+            include_preview_graph,
+        )
+        .await
     }
     pub async fn handle_derived(
         &self,
@@ -2074,6 +2095,7 @@ impl Service {
             operation.body,
             key,
             Some(fingerprint),
+            true,
         )
         .await
     }
@@ -2085,6 +2107,7 @@ impl Service {
         body: Value,
         key: Option<&str>,
         fingerprint_override: Option<String>,
+        include_preview_graph: bool,
     ) -> Result<Value> {
         let (method, path) = route;
         let parts: Vec<_> = path.trim_matches('/').split('/').collect();
@@ -2125,7 +2148,16 @@ impl Service {
                 tx = self.db.begin_read().await?;
                 authorize(&mut tx, actor, w, workspace_write).await?;
             }
-            return dispatch(&mut tx, actor, method, path, query, &body).await;
+            return dispatch_with_preview_graph(
+                &mut tx,
+                actor,
+                method,
+                path,
+                query,
+                &body,
+                include_preview_graph,
+            )
+            .await;
         }
         let key = key
             .filter(|k| !k.is_empty() && k.len() <= 200)
@@ -2189,11 +2221,23 @@ impl Service {
                     "この再送キーは別の入力で使用されています",
                 ));
             }
-            let response: Value = serde_json::from_str(&row.text(1)?)?;
+            let mut response: Value = serde_json::from_str(&row.text(1)?)?;
             crate::collaboration::authorize_replay(&mut tx, method, &parts, &response).await?;
+            if !include_preview_graph {
+                strip_preview_graph(&mut response);
+            }
             return Ok(response);
         }
-        let result = dispatch(&mut tx, actor, method, path, query, &body).await?;
+        let result = dispatch_with_preview_graph(
+            &mut tx,
+            actor,
+            method,
+            path,
+            query,
+            &body,
+            include_preview_graph,
+        )
+        .await?;
         tx.execute(
             "INSERT INTO idempotency(actor,workspace_id,`key`,fingerprint,response,created_at) \
              VALUES(?,?,?,?,?,?)",
@@ -2233,7 +2277,27 @@ pub fn dispatch<'a>(
     query: &'a HashMap<String, String>,
     body: &'a Value,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
-    Box::pin(dispatch_inner(tx, actor, method, path, query, body))
+    dispatch_with_preview_graph(tx, actor, method, path, query, body, true)
+}
+
+pub fn dispatch_with_preview_graph<'a>(
+    tx: &'a mut Tx,
+    actor: &'a Actor,
+    method: &'a str,
+    path: &'a str,
+    query: &'a HashMap<String, String>,
+    body: &'a Value,
+    include_preview_graph: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
+    Box::pin(dispatch_inner(
+        tx,
+        actor,
+        method,
+        path,
+        query,
+        body,
+        include_preview_graph,
+    ))
 }
 
 async fn dispatch_inner(
@@ -2243,6 +2307,7 @@ async fn dispatch_inner(
     path: &str,
     query: &HashMap<String, String>,
     body: &Value,
+    include_preview_graph: bool,
 ) -> Result<Value> {
     let p: Vec<_> = path.trim_matches('/').split('/').collect();
     if crate::collaboration::routes(method, &p) {
@@ -3851,7 +3916,9 @@ async fn dispatch_inner(
         }
         ("POST", "templates", id, "apply") => apply_template(tx, actor, w, id, body).await,
         ("POST", "onboarding", "complete", "") => complete_onboarding(tx, actor, w, body).await,
-        ("POST", "changesets", "preview", "") => preview(tx, actor, w, body).await,
+        ("POST", "changesets", "preview", "") => {
+            preview(tx, actor, w, body, include_preview_graph).await
+        }
         // Approval is a person's act, and only a person's.
         //
         // An MCP client's call — whether the model made it or a button in the
@@ -4183,7 +4250,13 @@ async fn graph_snapshot(tx: &mut Tx, w: &str, requested_limit: usize) -> Result<
     }))
 }
 
-async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value> {
+async fn preview(
+    tx: &mut Tx,
+    actor: &Actor,
+    w: &str,
+    b: &Value,
+    include_preview_graph: bool,
+) -> Result<Value> {
     only(b, &["operations", "title", "assumptions"])?;
     let ops: Vec<Operation> = serde_json::from_value(b["operations"].clone())?;
     if ops.is_empty() || ops.len() > 100 {
@@ -4283,7 +4356,7 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
     // Keep the simulated tree in the response, but not in the persisted
     // changeset. It lets an MCP App visualize the conversation's proposal
     // immediately while keeping the committed plan untouched until approval.
-    let preview_graph = if validation.is_ok() {
+    let preview_graph = if include_preview_graph && validation.is_ok() {
         Some(graph_snapshot(tx, w, 200).await?)
     } else {
         None
@@ -4316,6 +4389,12 @@ async fn preview(tx: &mut Tx, actor: &Actor, w: &str, b: &Value) -> Result<Value
         c["preview_graph"] = graph;
     }
     Ok(c)
+}
+
+fn strip_preview_graph(value: &mut Value) {
+    if let Value::Object(fields) = value {
+        fields.remove("preview_graph");
+    }
 }
 
 /// The newest revision recorded for the week containing `week_start`.

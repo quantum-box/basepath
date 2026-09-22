@@ -1183,6 +1183,7 @@ async fn consecutive_requests_may_reach_different_instances() {
     )
     .await;
     assert_eq!(proposed["isError"], false);
+    assert!(proposed["structuredContent"]["preview_graph"].is_object());
     let change_id = proposed["structuredContent"]["id"]
         .as_str()
         .unwrap()
@@ -1215,6 +1216,48 @@ async fn consecutive_requests_may_reach_different_instances() {
     )
     .await;
     assert_eq!(replayed["structuredContent"]["id"], change_id);
+
+    // Proposal permission does not inherit read permission from another
+    // connection for the same person. A replay can still hit the shared
+    // idempotency row, so it must be redacted as well as a fresh proposal.
+    let proposal_only = connect(
+        &client,
+        &service,
+        &first_public,
+        "us_carol",
+        &["pathbase.propose"],
+    )
+    .await;
+    let (replayed_without_graph, _) = request(
+        &client,
+        &first_url,
+        &proposal_only,
+        None,
+        7,
+        "tools/call",
+        json!({"name":"pathbase_propose_plan","arguments":{"workspace_id":workspace,"idempotency_key":"cross-instance","operations":[{"method":"POST","path":format!("/v1/workspaces/{workspace}/items"),"body":{"kind":"action","title":"別インスタンス経由の案"}}]}}),
+    )
+    .await;
+    assert_eq!(replayed_without_graph["isError"], false);
+    assert_eq!(replayed_without_graph["structuredContent"]["id"], change_id);
+    assert!(replayed_without_graph["structuredContent"]
+        .get("preview_graph")
+        .is_none());
+
+    let (fresh_without_graph, _) = request(
+        &client,
+        &first_url,
+        &proposal_only,
+        None,
+        8,
+        "tools/call",
+        json!({"name":"pathbase_propose_plan","arguments":{"workspace_id":workspace,"idempotency_key":"proposal-only","operations":[{"method":"POST","path":format!("/v1/workspaces/{workspace}/items"),"body":{"kind":"action","title":"提案権限だけの案"}}]}}),
+    )
+    .await;
+    assert_eq!(fresh_without_graph["isError"], false);
+    assert!(fresh_without_graph["structuredContent"]
+        .get("preview_graph")
+        .is_none());
 
     // The transport advertises only what it implements: there is no SSE stream
     // to open, so GET is refused rather than left hanging.
