@@ -164,7 +164,7 @@ function Node({
           </span>
         )}
       </div>
-      {(node.detail || node.basis) && (
+      {(node.detail || node.basis || node.relationships?.length) && (
         <div className="plan-node-context">
           {node.detail && <p>{node.detail}</p>}
           {node.basis && (
@@ -220,6 +220,70 @@ function Node({
                   </div>
                 ))}
               </dl>
+            </details>
+          )}
+          {node.relationships && node.relationships.length > 0 && (
+            <details>
+              <summary>関係と根拠を見る（{node.relationships.length}件）</summary>
+              <ul>
+                {node.relationships.map((relation, index) => (
+                  <li key={`${relation.sourceId}:${relation.targetId}:${relation.type}:${index}`}>
+                    <strong>
+                      {relation.sourceTitle} → {relation.targetTitle} · {relation.type}
+                    </strong>
+                    {relation.position !== null && (
+                      <p>表示順 {relation.position + 1}</p>
+                    )}
+                    {relation.rationale && <p>理由: {relation.rationale}</p>}
+                    {relation.basis && (
+                      <dl>
+                        {relation.basis.origin && (
+                          <div>
+                            <dt>出どころ</dt>
+                            <dd>{relation.basis.origin}</dd>
+                          </div>
+                        )}
+                        {relation.basis.speaker && (
+                          <div>
+                            <dt>発言者</dt>
+                            <dd>{relation.basis.speaker}</dd>
+                          </div>
+                        )}
+                        {relation.basis.quote && (
+                          <div>
+                            <dt>引用</dt>
+                            <dd>{relation.basis.quote}</dd>
+                          </div>
+                        )}
+                        {relation.basis.at && (
+                          <div>
+                            <dt>時刻</dt>
+                            <dd>{relation.basis.at}</dd>
+                          </div>
+                        )}
+                        {relation.basis.reason && (
+                          <div>
+                            <dt>理由</dt>
+                            <dd>{relation.basis.reason}</dd>
+                          </div>
+                        )}
+                        {relation.basis.source_ref && (
+                          <div>
+                            <dt>参照</dt>
+                            <dd>{relation.basis.source_ref}</dd>
+                          </div>
+                        )}
+                        {relation.basis.source_url && (
+                          <div>
+                            <dt>参照URL</dt>
+                            <dd>{relation.basis.source_url}</dd>
+                          </div>
+                        )}
+                      </dl>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </details>
           )}
         </div>

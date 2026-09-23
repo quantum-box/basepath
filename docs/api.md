@@ -46,7 +46,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影。最大200ノード、truncatedを確認 |
 | `GET /v1/workspaces/{w}/views` | 保存ビュー一覧 |
 | `GET /v1/workspaces/{w}/changesets` | 変更案一覧 |
-| `GET /v1/workspaces/{w}/plan-drafts` | 会話から作られた未確定の構造案一覧 |
+| `GET /v1/workspaces/{w}/plan-drafts?limit=50&cursor=...&conversation_id=...&status=...` | 会話から作られた未確定の構造案一覧 |
 | `GET /v1/workspaces/{w}/audit` | 操作者、操作元、操作日時の監査一覧 |
 
 コレクション一覧は原則`{items,next_cursor}`、limitは標準50・最大200です。カーソルは最後のIDを返します。snapshotは画面向けの全件投影で、ページングAPIではありません。会話由来の構造案本文とrevision履歴はサイズ上限のない本文を含むためsnapshotから除外し、`GET /plan-drafts`で一覧の要約を取得します。大規模データや複数サーバーへ拡張する際は差分同期が必要です。
@@ -395,7 +395,7 @@ MCP接続は会話本文を保存しません。ホストが渡した`conversati
 | ルート | 内容 |
 | --- | --- |
 | `POST /v1/workspaces/{w}/plan-drafts` | `{title?, conversation_id?, nodes, edges?, assumptions?}`で初回保存。最初のrevisionは1 |
-| `GET /v1/workspaces/{w}/plan-drafts?conversation_id=&status=` | 下書きの要約一覧。構造本体は含めません |
+| `GET /v1/workspaces/{w}/plan-drafts?limit=50&cursor=&conversation_id=&status=` | 下書きの要約を最大200件返します。構造本体は含めません。filterが疎な場合も1回の走査は最大1,000件で、`next_cursor`があれば続きを取得できます。cursorは走査位置を示すため、返された要約の最後のIDとは異なる場合があります |
 | `GET /v1/workspaces/{w}/plan-drafts/{id}` | 最新revisionの構造・出典・仮定 |
 | `POST /v1/workspaces/{w}/plan-drafts/{id}/revisions` | `expected_revision`と新しい構造を渡して追記。現在のrevisionが一致しない場合は409 |
 | `GET /v1/workspaces/{w}/plan-drafts/{id}/revisions` | 保存履歴の要約一覧 |

@@ -42,7 +42,7 @@
 use crate::db::Tx;
 use crate::model::{ApiError, Result};
 use crate::service::{new_id, now, text, title, Actor};
-use crate::storage::{get, list, put};
+use crate::storage::{get, list, list_page, put};
 use chrono::NaiveDate;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -796,16 +796,59 @@ fn summarize(draft: &Value) -> Value {
 }
 
 pub async fn list_drafts(tx: &mut Tx, w: &str, query: &HashMap<String, String>) -> Result<Value> {
-    let mut drafts: Vec<Value> = list(tx, w, "plan_drafts").await?;
-    drafts.retain(|draft| {
-        query
-            .get("status")
-            .is_none_or(|status| draft["status"] == *status)
-            && query
-                .get("conversation_id")
-                .is_none_or(|id| draft["conversation_id"] == *id)
-    });
-    Ok(json!({"items": drafts.iter().map(summarize).collect::<Vec<_>>()}))
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(50)
+        .clamp(1, 200);
+    let filtered = query.contains_key("status") || query.contains_key("conversation_id");
+    // Filtering is applied before filling the result page. A sparse filter is
+    // still bounded to 1,000 scanned documents per call; next_cursor advances
+    // the scan so a caller can continue without a full-collection read.
+    const MAX_FILTER_SCAN: usize = 1_000;
+    let mut scanned = 0;
+    let mut cursor = query.get("cursor").cloned();
+    let mut next_cursor = None;
+    let mut items = Vec::with_capacity(limit);
+    while items.len() < limit && (!filtered || scanned < MAX_FILTER_SCAN) {
+        let batch_limit = if filtered {
+            200.min(MAX_FILTER_SCAN - scanned)
+        } else {
+            200.min(limit - items.len())
+        };
+        let (page, page_cursor) =
+            list_page::<Value>(tx, w, "plan_drafts", cursor.as_deref(), batch_limit).await?;
+        scanned += page.len();
+        for (index, (id, draft)) in page.iter().enumerate() {
+            let matches = query
+                .get("status")
+                .is_none_or(|status| draft["status"] == *status)
+                && query
+                    .get("conversation_id")
+                    .is_none_or(|conversation_id| draft["conversation_id"] == *conversation_id);
+            if matches {
+                items.push(summarize(draft));
+                if items.len() == limit {
+                    next_cursor = if index + 1 < page.len() {
+                        Some(id.clone())
+                    } else {
+                        page_cursor
+                    };
+                    break;
+                }
+            }
+        }
+        if items.len() == limit {
+            break;
+        }
+        let Some(page_cursor) = page_cursor else {
+            next_cursor = None;
+            break;
+        };
+        cursor = Some(page_cursor.clone());
+        next_cursor = Some(page_cursor);
+    }
+    Ok(json!({"items": items, "next_cursor": next_cursor}))
 }
 
 pub async fn get_draft(tx: &mut Tx, w: &str, id: &str) -> Result<Value> {

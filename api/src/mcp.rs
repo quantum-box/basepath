@@ -867,6 +867,22 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
             )));
         }
     }
+    if name == "pathbase_save_plan_draft" {
+        let has_draft_id = object
+            .get("draft_id")
+            .is_some_and(|draft_id| draft_id.as_str().is_some_and(|value| !value.is_empty()));
+        let has_expected_revision = object.contains_key("expected_revision");
+        if object.contains_key("draft_id") && !has_draft_id {
+            return Err(crate::model::ApiError::invalid(
+                "draft_id must be a non-empty string",
+            ));
+        }
+        if has_draft_id != has_expected_revision {
+            return Err(crate::model::ApiError::invalid(
+                "draft_id and expected_revision must be provided together",
+            ));
+        }
+    }
     if object
         .get("conversation_id")
         .and_then(Value::as_str)
@@ -1144,7 +1160,13 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
         ),
         "pathbase_list_plan_drafts" => (
             &["workspace_id"],
-            &["workspace_id", "conversation_id", "status"],
+            &[
+                "workspace_id",
+                "conversation_id",
+                "status",
+                "cursor",
+                "limit",
+            ],
         ),
         "pathbase_withdraw_plan_draft" => (
             &["workspace_id", "draft_id", "idempotency_key"],
@@ -1242,7 +1264,7 @@ fn tools() -> Vec<Tool> {
         write("pathbase_reject_change", "Withdraw a change set so it can never be applied. Discarding a proposal changes no plan data.", false),
         write("pathbase_save_plan_draft", "Save the structured reading of a strategy conversation as a plan draft — goals, criteria, initiatives, milestones, actions, constraints and open questions — next to, never inside, the confirmed plan. Each node names `ref`, `kind` (outcome|idea|initiative|milestone|action|criterion|constraint|question), `title` and `status`: `decided` is what the person said they decided, `considering` is raised but not decided, `hypothesis` is to be verified, `suggested` is your own proposal, `question` is unanswered. `decided` needs `basis.origin: person`; `suggested` must not be attributed to the person. `basis` can carry the exact host-provided `source_ref`, `source_url`, quote/span, speaker, date, reason and assumptions. Omit source details the host does not provide; never invent a quote, timestamp, message ID or URL. A node carrying `fields` (dates, numbers, an owner, a budget) needs a source in `basis` — if you cannot provide one, leave the value out and add a `question` instead. `edges` carry `part_of` (one parent, acyclic, containers only), `contributes_to` and `depends_on` (plan items only, acyclic), and undirected `relates_to`, each with optional `rationale` and `basis`. Deepen only where the conversation justifies it — do not pad levels to fill a shape. `conversation_id` anchors the draft to a linked conversation; naming one linked to another workspace is refused. With `draft_id` this appends the next revision (requires `expected_revision` equal to the current one), so the draft moves as the conversation does without touching the plan or a plan version.", false),
         read("pathbase_get_plan_draft", "Read one saved plan draft: the latest revision's nodes, edges, assumptions and provenance. With `revision` it returns that earlier save, because what the structure said before is the answer to how it moved. A draft is the conversation's proposal — none of it is in the confirmed plan."),
-        read("pathbase_list_plan_drafts", "List plan drafts in one workspace: title, status, revision count, and how many open questions each still holds — the shape of each structure without the structure itself. `conversation_id` filters to one conversation's draft."),
+        read("pathbase_list_plan_drafts", "List plan drafts in one workspace: title, status, revision count, and how many open questions each still holds — the shape of each structure without the structure itself. `limit` returns up to 200 drafts (default 50); `cursor` continues from `next_cursor`. `conversation_id` and `status` filter the list; filtered scans are bounded, so follow `next_cursor` until it is null."),
         write("pathbase_withdraw_plan_draft", "Withdraw a plan draft so it stops being the current reading of the conversation. Its revisions stay readable; nothing in the confirmed plan changes, because a draft never touched it.", false),
         write("pathbase_complete_action", "Propose completion for one action occurrence; local default requires owner review.", false),
         write("pathbase_record_checkin", "Propose a note, learning or review record for owner review.", false),
@@ -1290,6 +1312,12 @@ fn tools() -> Vec<Tool> {
             props["edges"]["items"]["properties"]["position"]["minimum"] = json!(0);
         }
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
+        if shape.name == "pathbase_save_plan_draft" {
+            tool["inputSchema"]["oneOf"] = json!([
+                {"not":{"anyOf":[{"required":["draft_id"]},{"required":["expected_revision"]}]}},
+                {"required":["draft_id","expected_revision"]}
+            ]);
+        }
         if let Some(uri) = ui_resource(shape.name) {
             tool["_meta"] = json!({
                 "ui": {

@@ -23,6 +23,7 @@ type FlowNodeData = {
   conversationStatus: string | null;
   dueDate: string | null;
   selfAssessment: number | null;
+  relationships: PlanNode["relationships"];
   childCount: number;
   open: boolean;
   onToggle: () => void;
@@ -95,11 +96,32 @@ function stateLabel(state: string) {
 
 function FlowPlanNode({ data }: NodeProps<FlowNode>) {
   const hasChildren = data.childCount > 0;
+  const relationshipDetails = data.relationships
+    ?.map((relation) =>
+      [
+        `${relation.sourceTitle} → ${relation.targetTitle} · ${relation.type}`,
+        relation.position === null ? null : `表示順 ${relation.position + 1}`,
+        relation.rationale ? `理由: ${relation.rationale}` : null,
+        relation.basis?.quote ? `引用: ${relation.basis.quote}` : null,
+        relation.basis?.reason ? `根拠: ${relation.basis.reason}` : null,
+        relation.basis?.source_ref
+          ? `参照: ${relation.basis.source_ref}`
+          : null,
+        relation.basis?.source_url
+          ? `参照URL: ${relation.basis.source_url}`
+          : null,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join("\n"),
+    )
+    .join("\n\n");
   return (
     <div
       className="mcp-flow-node"
       data-kind={data.kind}
       data-state={data.state}
+      title={relationshipDetails || undefined}
+      aria-description={relationshipDetails || undefined}
     >
       <Handle type="target" position={Position.Top} />
       <div className="mcp-flow-node-copy">
@@ -178,6 +200,7 @@ function buildFlowGraph(roots: PlanNode[], tree: TreeState) {
         conversationStatus: node.conversationStatus ?? null,
         dueDate: node.dueDate,
         selfAssessment: node.selfAssessment,
+        relationships: node.relationships,
         childCount: countNodes(node.children),
         open: tree.isOpen(node.id),
         onToggle: () => tree.toggle(node.id),

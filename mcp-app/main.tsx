@@ -225,6 +225,15 @@ function conversationDraftFrom(
           source_id: edge.source,
           target_id: edge.target,
           type: edge.type,
+          ...(typeof edge.position === "number"
+            ? { position: edge.position }
+            : {}),
+          ...(typeof edge.rationale === "string"
+            ? { rationale: edge.rationale }
+            : {}),
+          ...(edge.basis && typeof edge.basis === "object"
+            ? { basis: edge.basis }
+            : {}),
         })),
       truncated: false,
       limit: sourceNodes.length,
