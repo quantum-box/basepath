@@ -284,7 +284,7 @@ export function treeFrom(graph: unknown): {
   // rather than falling back to the first workspace's plan.
   const breakdown = !Array.isArray(source.items) && Array.isArray(source.nodes);
   const items = breakdown ? asArray(source.nodes) : asArray(source.items);
-  const relations = breakdown
+  const relations: Unknown[] = breakdown
     ? items
         .filter((item) => asString(item.parent_id))
         .map((item) => ({
