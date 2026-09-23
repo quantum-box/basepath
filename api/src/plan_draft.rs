@@ -832,7 +832,7 @@ pub async fn list_drafts(tx: &mut Tx, w: &str, query: &HashMap<String, String>) 
                     next_cursor = if index + 1 < page.len() {
                         Some(id.clone())
                     } else {
-                        page_cursor
+                        page_cursor.clone()
                     };
                     break;
                 }
