@@ -860,7 +860,7 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
         }
     }
     for key in ["expected_revision", "revision"] {
-        if object.contains_key(key) && !object[key].as_i64().is_some_and(|revision| revision >= 1) {
+        if object.contains_key(key) && object[key].as_i64().is_none_or(|revision| revision < 1) {
             return Err(crate::model::ApiError::invalid(&format!(
                 "Invalid argument: {key}"
             )));

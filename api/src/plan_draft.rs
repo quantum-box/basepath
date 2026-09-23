@@ -428,9 +428,9 @@ fn validate_edges(edges: &Value, kinds: &HashMap<String, String>) -> Result<()> 
         bounded(edge, "rationale", 500)?;
         validate_basis(&edge["basis"], &what)?;
         if !edge["position"].is_null()
-            && !edge["position"]
+            && edge["position"]
                 .as_i64()
-                .is_some_and(|position| position >= 0)
+                .is_none_or(|position| position < 0)
         {
             return Err(ApiError::invalid(&format!(
                 "{what}.positionは0以上の整数で指定してください"
