@@ -44,8 +44,31 @@ function kindLabel(kind: string) {
       return "節目";
     case "idea":
       return "アイデア";
+    case "criterion":
+      return "達成条件";
+    case "constraint":
+      return "制約";
+    case "question":
+      return "未解決の問い";
     default:
       return "目標";
+  }
+}
+
+function conversationStatusLabel(status: string | null | undefined) {
+  switch (status) {
+    case "decided":
+      return "決定";
+    case "considering":
+      return "検討中";
+    case "hypothesis":
+      return "仮説";
+    case "suggested":
+      return "AI提案";
+    case "question":
+      return "質問";
+    default:
+      return null;
   }
 }
 
@@ -123,7 +146,10 @@ function Node({
             <span className="plan-node-title">{node.title}</span>
           </span>
         )}
-        <span className="plan-node-state">{stateLabel(node.state)}</span>
+        <span className="plan-node-state">
+          {conversationStatusLabel(node.conversationStatus) ??
+            stateLabel(node.state)}
+        </span>
         {node.dueDate && (
           <span className="plan-node-due">〜{node.dueDate}</span>
         )}
@@ -138,6 +164,130 @@ function Node({
           </span>
         )}
       </div>
+      {(node.detail || node.basis || node.relationships?.length) && (
+        <div className="plan-node-context">
+          {node.detail && <p>{node.detail}</p>}
+          {node.basis && (
+            <details>
+              <summary>根拠を見る</summary>
+              <dl>
+                {node.basis.origin && (
+                  <div>
+                    <dt>出どころ</dt>
+                    <dd>{node.basis.origin}</dd>
+                  </div>
+                )}
+                {node.basis.speaker && (
+                  <div>
+                    <dt>発言者</dt>
+                    <dd>{node.basis.speaker}</dd>
+                  </div>
+                )}
+                {node.basis.quote && (
+                  <div>
+                    <dt>引用</dt>
+                    <dd>{node.basis.quote}</dd>
+                  </div>
+                )}
+                {node.basis.at && (
+                  <div>
+                    <dt>時刻</dt>
+                    <dd>{node.basis.at}</dd>
+                  </div>
+                )}
+                {node.basis.reason && (
+                  <div>
+                    <dt>理由</dt>
+                    <dd>{node.basis.reason}</dd>
+                  </div>
+                )}
+                {node.basis.source_ref && (
+                  <div>
+                    <dt>参照</dt>
+                    <dd>{node.basis.source_ref}</dd>
+                  </div>
+                )}
+                {node.basis.source_url && (
+                  <div>
+                    <dt>参照URL</dt>
+                    <dd>{node.basis.source_url}</dd>
+                  </div>
+                )}
+                {node.basis.assumptions?.map((assumption) => (
+                  <div key={assumption}>
+                    <dt>前提</dt>
+                    <dd>{assumption}</dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          )}
+          {node.relationships && node.relationships.length > 0 && (
+            <details>
+              <summary>関係と根拠を見る（{node.relationships.length}件）</summary>
+              <ul>
+                {node.relationships.map((relation, index) => (
+                  <li key={`${relation.sourceId}:${relation.targetId}:${relation.type}:${index}`}>
+                    <strong>
+                      {relation.sourceTitle} → {relation.targetTitle} · {relation.type}
+                    </strong>
+                    {relation.position !== null && (
+                      <p>表示順 {relation.position + 1}</p>
+                    )}
+                    {relation.rationale && <p>理由: {relation.rationale}</p>}
+                    {relation.basis && (
+                      <dl>
+                        {relation.basis.origin && (
+                          <div>
+                            <dt>出どころ</dt>
+                            <dd>{relation.basis.origin}</dd>
+                          </div>
+                        )}
+                        {relation.basis.speaker && (
+                          <div>
+                            <dt>発言者</dt>
+                            <dd>{relation.basis.speaker}</dd>
+                          </div>
+                        )}
+                        {relation.basis.quote && (
+                          <div>
+                            <dt>引用</dt>
+                            <dd>{relation.basis.quote}</dd>
+                          </div>
+                        )}
+                        {relation.basis.at && (
+                          <div>
+                            <dt>時刻</dt>
+                            <dd>{relation.basis.at}</dd>
+                          </div>
+                        )}
+                        {relation.basis.reason && (
+                          <div>
+                            <dt>理由</dt>
+                            <dd>{relation.basis.reason}</dd>
+                          </div>
+                        )}
+                        {relation.basis.source_ref && (
+                          <div>
+                            <dt>参照</dt>
+                            <dd>{relation.basis.source_ref}</dd>
+                          </div>
+                        )}
+                        {relation.basis.source_url && (
+                          <div>
+                            <dt>参照URL</dt>
+                            <dd>{relation.basis.source_url}</dd>
+                          </div>
+                        )}
+                      </dl>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
       {hasChildren && open && (
         <ul>
           {node.children.map((child) => (
@@ -208,6 +358,14 @@ export type PlanProposal = {
     deleted: number;
     unknown: number;
   };
+};
+
+export type ConversationDraftView = {
+  title: string;
+  status: string;
+  revision: number;
+  openQuestions: number;
+  assumptions: string[];
 };
 
 function Actions({
@@ -345,6 +503,8 @@ export type PlanViewProps = {
   notice?: string | null;
   /** A conversation proposal rendered as a clearly uncommitted tree. */
   proposal?: PlanProposal | null;
+  /** A structured conversation draft rendered separately from plan changes. */
+  conversationDraft?: ConversationDraftView | null;
   /** Opens the Basepath approval screen through the host when available. */
   onOpenApproval?: (url: string) => void;
   /** Reflects a proposal covered by a Basepath-authored auto-apply range. */
@@ -376,6 +536,7 @@ export function PlanViewPanel({
   busyAction,
   notice,
   proposal,
+  conversationDraft,
   onOpenApproval,
   onApplyProposal,
   proposalActionBusy = false,
@@ -438,6 +599,7 @@ export function PlanViewPanel({
       className="plan-panel"
       data-stale={stale ? "true" : undefined}
       data-proposal={proposal ? "true" : undefined}
+      data-conversation-draft={conversationDraft ? "true" : undefined}
       data-workspace-scope={view.workspace.scope || undefined}
     >
       {showHeader && (
@@ -561,6 +723,40 @@ export function PlanViewPanel({
                   </a>
                 ))}
             </div>
+          )}
+        </section>
+      )}
+      {conversationDraft && (
+        <section className="plan-proposal" aria-label="会話の構造案">
+          <div className="plan-proposal-heading">
+            <div>
+              <span className="plan-eyebrow">CONVERSATION DRAFT</span>
+              <h3>{conversationDraft.title}</h3>
+            </div>
+            <span className="plan-proposal-status">
+              {conversationDraft.status === "withdrawn"
+                ? "取下げ済み"
+                : "未確定"}
+            </span>
+          </div>
+          <p>
+            会話から整理した構造案です。Basepathの計画にはまだ反映されていません。
+          </p>
+          <ul className="plan-proposal-summary">
+            <li>リビジョン {conversationDraft.revision}</li>
+            <li>未解決の問い {conversationDraft.openQuestions}件</li>
+          </ul>
+          {conversationDraft.assumptions.length > 0 && (
+            <details>
+              <summary>
+                この案の前提 {conversationDraft.assumptions.length}件
+              </summary>
+              <ul>
+                {conversationDraft.assumptions.map((assumption) => (
+                  <li key={assumption}>{assumption}</li>
+                ))}
+              </ul>
+            </details>
           )}
         </section>
       )}

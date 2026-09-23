@@ -20,8 +20,10 @@ type FlowNodeData = {
   title: string;
   kind: PlanNode["kind"];
   state: string;
+  conversationStatus: string | null;
   dueDate: string | null;
   selfAssessment: number | null;
+  relationships: PlanNode["relationships"];
   childCount: number;
   open: boolean;
   onToggle: () => void;
@@ -49,8 +51,31 @@ function kindLabel(kind: PlanNode["kind"]) {
       return "節目";
     case "idea":
       return "アイデア";
+    case "criterion":
+      return "達成条件";
+    case "constraint":
+      return "制約";
+    case "question":
+      return "未解決の問い";
     default:
       return "目標";
+  }
+}
+
+function conversationStatusLabel(status: string | null) {
+  switch (status) {
+    case "decided":
+      return "決定";
+    case "considering":
+      return "検討中";
+    case "hypothesis":
+      return "仮説";
+    case "suggested":
+      return "AI提案";
+    case "question":
+      return "質問";
+    default:
+      return null;
   }
 }
 
@@ -71,18 +96,40 @@ function stateLabel(state: string) {
 
 function FlowPlanNode({ data }: NodeProps<FlowNode>) {
   const hasChildren = data.childCount > 0;
+  const relationshipDetails = data.relationships
+    ?.map((relation) =>
+      [
+        `${relation.sourceTitle} → ${relation.targetTitle} · ${relation.type}`,
+        relation.position === null ? null : `表示順 ${relation.position + 1}`,
+        relation.rationale ? `理由: ${relation.rationale}` : null,
+        relation.basis?.quote ? `引用: ${relation.basis.quote}` : null,
+        relation.basis?.reason ? `根拠: ${relation.basis.reason}` : null,
+        relation.basis?.source_ref
+          ? `参照: ${relation.basis.source_ref}`
+          : null,
+        relation.basis?.source_url
+          ? `参照URL: ${relation.basis.source_url}`
+          : null,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join("\n"),
+    )
+    .join("\n\n");
   return (
     <div
       className="mcp-flow-node"
       data-kind={data.kind}
       data-state={data.state}
+      title={relationshipDetails || undefined}
+      aria-description={relationshipDetails || undefined}
     >
       <Handle type="target" position={Position.Top} />
       <div className="mcp-flow-node-copy">
         <span className="mcp-flow-node-kind">{kindLabel(data.kind)}</span>
         <strong>{data.title}</strong>
         <span className="mcp-flow-node-meta">
-          {stateLabel(data.state)}
+          {conversationStatusLabel(data.conversationStatus) ??
+            stateLabel(data.state)}
           {data.dueDate ? ` · 期限 ${data.dueDate}` : ""}
           {data.selfAssessment !== null
             ? ` · 自己評価 ${Math.round(data.selfAssessment)}%`
@@ -150,8 +197,10 @@ function buildFlowGraph(roots: PlanNode[], tree: TreeState) {
         title: node.title,
         kind: node.kind,
         state: node.state,
+        conversationStatus: node.conversationStatus ?? null,
         dueDate: node.dueDate,
         selfAssessment: node.selfAssessment,
+        relationships: node.relationships,
         childCount: countNodes(node.children),
         open: tree.isOpen(node.id),
         onToggle: () => tree.toggle(node.id),

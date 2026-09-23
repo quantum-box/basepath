@@ -77,6 +77,7 @@ fn ui_resource(tool: &str) -> Option<&'static str> {
         | "pathbase_get_alignment"
         | "pathbase_get_dashboard"
         | "pathbase_get_review_queue"
+        | "pathbase_get_plan_draft"
         // Proposal and approval results use the same surface so the plan in
         // a conversation can move from committed state to a clearly marked
         // preview, then refresh after the person's approval.
@@ -339,6 +340,7 @@ impl Mcp {
             "cycle_id",
             "stale_days",
             "depth",
+            "conversation_id",
         ] {
             if let Some(v) = args[key].as_str() {
                 q.insert(key.into(), v.into());
@@ -673,6 +675,54 @@ impl Mcp {
                     json!({"title":"記録の追加","operations":[{"method":"POST","path":format!("{base}/{col}"),"body":args["record"]}]}),
                 )
             }
+            // A plan draft is a proposal surface: it stores the structured
+            // reading of the conversation and writes no item, relation or
+            // record. With `draft_id` the same call appends the next revision.
+            "pathbase_save_plan_draft" => match args["draft_id"].as_str() {
+                Some(draft_id) => (
+                    "POST",
+                    format!("{base}/plan-drafts/{draft_id}/revisions"),
+                    json!({
+                        "nodes": args["nodes"],
+                        "edges": args["edges"],
+                        "title": args["title"],
+                        "conversation_id": args["conversation_id"],
+                        "assumptions": args["assumptions"],
+                        "expected_revision": args["expected_revision"],
+                    }),
+                ),
+                None => (
+                    "POST",
+                    format!("{base}/plan-drafts"),
+                    json!({
+                        "nodes": args["nodes"],
+                        "edges": args["edges"],
+                        "title": args["title"],
+                        "conversation_id": args["conversation_id"],
+                        "assumptions": args["assumptions"],
+                    }),
+                ),
+            },
+            "pathbase_get_plan_draft" => {
+                let draft_id = args["draft_id"].as_str().unwrap_or("");
+                match args["revision"].as_i64() {
+                    Some(revision) => (
+                        "GET",
+                        format!("{base}/plan-drafts/{draft_id}/revisions/{revision}"),
+                        json!({}),
+                    ),
+                    None => ("GET", format!("{base}/plan-drafts/{draft_id}"), json!({})),
+                }
+            }
+            "pathbase_list_plan_drafts" => ("GET", format!("{base}/plan-drafts"), json!({})),
+            "pathbase_withdraw_plan_draft" => (
+                "POST",
+                format!(
+                    "{base}/plan-drafts/{}/withdraw",
+                    args["draft_id"].as_str().unwrap_or("")
+                ),
+                json!({}),
+            ),
             _ => return Err(crate::model::ApiError::missing()),
         };
         let mut result = self
@@ -795,14 +845,42 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
             "children" => value
                 .as_array()
                 .is_some_and(|children| !children.is_empty() && children.len() <= 50),
+            "nodes" => value
+                .as_array()
+                .is_some_and(|nodes| !nodes.is_empty() && nodes.len() <= 100),
             "record" => value.is_object(),
-            "expected_version" => value.as_i64().is_some_and(|version| version >= 1),
+            "expected_version" | "expected_revision" | "revision" => {
+                value.as_i64().is_some_and(|version| version >= 1)
+            }
             _ => value.as_str().is_some_and(|text| !text.is_empty()),
         };
         if !valid {
             return Err(crate::model::ApiError::invalid(&format!(
                 "Invalid argument: {key}"
             )));
+        }
+    }
+    for key in ["expected_revision", "revision"] {
+        if object.contains_key(key) && object[key].as_i64().is_none_or(|revision| revision < 1) {
+            return Err(crate::model::ApiError::invalid(&format!(
+                "Invalid argument: {key}"
+            )));
+        }
+    }
+    if name == "pathbase_save_plan_draft" {
+        let has_draft_id = object
+            .get("draft_id")
+            .is_some_and(|draft_id| draft_id.as_str().is_some_and(|value| !value.is_empty()));
+        let has_expected_revision = object.contains_key("expected_revision");
+        if object.contains_key("draft_id") && !has_draft_id {
+            return Err(crate::model::ApiError::invalid(
+                "draft_id must be a non-empty string",
+            ));
+        }
+        if has_draft_id != has_expected_revision {
+            return Err(crate::model::ApiError::invalid(
+                "draft_id and expected_revision must be provided together",
+            ));
         }
     }
     if object
@@ -1062,6 +1140,38 @@ fn argument_contract(name: &str) -> Option<(&'static [&'static str], &'static [&
             &["workspace_id", "preview_id", "idempotency_key"],
             &["workspace_id", "preview_id", "idempotency_key"],
         ),
+        "pathbase_save_plan_draft" => (
+            &["workspace_id", "nodes", "idempotency_key"],
+            &[
+                "workspace_id",
+                "nodes",
+                "edges",
+                "title",
+                "conversation_id",
+                "assumptions",
+                "draft_id",
+                "expected_revision",
+                "idempotency_key",
+            ],
+        ),
+        "pathbase_get_plan_draft" => (
+            &["workspace_id", "draft_id"],
+            &["workspace_id", "draft_id", "revision"],
+        ),
+        "pathbase_list_plan_drafts" => (
+            &["workspace_id"],
+            &[
+                "workspace_id",
+                "conversation_id",
+                "status",
+                "cursor",
+                "limit",
+            ],
+        ),
+        "pathbase_withdraw_plan_draft" => (
+            &["workspace_id", "draft_id", "idempotency_key"],
+            &["workspace_id", "draft_id", "idempotency_key"],
+        ),
         "pathbase_complete_action" => (
             &[
                 "workspace_id",
@@ -1152,6 +1262,10 @@ fn tools() -> Vec<Tool> {
         write("pathbase_propose_plan", "Propose explicit plan operations, without inventing dates or applying changes. The operations may include deletions. A date, target, baseline, owner or self-assessment needs `basis` on its operation; without one the proposal is refused rather than quietly stripped, because a value you cannot source is one the person should be asked about. `assumptions` carries your reasoning alongside the rows. The response includes `preview_graph` only when this connection also has `pathbase.read`; proposal access alone does not reveal the existing plan.", true),
         write("pathbase_apply_changes", "Apply an unexpired change set after the owner approved it in PathBase, or after the owner explicitly asks in the conversation to reflect a proposal marked `auto_apply_eligible`. Usually there is nothing to do after Basepath approval: approving there applies the change set in the same act, and this then returns `already_applied: true` without writing anything. It exists for proposals approved before that was so and for a matching range the owner set in Basepath in advance. The server re-checks the workspace, connection, expiry, scope and full range coverage; an AI-supplied approval flag is never accepted.", true),
         write("pathbase_reject_change", "Withdraw a change set so it can never be applied. Discarding a proposal changes no plan data.", false),
+        write("pathbase_save_plan_draft", "Save the structured reading of a strategy conversation as a plan draft — goals, criteria, initiatives, milestones, actions, constraints and open questions — next to, never inside, the confirmed plan. Each node names `ref`, `kind` (outcome|idea|initiative|milestone|action|criterion|constraint|question), `title` and `status`: `decided` is what the person said they decided, `considering` is raised but not decided, `hypothesis` is to be verified, `suggested` is your own proposal, `question` is unanswered. `decided` needs `basis.origin: person`; `suggested` must not be attributed to the person. `basis` can carry the exact host-provided `source_ref`, `source_url`, quote/span, speaker, date, reason and assumptions. Omit source details the host does not provide; never invent a quote, timestamp, message ID or URL. A node carrying `fields` (dates, numbers, an owner, a budget) needs a source in `basis` — if you cannot provide one, leave the value out and add a `question` instead. `edges` carry `part_of` (one parent, acyclic, containers only), `contributes_to` and `depends_on` (plan items only, acyclic), and undirected `relates_to`, each with optional `rationale` and `basis`. Deepen only where the conversation justifies it — do not pad levels to fill a shape. `conversation_id` anchors the draft to a linked conversation; naming one linked to another workspace is refused. With `draft_id` this appends the next revision (requires `expected_revision` equal to the current one), so the draft moves as the conversation does without touching the plan or a plan version.", false),
+        read("pathbase_get_plan_draft", "Read one saved plan draft: the latest revision's nodes, edges, assumptions and provenance. With `revision` it returns that earlier save, because what the structure said before is the answer to how it moved. A draft is the conversation's proposal — none of it is in the confirmed plan."),
+        read("pathbase_list_plan_drafts", "List plan drafts in one workspace: title, status, revision count, and how many open questions each still holds — the shape of each structure without the structure itself. `limit` returns up to 200 drafts (default 50); `cursor` continues from `next_cursor`. `conversation_id` and `status` filter the list; filtered scans are bounded, so follow `next_cursor` until it is null."),
+        write("pathbase_withdraw_plan_draft", "Withdraw a plan draft so it stops being the current reading of the conversation. Its revisions stay readable; nothing in the confirmed plan changes, because a draft never touched it.", false),
         write("pathbase_complete_action", "Propose completion for one action occurrence; local default requires owner review.", false),
         write("pathbase_record_checkin", "Propose a note, learning or review record for owner review.", false),
         write("pathbase_record_observation", "Propose a sourced metric observation for owner review.", false),
@@ -1159,8 +1273,51 @@ fn tools() -> Vec<Tool> {
     defs.into_iter().map(|shape| {
         let (required, allowed) = argument_contract(shape.name).unwrap();
         let mut props=json!({});
-        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key" if shape.name == "pathbase_link_context"=>json!({"type":"string","minLength":1,"maxLength":200,"pattern":"^[\\x20-\\x7E]+$","description":"1-200 ASCII bytes; storage is VARBINARY(200)."}),"idempotency_key"=>json!({"type":"string","minLength":1}),_=>json!({"type":"string"})};}
+        for k in allowed.iter().copied() {props[k]=match k{"operations"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"method":{"type":"string","enum":["POST","PATCH","DELETE"]},"path":{"type":"string"},"body":{"type":"object"},"basis":{"type":"string","description":"Where a date, target, baseline, owner or self-assessment in this operation came from. Required when the body sets one."}},"required":["method","path","body"],"additionalProperties":false}}),"assumptions"=>json!({"type":"array","items":{"type":"string"},"maxItems":20,"description":"What you assumed, in your words, shown next to the diff."}),"children"=>json!({"type":"array","minItems":1,"maxItems":50,"items":{"type":"object","properties":{"title":{"type":"string"},"kind":{"type":"string"},"rationale":{"type":"string"}},"required":["title"],"additionalProperties":false}}),"nodes"=>json!({"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","properties":{"ref":{"type":"string","minLength":1,"maxLength":64},"kind":{"type":"string","enum":["outcome","idea","initiative","milestone","action","criterion","constraint","question"]},"title":{"type":"string","minLength":1,"maxLength":200},"detail":{"type":"string","maxLength":10000},"status":{"type":"string","enum":["decided","considering","hypothesis","suggested","question"]},"fields":{"type":"object","description":"Committing attributes — dates, numbers, owner, budget. Requires basis."},"basis":{"type":"object","description":"Where this node came from: origin (person|assistant|inference), speaker, quote, at, reason, assumptions."}},"required":["ref","kind","title","status"],"additionalProperties":false}}),"edges"=>json!({"type":"array","maxItems":200,"items":{"type":"object","properties":{"source":{"type":"string"},"target":{"type":"string"},"type":{"type":"string","enum":["part_of","contributes_to","depends_on","relates_to"]},"rationale":{"type":"string","maxLength":500},"basis":{"type":"object"},"position":{"type":"integer"}},"required":["source","target","type"],"additionalProperties":false}}),"record"=>json!({"type":"object"}),"expected_version" | "expected_revision" | "revision"=>json!({"type":"integer","minimum":1}),"limit"=>json!({"type":"string","description":"1-200; the response reports the limit it applied and whether the result was truncated."}),"conversation_id"=>json!({"type":"string","minLength":1,"maxLength":191}),"idempotency_key" if shape.name == "pathbase_link_context"=>json!({"type":"string","minLength":1,"maxLength":200,"pattern":"^[\\x20-\\x7E]+$","description":"1-200 ASCII bytes; storage is VARBINARY(200)."}),"idempotency_key"=>json!({"type":"string","minLength":1}),_=>json!({"type":"string"})};}
+        if shape.name == "pathbase_save_plan_draft" {
+            let basis_schema = json!({
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string", "enum": ["person", "assistant", "inference"]},
+                    "source_ref": {"type": "string", "maxLength": 191, "description": "Exact host-provided message or source reference; omit if unavailable."},
+                    "source_url": {"type": "string", "maxLength": 2048, "description": "Exact host-provided HTTP(S) URL without credentials; omit if unavailable."},
+                    "speaker": {"type": "string", "maxLength": 100},
+                    "quote": {"type": "string", "maxLength": 500, "description": "The exact available span; do not reconstruct missing transcript text."},
+                    "at": {"type": "string", "description": "Known date (YYYY-MM-DD) or RFC3339 timestamp; omit if unknown."},
+                    "reason": {"type": "string", "maxLength": 500},
+                    "assumptions": {"type": "array", "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 300}}
+                },
+                "additionalProperties": false
+            });
+            props["nodes"]["items"]["properties"]["basis"] = basis_schema.clone();
+            props["nodes"]["items"]["properties"]["fields"] = json!({
+                "type": "object",
+                "properties": {
+                    "due_date": {"type": ["string", "null"], "format": "date"},
+                    "start_date": {"type": ["string", "null"], "format": "date"},
+                    "scheduled_date": {"type": ["string", "null"], "format": "date"},
+                    "scheduled_time": {"type": ["string", "null"], "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+                    "assignee_id": {"type": ["string", "null"], "maxLength": 200},
+                    "self_assessment": {"type": ["number", "null"]},
+                    "target": {"type": ["number", "null"]},
+                    "baseline": {"type": ["number", "null"]},
+                    "unit": {"type": ["string", "null"], "maxLength": 200},
+                    "estimate_minutes": {"type": ["number", "null"]},
+                    "budget": {"type": ["number", "null"]},
+                    "period": {"type": ["string", "null"], "maxLength": 200}
+                },
+                "additionalProperties": false
+            });
+            props["edges"]["items"]["properties"]["basis"] = basis_schema;
+            props["edges"]["items"]["properties"]["position"]["minimum"] = json!(0);
+        }
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
+        if shape.name == "pathbase_save_plan_draft" {
+            tool["inputSchema"]["oneOf"] = json!([
+                {"not":{"anyOf":[{"required":["draft_id"]},{"required":["expected_revision"]}]}},
+                {"required":["draft_id","expected_revision"]}
+            ]);
+        }
         if let Some(uri) = ui_resource(shape.name) {
             tool["_meta"] = json!({
                 "ui": {

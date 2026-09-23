@@ -7,7 +7,36 @@
  */
 
 export type PlanNodeKind =
-  "idea" | "outcome" | "initiative" | "action" | "milestone";
+  | "idea"
+  | "outcome"
+  | "initiative"
+  | "action"
+  | "milestone"
+  | "criterion"
+  | "constraint"
+  | "question";
+
+export type ConversationBasis = {
+  origin?: string;
+  source_ref?: string;
+  source_url?: string;
+  speaker?: string;
+  quote?: string;
+  at?: string;
+  reason?: string;
+  assumptions?: string[];
+};
+
+export type PlanRelationship = {
+  sourceId: string;
+  targetId: string;
+  sourceTitle: string;
+  targetTitle: string;
+  type: string;
+  position: number | null;
+  rationale: string | null;
+  basis: ConversationBasis | null;
+};
 
 export type PlanNode = {
   id: string;
@@ -17,6 +46,13 @@ export type PlanNode = {
   dueDate: string | null;
   /** Percent, or null when the person has not assessed it. */
   selfAssessment: number | null;
+  /** How the conversation framed this item, separate from plan state. */
+  conversationStatus?: string | null;
+  detail?: string | null;
+  basis?: ConversationBasis | null;
+  /** Conversation-draft relations, including their order and evidence. */
+  relationships?: PlanRelationship[];
+  parentRelation?: PlanRelationship | null;
   children: PlanNode[];
 };
 
@@ -248,7 +284,7 @@ export function treeFrom(graph: unknown): {
   // rather than falling back to the first workspace's plan.
   const breakdown = !Array.isArray(source.items) && Array.isArray(source.nodes);
   const items = breakdown ? asArray(source.nodes) : asArray(source.items);
-  const relations = breakdown
+  const relations: Unknown[] = breakdown
     ? items
         .filter((item) => asString(item.parent_id))
         .map((item) => ({
@@ -259,6 +295,7 @@ export function treeFrom(graph: unknown): {
     : asArray(source.relations);
 
   const byId = new Map<string, PlanNode>();
+  const isConversationDraft = typeof source.draft_id === "string";
   for (const item of items) {
     const fields = (item.fields as Unknown | undefined) ?? {};
     const assessment = fields.self_assessment ?? item.self_assessment;
@@ -269,22 +306,58 @@ export function treeFrom(graph: unknown): {
       state: asString(item.state, "active"),
       dueDate: typeof item.due_date === "string" ? item.due_date : null,
       selfAssessment: typeof assessment === "number" ? assessment : null,
+      conversationStatus:
+        typeof item.conversation_status === "string"
+          ? item.conversation_status
+          : null,
+      detail: typeof item.detail === "string" ? item.detail : null,
+      basis:
+        item.basis && typeof item.basis === "object"
+          ? (item.basis as ConversationBasis)
+          : null,
+      relationships: isConversationDraft ? [] : undefined,
       children: [],
     });
   }
 
   const attached = new Set<string>();
   for (const relation of relations) {
+    const sourceId = asString(relation.source_id);
+    const targetId = asString(relation.target_id);
+    const child = byId.get(sourceId);
+    const parent = byId.get(targetId);
+    if (isConversationDraft && child && parent) {
+      const relationship: PlanRelationship = {
+        sourceId,
+        targetId,
+        sourceTitle: child.title,
+        targetTitle: parent.title,
+        type: asString(relation.type),
+        position:
+          typeof relation.position === "number" ? relation.position : null,
+        rationale:
+          typeof relation.rationale === "string" ? relation.rationale : null,
+        basis:
+          relation.basis && typeof relation.basis === "object"
+            ? (relation.basis as ConversationBasis)
+            : null,
+      };
+      child.relationships?.push(relationship);
+      parent.relationships?.push(relationship);
+      if (relationship.type === "part_of") child.parentRelation = relationship;
+    }
     if (relation.type !== "part_of") continue;
-    const child = byId.get(asString(relation.source_id));
-    const parent = byId.get(asString(relation.target_id));
     // A parent outside the slice leaves the child at the top level.
     if (!child || !parent || child === parent) continue;
     parent.children.push(child);
     attached.add(child.id);
   }
 
-  const order = (a: PlanNode, b: PlanNode) => a.title.localeCompare(b.title);
+  const order = (a: PlanNode, b: PlanNode) => {
+    const aPosition = a.parentRelation?.position ?? Number.MAX_SAFE_INTEGER;
+    const bPosition = b.parentRelation?.position ?? Number.MAX_SAFE_INTEGER;
+    return aPosition - bPosition || a.title.localeCompare(b.title);
+  };
   for (const node of byId.values()) node.children.sort(order);
   const roots = [...byId.values()]
     .filter((node) => !attached.has(node.id))

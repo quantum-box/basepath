@@ -85,12 +85,26 @@ pub fn document() -> Value {
         ("/v1/workspaces/{w}/changesets/preview", vec!["post"]),
         ("/v1/workspaces/{w}/changesets/{id}/approve", vec!["post"]),
         ("/v1/workspaces/{w}/changesets/{id}/apply", vec!["post"]),
+        // Structured readings of a conversation — proposals only. None of
+        // these writes plan data; a draft is created, revised, read and
+        // withdrawn next to the plan, never inside it.
+        ("/v1/workspaces/{w}/plan-drafts", vec!["get", "post"]),
+        ("/v1/workspaces/{w}/plan-drafts/{id}", vec!["get"]),
+        (
+            "/v1/workspaces/{w}/plan-drafts/{id}/revisions",
+            vec!["get", "post"],
+        ),
+        (
+            "/v1/workspaces/{w}/plan-drafts/{id}/revisions/{n}",
+            vec!["get"],
+        ),
+        ("/v1/workspaces/{w}/plan-drafts/{id}/withdraw", vec!["post"]),
         ("/v1/workspaces/{w}/exports", vec!["post"]),
         ("/v1/workspaces/{w}/imports", vec!["post"]),
     ] {
         for method in methods {
             let mut params = vec![];
-            for name in ["w", "id"] {
+            for name in ["w", "id", "n"] {
                 if path.contains(&format!("{{{name}}}")) {
                     params.push(
                         json!({"name":name,"in":"path","required":true,"schema":{"type":"string"}}),

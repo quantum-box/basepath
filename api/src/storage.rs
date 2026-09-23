@@ -38,6 +38,60 @@ pub async fn list<T: DeserializeOwned>(tx: &mut Tx, w: &str, col: &str) -> Resul
         .collect()
 }
 
+/// Reads a bounded page from a document collection in insertion order.
+///
+/// The cursor is the last document ID returned on the previous page. Using
+/// the collection sequence rather than an offset keeps the amount read per
+/// request bounded as the collection grows.
+pub async fn list_page<T: DeserializeOwned>(
+    tx: &mut Tx,
+    w: &str,
+    col: &str,
+    cursor: Option<&str>,
+    requested_limit: usize,
+) -> Result<(Vec<(String, T)>, Option<String>)> {
+    let limit = requested_limit.clamp(1, 200);
+    let fetch_limit = i64::try_from(limit + 1).unwrap_or(201);
+    let after = if let Some(cursor) = cursor {
+        let row = tx
+            .fetch_optional(
+                &format!(
+                    "SELECT seq FROM documents WHERE workspace_id=? AND collection=? AND id=?{}",
+                    tx.lock_reads()
+                ),
+                &params![w, col, cursor],
+            )
+            .await?
+            .ok_or_else(|| ApiError::invalid("カーソルが無効です"))?;
+        Some(row.text(0)?)
+    } else {
+        None
+    };
+    let sql = format!(
+        "SELECT id, body FROM documents WHERE workspace_id=? AND collection=?{} ORDER BY seq LIMIT ?{}",
+        if after.is_some() { " AND seq>?" } else { "" },
+        tx.lock_reads()
+    );
+    let rows = if let Some(after) = after {
+        tx.fetch_all(&sql, &params![w, col, after, fetch_limit])
+            .await?
+    } else {
+        tx.fetch_all(&sql, &params![w, col, fetch_limit]).await?
+    };
+    let has_more = rows.len() > limit;
+    let next_cursor = if has_more {
+        Some(rows[limit - 1].text(0)?)
+    } else {
+        None
+    };
+    let items = rows
+        .iter()
+        .take(limit)
+        .map(|row| Ok((row.text(0)?, serde_json::from_str(&row.text(1)?)?)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((items, next_cursor))
+}
+
 pub async fn get<T: DeserializeOwned>(tx: &mut Tx, w: &str, col: &str, id: &str) -> Result<T> {
     let sql = format!(
         "SELECT body FROM documents WHERE workspace_id=? AND collection=? AND id=?{}",

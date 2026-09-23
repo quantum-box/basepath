@@ -2192,8 +2192,11 @@ impl Service {
         // An agent may propose, withdraw a proposal, apply one the person
         // already approved, and compare a proposed breakdown against what is
         // already there. It may not approve, and it may not write directly.
+        // Plan drafts are a proposal surface like changesets: writing one
+        // stores what the conversation looked like and touches no plan data.
         if actor.agent
             && !breakdown_comparison
+            && parts.get(3) != Some(&"plan-drafts")
             && !(parts.get(3) == Some(&"changesets")
                 && (parts.get(4) == Some(&"preview")
                     || parts.get(5) == Some(&"apply")
@@ -2493,6 +2496,7 @@ async fn dispatch_inner(
     if actor.agent
         && method != "GET"
         && !breakdown_comparison
+        && col != "plan-drafts"
         && !(col == "changesets" && (id == "preview" || suffix == "apply" || suffix == "reject"))
     {
         return Err(ApiError::new(
@@ -4073,6 +4077,26 @@ async fn dispatch_inner(
             put(tx, w, col, id, &c).await?;
             Ok(json!({"changeset":c,"results":output}))
         }
+        // The structured reading of a conversation. A draft is versioned
+        // separately from the plan, and every route under it is a proposal
+        // surface: none of them writes an item, a relation, or a record, so
+        // an agent connection may save and withdraw drafts the way it may
+        // preview a changeset.
+        ("POST", "plan-drafts", "", "") => crate::plan_draft::create(tx, actor, w, body).await,
+        ("GET", "plan-drafts", "", "") => crate::plan_draft::list_drafts(tx, w, query).await,
+        ("GET", "plan-drafts", id, "") if !id.is_empty() => {
+            crate::plan_draft::get_draft(tx, w, id).await
+        }
+        ("POST", "plan-drafts", id, "revisions") if !id.is_empty() => {
+            crate::plan_draft::revise(tx, actor, w, id, body).await
+        }
+        ("GET", "plan-drafts", id, "revisions") if !id.is_empty() => {
+            crate::plan_draft::revisions(tx, w, id, p.get(6).copied()).await
+        }
+        ("POST", "plan-drafts", id, "withdraw") if !id.is_empty() => {
+            only(body, &[])?;
+            crate::plan_draft::withdraw(tx, actor, w, id).await
+        }
         ("POST", "exports", "", "") if !actor.agent => {
             only(body, &[])?;
             let mut backup = json!({"schema_version":1,"exported_at":now(),"workspace_id":w});
@@ -4087,6 +4111,8 @@ async fn dispatch_inner(
                 "cycles",
                 "checkins",
                 "memories",
+                "plan_drafts",
+                "plan_draft_revisions",
             ] {
                 if col == "memories" && personal_only(tx, w).await.is_err() {
                     continue;
@@ -4806,10 +4832,22 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             "cycles",
             "checkins",
             "memories",
+            "plan_drafts",
+            "plan_draft_revisions",
         ],
     )?;
     if b["schema_version"] != 1 {
         return Err(ApiError::invalid("対応していないバックアップ形式です"));
+    }
+    let has_plan_drafts = b.get("plan_drafts").is_some();
+    let has_plan_draft_revisions = b.get("plan_draft_revisions").is_some();
+    if has_plan_drafts != has_plan_draft_revisions
+        || (has_plan_drafts
+            && (!b["plan_drafts"].is_array() || !b["plan_draft_revisions"].is_array()))
+    {
+        return Err(ApiError::invalid(
+            "構造案とrevisionの両方を一覧で指定してください",
+        ));
     }
     let cols = [
         "items",
@@ -4822,13 +4860,24 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         "cycles",
         "checkins",
         "memories",
+        "plan_drafts",
+        "plan_draft_revisions",
     ];
     let mut count = 0;
     for col in cols {
         let Some(docs) = b[col].as_array() else {
             // Collections added after the backup format existed are optional:
             // an older export simply has none of them.
-            if ["weekly_reviews", "cycles", "checkins", "memories"].contains(&col) {
+            if [
+                "weekly_reviews",
+                "cycles",
+                "checkins",
+                "memories",
+                "plan_drafts",
+                "plan_draft_revisions",
+            ]
+            .contains(&col)
+            {
                 continue;
             }
             return Err(ApiError::invalid("バックアップに必要な一覧がありません"));
@@ -4944,5 +4993,6 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             let _: WeeklyReview = get(tx, w, "weekly_reviews", &id).await?;
         }
     }
+    crate::plan_draft::validate_import(tx, w).await?;
     Ok(json!({"imported":count,"workspace_id":w}))
 }

@@ -12,6 +12,7 @@ pub mod migrate;
 pub mod model;
 pub mod oauth;
 pub mod openapi;
+pub mod plan_draft;
 pub mod preflight;
 pub mod retrieval;
 mod seed;

@@ -752,7 +752,7 @@ async fn hosted_mcp_delegates_to_the_person_and_honours_scope_and_disconnect() {
     initialize(&client, &url, &alice).await;
     let (tools, _) = request(&client, &url, &alice, None, 2, "tools/list", json!({})).await;
     let listed = tools["tools"].as_array().unwrap();
-    assert_eq!(listed.len(), 36);
+    assert_eq!(listed.len(), 40);
     assert!(listed
         .iter()
         .any(|tool| tool["name"] == "pathbase_link_context"));
@@ -1146,7 +1146,7 @@ async fn consecutive_requests_may_reach_different_instances() {
         json!({}),
     )
     .await;
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 36);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 40);
     assert!(headers.get("mcp-session-id").is_none());
     // Nothing the endpoint returns may be cached by a proxy in between.
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");

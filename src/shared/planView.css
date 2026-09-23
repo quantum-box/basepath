@@ -337,6 +337,41 @@
   font-size: 11px;
   color: var(--plan-muted);
 }
+.plan-node-context {
+  display: grid;
+  gap: 3px;
+  margin: 2px 0 6px 2.8em;
+  color: var(--plan-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.plan-node-context p {
+  margin: 0;
+}
+.plan-node-context details {
+  font-size: 11px;
+}
+.plan-node-context summary {
+  cursor: pointer;
+}
+.plan-node-context dl {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 0;
+}
+.plan-node-context dl > div {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px;
+}
+.plan-node-context dt {
+  color: var(--plan-muted);
+}
+.plan-node-context dd {
+  margin: 0;
+  color: var(--plan-text);
+  white-space: pre-wrap;
+}
 .plan-expand-all,
 .plan-truncated button,
 .plan-actions button {
