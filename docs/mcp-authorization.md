@@ -133,6 +133,13 @@ may contain `DELETE` operations, so `pathbase_preview_changes`,
 `pathbase_get_graph` returns at most `limit` nodes (default and maximum 200)
 and reports `truncated`; a truncated graph is a slice, not the plan.
 
+Conversation integration through `pathbase_preview_changes` or
+`pathbase_propose_plan` requires both `pathbase.propose` and `pathbase.read`.
+The read grant is required because the caller must reconcile against the
+existing plan; the server also verifies that the supplied conversation is
+actively linked to the exact authorized workspace. Ordinary proposals without
+`conversation_id` retain the proposal-only permission contract.
+
 ## Secrets
 
 - There is no client secret anywhere: Basepath registers public clients only

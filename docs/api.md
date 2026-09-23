@@ -25,7 +25,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
 | `GET /v1/settings` | compact、notifications、timezone |
 | `GET /v1/templates` | free / okr / project / learning / habit、バージョン、作成予定 |
-| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles / checkins |
+| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles / checkinsと、変更競合検出用の`plan_version` |
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
 | `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
@@ -43,7 +43,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/observations` | 訂正前を含む観測一覧 |
 | `GET /v1/workspaces/{w}/today?local_date=2026-09-12` | その日の行動と実施状態 |
 | `GET /v1/workspaces/{w}/calendar?start=2026-09-01&end=2026-10-12&timezone=Asia/Tokyo` | 最大63日分の開始・期限・予定・習慣と未予定項目。習慣は訂正後の最新状態を返す |
-| `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影。最大200ノード、truncatedを確認 |
+| `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影と変更競合検出用の`plan_version`。最大200ノード、truncatedを確認 |
 | `GET /v1/workspaces/{w}/views` | 保存ビュー一覧 |
 | `GET /v1/workspaces/{w}/changesets` | 変更案一覧 |
 | `GET /v1/workspaces/{w}/plan-drafts?limit=50&cursor=...&conversation_id=...&status=...` | 会話から作られた未確定の構造案一覧 |
@@ -324,7 +324,9 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 - `PATCH /v1/settings`：compact、notifications、timezoneをすべて指定。タイムゾーンはIANA識別子です。
 + `POST /v1/workspaces/{w}/exports`：空オブジェクト。schema_version=1のJSONを返します。会話の構造案と全revision本文も含みます。
 + `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビュー・会話の構造案とrevision履歴を再検証して追加します。構造案とrevisionの参照、連続したrevision番号、最新revisionと構造案本文の一致も検証し、同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。構造案の追加前に作られたschema_version=1のバックアップでは、この2つの一覧は省略できます。
-- `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。通常セッション、または`pathbase.read`を持つMCP接続の成功応答には、シミュレーション後の目標ツリーを`preview_graph`として含めます。形は`{items, relations, truncated, limit}`で、`items`と`relations`は操作をSAVEPOINT内で反映した状態、`truncated`と`limit`は通常のグラフ取得と同じ上限情報です。上限に達した場合も、提案で変更・作成された項目と、その`part_of`上位経路を優先して含め、残りを作成順で補います。`pathbase.propose`だけを持つMCP接続には既存の計画データを返さないため、このフィールドを含めません。このフィールドは会話中の可視化専用で、保存されたchangesetには含まれません。`GET /changesets`や`GET /changesets/{id}`で後から再取得できる値ではありません。
+- `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。通常セッション、または`pathbase.read`を持つMCP接続の成功応答には、シミュレーション後の目標ツリーを`preview_graph`として含めます。形は`{items, relations, truncated, limit, plan_version}`で、`items`と`relations`は操作をSAVEPOINT内で反映した状態、`truncated`と`limit`は通常のグラフ取得と同じ上限情報です。上限に達した場合も、提案で変更・作成された項目と、その`part_of`上位経路を優先して含め、残りを作成順で補います。`pathbase.propose`だけを持つMCP接続には既存の計画データを返さないため、このフィールドを含めません。このフィールドは会話中の可視化専用で、保存されたchangesetには含まれません。`GET /changesets`や`GET /changesets/{id}`で後から再取得できる値ではありません。読み取り時の競合検出には通常の`GET /graph`または`GET /snapshot`が返す`plan_version`を使い、`expected_base_version`として渡します。指定版が現在と違えば409 `VERSION_CONFLICT`、会話統合で版を省略すれば428 `VERSION_REQUIRED`です。
+
+別の会話で出た内容を既存計画へ統合する変更案では、`conversation_id`を追加します。会話IDは同じworkspaceに現在`active`でリンクされていなければならず、他workspaceへのリンクや停止済みリンクは409になります。この経路では`expected_base_version`も必須です。`operations`には同じworkspaceのitems / relations操作だけを指定し、各操作に1〜500文字の`match_rationale`（既存項目との一致根拠、または重複でない新規項目と判断した根拠）を付けます。既存項目の同定はタイトルだけで行わず、更新・移動には既存IDを使います。項目削除は拒否し、`part_of`の付け替えは同じIDのreparentとして提案します。適用前のシミュレーションは全操作をSAVEPOINT内で行い、1件でも矛盾すれば案全体を保存しません。`operations: []`はリンク済み会話の変更なしを表し、`status: "no_change"`を返して変更案を作りません。タイムアウト後の再試行では同じ`Idempotency-Key`と同じ入力を使います。計画版が変わった場合は最新グラフを読み直し、差分を作り直してください。
 - `POST …/changesets/{id}/approve`：`hash`（任意）。人のアプリ操作のみが承認できます。**承認がそのまま適用です。**同じトランザクションで操作を実行し、`status`は`applied`になります。承認だけして反映されていない状態は作られません。2段階に分かれているのはAIが適用する経路のためで、人に二度押させるためではありませんでした。
 - `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。承認時に適用されるようになる前に承認された案のための経路で、すでに適用済みのものには`already_applied: true`を返し、何も書きません。**本人が事前に決めた範囲に入る案は、個別の承認なしでもここで適用されます**（下記）。
 
