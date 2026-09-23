@@ -2192,8 +2192,11 @@ impl Service {
         // An agent may propose, withdraw a proposal, apply one the person
         // already approved, and compare a proposed breakdown against what is
         // already there. It may not approve, and it may not write directly.
+        // Plan drafts are a proposal surface like changesets: writing one
+        // stores what the conversation looked like and touches no plan data.
         if actor.agent
             && !breakdown_comparison
+            && parts.get(3) != Some(&"plan-drafts")
             && !(parts.get(3) == Some(&"changesets")
                 && (parts.get(4) == Some(&"preview")
                     || parts.get(5) == Some(&"apply")
@@ -2493,6 +2496,7 @@ async fn dispatch_inner(
     if actor.agent
         && method != "GET"
         && !breakdown_comparison
+        && col != "plan-drafts"
         && !(col == "changesets" && (id == "preview" || suffix == "apply" || suffix == "reject"))
     {
         return Err(ApiError::new(
@@ -2597,6 +2601,7 @@ async fn dispatch_inner(
                 "observations",
                 "views",
                 "changesets",
+                "plan_drafts",
                 "weekly_reviews",
                 "cycles",
                 "checkins",
@@ -4072,6 +4077,26 @@ async fn dispatch_inner(
             let output = commit(tx, actor, &mut c).await?;
             put(tx, w, col, id, &c).await?;
             Ok(json!({"changeset":c,"results":output}))
+        }
+        // The structured reading of a conversation. A draft is versioned
+        // separately from the plan, and every route under it is a proposal
+        // surface: none of them writes an item, a relation, or a record, so
+        // an agent connection may save and withdraw drafts the way it may
+        // preview a changeset.
+        ("POST", "plan-drafts", "", "") => crate::plan_draft::create(tx, actor, w, body).await,
+        ("GET", "plan-drafts", "", "") => crate::plan_draft::list_drafts(tx, w, query).await,
+        ("GET", "plan-drafts", id, "") if !id.is_empty() => {
+            crate::plan_draft::get_draft(tx, w, id).await
+        }
+        ("POST", "plan-drafts", id, "revisions") if !id.is_empty() => {
+            crate::plan_draft::revise(tx, actor, w, id, body).await
+        }
+        ("GET", "plan-drafts", id, "revisions") if !id.is_empty() => {
+            crate::plan_draft::revisions(tx, w, id, p.get(6).copied()).await
+        }
+        ("POST", "plan-drafts", id, "withdraw") if !id.is_empty() => {
+            only(body, &[])?;
+            crate::plan_draft::withdraw(tx, actor, w, id).await
         }
         ("POST", "exports", "", "") if !actor.agent => {
             only(body, &[])?;

@@ -43,6 +43,8 @@ pub fn required_scope(tool: &str) -> &'static str {
         "pathbase_preview_changes"
         | "pathbase_propose_plan"
         | "pathbase_reject_change"
+        | "pathbase_save_plan_draft"
+        | "pathbase_withdraw_plan_draft"
         | "pathbase_complete_action"
         | "pathbase_record_checkin"
         | "pathbase_record_observation"

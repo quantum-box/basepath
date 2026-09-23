@@ -25,7 +25,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
 | `GET /v1/settings` | compact、notifications、timezone |
 | `GET /v1/templates` | free / okr / project / learning / habit、バージョン、作成予定 |
-| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles / checkins |
+| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / plan_drafts / weekly_reviews / cycles / checkins |
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
 | `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
@@ -46,6 +46,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影。最大200ノード、truncatedを確認 |
 | `GET /v1/workspaces/{w}/views` | 保存ビュー一覧 |
 | `GET /v1/workspaces/{w}/changesets` | 変更案一覧 |
+| `GET /v1/workspaces/{w}/plan-drafts` | 会話から作られた未確定の構造案一覧 |
 | `GET /v1/workspaces/{w}/audit` | 操作者、操作元、操作日時の監査一覧 |
 
 コレクション一覧は原則`{items,next_cursor}`、limitは標準50・最大200です。カーソルは最後のIDを返します。snapshotは画面向けの全件投影で、ページングAPIではありません。大規模データや複数サーバーへ拡張する際は差分同期が必要です。
@@ -383,3 +384,52 @@ MCP接続は会話本文を保存しません。ホストが渡した`conversati
 バージョン`1`固定値です。モデルやホストがこれらを任意に名乗る入力欄は提供しません。
 リンクの`source`と`source_version`は、どの契約で作られたかを示す監査用メタデータです。
 承認済みの変更案・目標・行動をこの機能から直接変更することはありません。
+
+## 会話の構造案
+
+会話を目標・施策・節目・行動などの多階層構造として記録します。これは確定計画ではなく、
+会話をどう読んだかを確認するための下書きです。保存・更新・取り下げのどれも、項目・関連・
+行動記録を変更せず、計画のversionも進めません。モデルはホスト側にあり、APIは会話本文を
+取得・生成しません。
+
+| ルート | 内容 |
+| --- | --- |
+| `POST /v1/workspaces/{w}/plan-drafts` | `{title?, conversation_id?, nodes, edges?, assumptions?}`で初回保存。最初のrevisionは1 |
+| `GET /v1/workspaces/{w}/plan-drafts?conversation_id=&status=` | 下書きの要約一覧。構造本体は含めません |
+| `GET /v1/workspaces/{w}/plan-drafts/{id}` | 最新revisionの構造・出典・仮定 |
+| `POST /v1/workspaces/{w}/plan-drafts/{id}/revisions` | `expected_revision`と新しい構造を渡して追記。現在のrevisionが一致しない場合は409 |
+| `GET /v1/workspaces/{w}/plan-drafts/{id}/revisions` | 保存履歴の要約一覧 |
+| `GET /v1/workspaces/{w}/plan-drafts/{id}/revisions/{n}` | revision `n`時点の内容 |
+| `POST /v1/workspaces/{w}/plan-drafts/{id}/withdraw` | 下書きを取り下げる。履歴は読み取り可能なまま保持 |
+
+`nodes`は1〜100件、`edges`は最大200件です。nodeの`ref`は1〜64文字の重複しない識別子、
+`kind`は`outcome | idea | initiative | milestone | action | criterion | constraint | question`、
+`status`は`decided | considering | hypothesis | suggested | question`です。`decided`は本人が会話で
+決めたこと、`suggested`はAIの提案、`hypothesis`は検証する仮説、`question`は未解決事項を表し、
+これらを確定項目の状態と混同しません。agentの`decided`は`basis.origin=person`、`suggested`は
+`basis.origin=assistant`が必要です。`title`は1〜200文字、`detail`は最大10,000文字です。
+`fields`は任意で、`due_date` / `start_date` / `scheduled_date`（YYYY-MM-DD）、`scheduled_time`
+(HH:MM)、`assignee_id` / `unit` / `period`（最大200文字）、`self_assessment` / `target` /
+`baseline` / `estimate_minutes` / `budget`（数値）を受け付けます。agentが`fields`を設定する場合は、
+値の出どころを示すbasisも必要です。
+
+各nodeとedgeは任意の`basis`を持てます。`origin`（`person | assistant | inference`）、
+ホストから得た`source_ref`（最大191文字）または認証情報のないHTTP(S) `source_url`（最大2,048文字）、
+正確に得られた`quote`（最大500文字）、`speaker`（最大100文字）、既知の`at`（日付またはRFC3339）、
+`reason`（最大500文字）、`assumptions`（最大10件、各300文字以内）を保存します。取得できないmessage ID・
+URL・原文・時刻は作らず省略します。top-levelの`assumptions`は最大20件、各1,000文字以内です。
+`decided`を出すagentは`basis.origin=person`を、`fields`を持つnodeは値の出どころを示すbasisを
+必要とします。出典がなければその値を確定せず、質問として記録します。保存された引用やURLは
+ホストが渡した未検証データです。
+
+`edges`は`source`（子または関係元）、`target`（親または関係先）、`type`を持ち、任意の`rationale`、
+`basis`、0以上の`position`を持てます。`part_of`はsourceがchild、targetがparentの単一親で循環しない
+構造、親は`outcome | idea | initiative | milestone`に限ります。`contributes_to`はsourceがtargetへ貢献し、
+`depends_on`はsourceがtargetに依存する計画項目間の循環しない関係、`relates_to`は無向の関連です。
+深さや期間を固定しません。会話で根拠のない階層を水増ししません。
+
+MCPでは`pathbase_save_plan_draft`と`pathbase_withdraw_plan_draft`に`pathbase.propose`、
+`pathbase_get_plan_draft`と`pathbase_list_plan_drafts`に`pathbase.read`が必要です。通常のworkspace権限・
+tenant境界も各リクエストで検証されます。agentの作成・更新・取り下げは提案だけで、確定計画へ書き込みません。
+作成・更新・取り下げには通常の`Idempotency-Key`が必要です。revisionの不足は428 `VERSION_REQUIRED`、
+古いrevisionや取り下げ後の更新は409 `VERSION_CONFLICT`です。
