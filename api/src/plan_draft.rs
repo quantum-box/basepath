@@ -928,9 +928,9 @@ pub async fn validate_import(tx: &mut Tx, w: &str) -> Result<()> {
         if !["open", "withdrawn"].contains(&status) {
             return Err(ApiError::invalid("構造案の状態が不正です"));
         }
-        if !draft["revision"]
+        if draft["revision"]
             .as_i64()
-            .is_some_and(|revision| revision >= 1)
+            .is_none_or(|revision| revision < 1)
         {
             return Err(ApiError::invalid("構造案のrevisionが不正です"));
         }
