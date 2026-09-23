@@ -2601,7 +2601,6 @@ async fn dispatch_inner(
                 "observations",
                 "views",
                 "changesets",
-                "plan_drafts",
                 "weekly_reviews",
                 "cycles",
                 "checkins",
@@ -4112,6 +4111,8 @@ async fn dispatch_inner(
                 "cycles",
                 "checkins",
                 "memories",
+                "plan_drafts",
+                "plan_draft_revisions",
             ] {
                 if col == "memories" && personal_only(tx, w).await.is_err() {
                     continue;
@@ -4831,10 +4832,22 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             "cycles",
             "checkins",
             "memories",
+            "plan_drafts",
+            "plan_draft_revisions",
         ],
     )?;
     if b["schema_version"] != 1 {
         return Err(ApiError::invalid("対応していないバックアップ形式です"));
+    }
+    let has_plan_drafts = b.get("plan_drafts").is_some();
+    let has_plan_draft_revisions = b.get("plan_draft_revisions").is_some();
+    if has_plan_drafts != has_plan_draft_revisions
+        || (has_plan_drafts
+            && (!b["plan_drafts"].is_array() || !b["plan_draft_revisions"].is_array()))
+    {
+        return Err(ApiError::invalid(
+            "構造案とrevisionの両方を一覧で指定してください",
+        ));
     }
     let cols = [
         "items",
@@ -4847,13 +4860,24 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
         "cycles",
         "checkins",
         "memories",
+        "plan_drafts",
+        "plan_draft_revisions",
     ];
     let mut count = 0;
     for col in cols {
         let Some(docs) = b[col].as_array() else {
             // Collections added after the backup format existed are optional:
             // an older export simply has none of them.
-            if ["weekly_reviews", "cycles", "checkins", "memories"].contains(&col) {
+            if [
+                "weekly_reviews",
+                "cycles",
+                "checkins",
+                "memories",
+                "plan_drafts",
+                "plan_draft_revisions",
+            ]
+            .contains(&col)
+            {
                 continue;
             }
             return Err(ApiError::invalid("バックアップに必要な一覧がありません"));
@@ -4969,5 +4993,6 @@ async fn import(tx: &mut Tx, w: &str, b: &Value) -> Result<Value> {
             let _: WeeklyReview = get(tx, w, "weekly_reviews", &id).await?;
         }
     }
+    crate::plan_draft::validate_import(tx, w).await?;
     Ok(json!({"imported":count,"workspace_id":w}))
 }

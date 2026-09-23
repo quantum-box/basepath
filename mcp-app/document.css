@@ -38,11 +38,13 @@ body {
   stroke-width: 1.5;
 }
 
-.plan-panel[data-proposal="true"] .mcp-plan-flow {
+.plan-panel[data-proposal="true"] .mcp-plan-flow,
+.plan-panel[data-conversation-draft="true"] .mcp-plan-flow {
   border-color: color-mix(in srgb, var(--plan-accent) 55%, var(--plan-line));
 }
 
-.plan-panel[data-proposal="true"] .mcp-flow-node {
+.plan-panel[data-proposal="true"] .mcp-flow-node,
+.plan-panel[data-conversation-draft="true"] .mcp-flow-node {
   border-style: dashed;
   background: color-mix(in srgb, var(--plan-accent) 5%, var(--plan-surface));
 }

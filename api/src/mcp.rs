@@ -77,6 +77,7 @@ fn ui_resource(tool: &str) -> Option<&'static str> {
         | "pathbase_get_alignment"
         | "pathbase_get_dashboard"
         | "pathbase_get_review_queue"
+        | "pathbase_get_plan_draft"
         // Proposal and approval results use the same surface so the plan in
         // a conversation can move from committed state to a clearly marked
         // preview, then refresh after the person's approval.

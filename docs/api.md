@@ -25,7 +25,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces` | 利用できる領域とroleの配列 |
 | `GET /v1/settings` | compact、notifications、timezone |
 | `GET /v1/templates` | free / okr / project / learning / habit、バージョン、作成予定 |
-| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / plan_drafts / weekly_reviews / cycles / checkins |
+| `GET /v1/workspaces/{w}/snapshot` | その領域のitems / relations / records / metrics / observations / views / changesets / weekly_reviews / cycles / checkins |
 | `GET /v1/workspaces/{w}/weekly-review?week_start=2026-09-14` | 現地週の行動実績、自己評価、成果指標、担当者別集計、レビュー履歴 |
 | `GET /v1/workspaces/{w}/planning` | 計画期間、今日が入る期間とその前後、期間なしの項目数、直近の確定レビュー |
 | `GET /v1/workspaces/{w}/alignment` | 目標の担当・期間・`part_of`/`contributes_to`・上位未接続の一覧 |
@@ -49,7 +49,7 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/plan-drafts` | 会話から作られた未確定の構造案一覧 |
 | `GET /v1/workspaces/{w}/audit` | 操作者、操作元、操作日時の監査一覧 |
 
-コレクション一覧は原則`{items,next_cursor}`、limitは標準50・最大200です。カーソルは最後のIDを返します。snapshotは画面向けの全件投影で、ページングAPIではありません。大規模データや複数サーバーへ拡張する際は差分同期が必要です。
+コレクション一覧は原則`{items,next_cursor}`、limitは標準50・最大200です。カーソルは最後のIDを返します。snapshotは画面向けの全件投影で、ページングAPIではありません。会話由来の構造案本文とrevision履歴はサイズ上限のない本文を含むためsnapshotから除外し、`GET /plan-drafts`で一覧の要約を取得します。大規模データや複数サーバーへ拡張する際は差分同期が必要です。
 
 ## 共有ワークスペース
 
@@ -322,8 +322,8 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 - `POST /v1/workspaces/{w}/templates/{id}/apply`：titleと任意description / start_date / due_date。テンプレートが項目・関連・ビューを同じトランザクションで作ります。OKRの目標値は自動生成しません。
 - `POST /v1/workspaces/{w}/views`：name、type（list / map / timeline / okr / today）、filters。`POST …/views/{id}/query`で保存条件による項目検索を実行します。
 - `PATCH /v1/settings`：compact、notifications、timezoneをすべて指定。タイムゾーンはIANA識別子です。
-- `POST /v1/workspaces/{w}/exports`：空オブジェクト。schema_version=1のJSONを返します。
-- `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビューを再検証して追加します。同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。
++ `POST /v1/workspaces/{w}/exports`：空オブジェクト。schema_version=1のJSONを返します。会話の構造案と全revision本文も含みます。
++ `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビュー・会話の構造案とrevision履歴を再検証して追加します。構造案とrevisionの参照、連続したrevision番号、最新revisionと構造案本文の一致も検証し、同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。構造案の追加前に作られたschema_version=1のバックアップでは、この2つの一覧は省略できます。
 - `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。通常セッション、または`pathbase.read`を持つMCP接続の成功応答には、シミュレーション後の目標ツリーを`preview_graph`として含めます。形は`{items, relations, truncated, limit}`で、`items`と`relations`は操作をSAVEPOINT内で反映した状態、`truncated`と`limit`は通常のグラフ取得と同じ上限情報です。上限に達した場合も、提案で変更・作成された項目と、その`part_of`上位経路を優先して含め、残りを作成順で補います。`pathbase.propose`だけを持つMCP接続には既存の計画データを返さないため、このフィールドを含めません。このフィールドは会話中の可視化専用で、保存されたchangesetには含まれません。`GET /changesets`や`GET /changesets/{id}`で後から再取得できる値ではありません。
 - `POST …/changesets/{id}/approve`：`hash`（任意）。人のアプリ操作のみが承認できます。**承認がそのまま適用です。**同じトランザクションで操作を実行し、`status`は`applied`になります。承認だけして反映されていない状態は作られません。2段階に分かれているのはAIが適用する経路のためで、人に二度押させるためではありませんでした。
 - `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。承認時に適用されるようになる前に承認された案のための経路で、すでに適用済みのものには`already_applied: true`を返し、何も書きません。**本人が事前に決めた範囲に入る案は、個別の承認なしでもここで適用されます**（下記）。
@@ -408,6 +408,7 @@ MCP接続は会話本文を保存しません。ホストが渡した`conversati
 決めたこと、`suggested`はAIの提案、`hypothesis`は検証する仮説、`question`は未解決事項を表し、
 これらを確定項目の状態と混同しません。agentの`decided`は`basis.origin=person`、`suggested`は
 `basis.origin=assistant`が必要です。`title`は1〜200文字、`detail`は最大10,000文字です。
+`kind=question`のnodeは`status=question`でなければなりません。未解決の問いの集計はkindではなくstatusを基準にします。
 `fields`は任意で、`due_date` / `start_date` / `scheduled_date`（YYYY-MM-DD）、`scheduled_time`
 (HH:MM)、`assignee_id` / `unit` / `period`（最大200文字）、`self_assessment` / `target` /
 `baseline` / `estimate_minutes` / `budget`（数値）を受け付けます。agentが`fields`を設定する場合は、

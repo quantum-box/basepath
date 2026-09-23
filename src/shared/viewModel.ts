@@ -7,7 +7,25 @@
  */
 
 export type PlanNodeKind =
-  "idea" | "outcome" | "initiative" | "action" | "milestone";
+  | "idea"
+  | "outcome"
+  | "initiative"
+  | "action"
+  | "milestone"
+  | "criterion"
+  | "constraint"
+  | "question";
+
+export type ConversationBasis = {
+  origin?: string;
+  source_ref?: string;
+  source_url?: string;
+  speaker?: string;
+  quote?: string;
+  at?: string;
+  reason?: string;
+  assumptions?: string[];
+};
 
 export type PlanNode = {
   id: string;
@@ -17,6 +35,10 @@ export type PlanNode = {
   dueDate: string | null;
   /** Percent, or null when the person has not assessed it. */
   selfAssessment: number | null;
+  /** How the conversation framed this item, separate from plan state. */
+  conversationStatus?: string | null;
+  detail?: string | null;
+  basis?: ConversationBasis | null;
   children: PlanNode[];
 };
 
@@ -269,6 +291,15 @@ export function treeFrom(graph: unknown): {
       state: asString(item.state, "active"),
       dueDate: typeof item.due_date === "string" ? item.due_date : null,
       selfAssessment: typeof assessment === "number" ? assessment : null,
+      conversationStatus:
+        typeof item.conversation_status === "string"
+          ? item.conversation_status
+          : null,
+      detail: typeof item.detail === "string" ? item.detail : null,
+      basis:
+        item.basis && typeof item.basis === "object"
+          ? (item.basis as ConversationBasis)
+          : null,
       children: [],
     });
   }

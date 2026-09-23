@@ -45,7 +45,7 @@ use crate::service::{new_id, now, text, title, Actor};
 use crate::storage::{get, list, put};
 use chrono::NaiveDate;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// What a draft node can be. The first five are the item kinds the plan
 /// already knows — a draft node of one of those kinds is something that could
@@ -339,6 +339,11 @@ fn validate_nodes(nodes: &Value, agent: bool) -> Result<HashMap<String, String>>
             return Err(ApiError::invalid(&format!(
                 "{what}.statusは{}のいずれかです",
                 STATUSES.join(" / ")
+            )));
+        }
+        if kind == "question" && status != "question" {
+            return Err(ApiError::invalid(&format!(
+                "{what}.kind=questionにはstatus=questionが必要です"
             )));
         }
         title(node, "title", 200)
@@ -768,7 +773,7 @@ fn summarize(draft: &Value) -> Value {
         .map(|nodes| {
             nodes
                 .iter()
-                .filter(|node| node["status"] == "question" || node["kind"] == "question")
+                .filter(|node| node["status"] == "question")
                 .count()
         })
         .unwrap_or(0);
@@ -839,4 +844,180 @@ pub async fn revisions(tx: &mut Tx, w: &str, id: &str, revision: Option<&str>) -
             }))
             .collect::<Vec<_>>()
     }))
+}
+
+fn validate_import_timestamp(document: &Value, key: &str) -> Result<()> {
+    let stamp = document[key]
+        .as_str()
+        .ok_or_else(|| ApiError::invalid(&format!("{key}は日時文字列で指定してください")))?;
+    if chrono::DateTime::parse_from_rfc3339(stamp).is_err() {
+        return Err(ApiError::invalid(&format!(
+            "{key}はRFC3339形式で指定してください"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_import_content(document: &Value, agent: bool) -> Result<()> {
+    title(document, "title", 200)?;
+    bounded(
+        document,
+        "conversation_id",
+        crate::conversation::MAX_CONVERSATION_ID_LENGTH,
+    )?;
+    let content = json!({
+        "nodes": document["nodes"],
+        "edges": document["edges"],
+        "assumptions": document["assumptions"],
+    });
+    read_draft(&content, agent)?;
+    Ok(())
+}
+
+/// Validates the two collections as one unit after a workspace backup has
+/// been inserted. Every head must have a contiguous history whose last
+/// revision exactly matches it; a partial or cross-workspace history is not a
+/// restorable conversation.
+pub async fn validate_import(tx: &mut Tx, w: &str) -> Result<()> {
+    let drafts: Vec<Value> = list(tx, w, "plan_drafts").await?;
+    let revisions: Vec<Value> = list(tx, w, "plan_draft_revisions").await?;
+    let mut draft_ids = HashSet::new();
+
+    for draft in &drafts {
+        crate::service::only(
+            draft,
+            &[
+                "id",
+                "workspace_id",
+                "title",
+                "status",
+                "revision",
+                "conversation_id",
+                "link_id",
+                "proposed_by",
+                "proposed_by_connection",
+                "nodes",
+                "edges",
+                "assumptions",
+                "created_at",
+                "updated_at",
+                "withdrawn_by",
+                "withdrawn_at",
+            ],
+        )?;
+        let id = draft["id"]
+            .as_str()
+            .filter(|id| !id.trim().is_empty() && id.trim() == *id && id.chars().count() <= 200)
+            .ok_or_else(|| ApiError::invalid("構造案のidが不正です"))?;
+        if !draft_ids.insert(id.to_owned()) {
+            return Err(ApiError::invalid("構造案のidが重複しています"));
+        }
+        if draft["workspace_id"].as_str() != Some(w) {
+            return Err(ApiError::invalid("構造案のワークスペースが不整合です"));
+        }
+        title(draft, "title", 200)?;
+        bounded(
+            draft,
+            "conversation_id",
+            crate::conversation::MAX_CONVERSATION_ID_LENGTH,
+        )?;
+        bounded(draft, "link_id", 200)?;
+        title(draft, "proposed_by", 200)?;
+        bounded(draft, "proposed_by_connection", 200)?;
+        let status = draft["status"].as_str().unwrap_or("");
+        if !["open", "withdrawn"].contains(&status) {
+            return Err(ApiError::invalid("構造案の状態が不正です"));
+        }
+        if !draft["revision"]
+            .as_i64()
+            .is_some_and(|revision| revision >= 1)
+        {
+            return Err(ApiError::invalid("構造案のrevisionが不正です"));
+        }
+        validate_import_timestamp(draft, "created_at")?;
+        validate_import_timestamp(draft, "updated_at")?;
+        if status == "withdrawn" {
+            title(draft, "withdrawn_by", 200)?;
+            validate_import_timestamp(draft, "withdrawn_at")?;
+        }
+    }
+
+    let mut history: HashMap<String, BTreeMap<i64, &Value>> = HashMap::new();
+    for revision in &revisions {
+        crate::service::only(
+            revision,
+            &[
+                "id",
+                "draft_id",
+                "workspace_id",
+                "revision",
+                "title",
+                "conversation_id",
+                "nodes",
+                "edges",
+                "assumptions",
+                "saved_by",
+                "saved_by_connection",
+                "created_at",
+            ],
+        )?;
+        let draft_id = revision["draft_id"]
+            .as_str()
+            .filter(|id| draft_ids.contains(*id))
+            .ok_or_else(|| ApiError::invalid("構造案revisionの参照先がありません"))?;
+        if revision["workspace_id"].as_str() != Some(w) {
+            return Err(ApiError::invalid(
+                "構造案revisionのワークスペースが不整合です",
+            ));
+        }
+        let number = revision["revision"]
+            .as_i64()
+            .filter(|number| *number >= 1)
+            .ok_or_else(|| ApiError::invalid("構造案revision番号が不正です"))?;
+        let expected_id = format!("{draft_id}:{number:06}");
+        if revision["id"].as_str() != Some(expected_id.as_str()) {
+            return Err(ApiError::invalid("構造案revisionのidが不整合です"));
+        }
+        validate_import_content(revision, revision["saved_by_connection"].is_string())?;
+        title(revision, "saved_by", 200)?;
+        bounded(revision, "saved_by_connection", 200)?;
+        validate_import_timestamp(revision, "created_at")?;
+        if history
+            .entry(draft_id.to_owned())
+            .or_default()
+            .insert(number, revision)
+            .is_some()
+        {
+            return Err(ApiError::invalid("構造案revision番号が重複しています"));
+        }
+    }
+
+    for draft in &drafts {
+        let id = text(draft, "id");
+        let head_revision = draft["revision"].as_i64().unwrap_or(0);
+        let Some(saved) = history.get(id) else {
+            return Err(ApiError::invalid("構造案にrevision履歴がありません"));
+        };
+        if saved.len() as i64 != head_revision
+            || saved
+                .keys()
+                .enumerate()
+                .any(|(index, number)| *number != index as i64 + 1)
+        {
+            return Err(ApiError::invalid(
+                "構造案revision履歴に欠落または重複があります",
+            ));
+        }
+        let latest = saved
+            .get(&head_revision)
+            .ok_or_else(|| ApiError::invalid("構造案の最新revisionがありません"))?;
+        for key in ["title", "conversation_id", "nodes", "edges", "assumptions"] {
+            if draft[key] != latest[key] {
+                return Err(ApiError::invalid(
+                    "構造案の最新内容とrevision履歴が一致しません",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
