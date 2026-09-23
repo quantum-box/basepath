@@ -153,7 +153,7 @@ async fn a_conversation_becomes_a_reviewable_structure() {
     let graph = query(&service, &ai, &format!("/v1/workspaces/{w}/graph"))
         .await
         .unwrap();
-    assert_eq!(graph["nodes"].as_array().unwrap().len(), 0);
+    assert_eq!(graph["items"].as_array().unwrap().len(), 0);
 }
 
 /// `decided` is a claim about what the person said, so an agent needs the
