@@ -4,6 +4,7 @@ import {
   ReactFlowProvider,
   Handle,
   Position,
+  useNodesInitialized,
   useReactFlow,
   type Node,
   type NodeProps,
@@ -187,6 +188,7 @@ function MapCanvas({
   canEdit,
 }: Props) {
   const flow = useReactFlow<MapNode>();
+  const nodesInitialized = useNodesInitialized();
   const [zoom, setZoom] = useState(100);
   const [expanded, setExpanded] = useState(false);
   const [baseZoom, setBaseZoom] = useState(1);
@@ -428,12 +430,18 @@ function MapCanvas({
       });
   }, [flow]);
   useEffect(() => {
-    const timer = setTimeout(resetView, 90);
-    return () => clearTimeout(timer);
+    if (!nodesInitialized) return;
+    // React Flow applies controlled node updates and measures their DOM nodes
+    // after this component renders. Wait through a layout/measurement frame
+    // before computing bounds so a newly edited deep node is included.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(resetView);
+    });
+    return () => cancelAnimationFrame(frame);
   // `tree` is the complete graph projection, including milestones and
   // actions. Counting the legacy collections here would leave a newly-added
   // deeper action outside the current viewport.
-  }, [scope, tree, closedIds, expanded, resetView]);
+  }, [scope, tree, closedIds, expanded, nodesInitialized, resetView]);
   useEffect(() => {
     const observer = new ResizeObserver(resetView);
     if (container.current) observer.observe(container.current);
