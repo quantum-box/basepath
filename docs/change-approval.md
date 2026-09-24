@@ -219,7 +219,7 @@ App use the same normalized diff:
 - additions, content edits, parent moves, relationship edits, hold/retire
   candidates, questions, and conflicts receive distinct labels;
 - changed fields and parent/relation endpoints keep their before/after values;
-- item changes carry the before/after subtree counts for descendants, actions,
+- with read access, item changes carry the before/after subtree counts for descendants, actions,
   dependencies, and contribution links, with up to twelve descendant names for
   context. These are structural counts; dates and states are not recalculated;
 - an operation may carry `interpretation.status` and `origin`, plus a

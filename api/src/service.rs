@@ -2255,6 +2255,14 @@ impl Service {
             crate::collaboration::authorize_replay(&mut tx, method, &parts, &response).await?;
             if !include_preview_graph {
                 strip_preview_graph(&mut response);
+                if let Some(fields) = response.as_object_mut() {
+                    fields.remove("workspaces");
+                }
+            } else if response["status"] == "no_change" {
+                // The no-change plan and membership can change between
+                // retries. Never replay stale read-authorized snapshots.
+                response["preview_graph"] = graph_snapshot(&mut tx, w, 200).await?;
+                response["workspaces"] = json!(memberships(&mut tx, actor).await?);
             }
             return Ok(response);
         }
@@ -4989,12 +4997,13 @@ async fn preview(
     };
     let mut validation = Ok(());
     let mut changes = Vec::new();
-    let need_item_impacts = ops.iter().any(|op| {
-        matches!(
-            op.path.trim_matches('/').split('/').nth(3),
-            Some("items" | "actions")
-        )
-    });
+    let need_item_impacts = include_preview_graph
+        && ops.iter().any(|op| {
+            matches!(
+                op.path.trim_matches('/').split('/').nth(3),
+                Some("items" | "actions")
+            )
+        });
     let before_items: Vec<Value> = if need_item_impacts {
         list(tx, w, "items").await?
     } else {
