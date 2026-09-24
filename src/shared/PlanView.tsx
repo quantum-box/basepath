@@ -588,8 +588,34 @@ export function PlanViewPanel({
   }
   if (!view.workspace) {
     return (
-      <div className="plan-panel plan-empty-state">
-        <p>利用できるワークスペースがありません。</p>
+      <div
+        className="plan-panel plan-empty-state"
+        data-proposal={proposal ? "true" : undefined}
+      >
+        {proposal?.noChange ? (
+          <section className="plan-proposal" aria-label="会話からの変更案">
+            <div className="plan-proposal-heading">
+              <div>
+                <span className="plan-eyebrow">CONVERSATION DRAFT</span>
+                <h3>{proposal.title}</h3>
+              </div>
+              <span className="plan-proposal-status">変更なし</span>
+            </div>
+            <ChangeDiff change={proposal.change} />
+            {proposal.assumptions.length > 0 && (
+              <details>
+                <summary>この案の前提 {proposal.assumptions.length}件</summary>
+                <ul>
+                  {proposal.assumptions.map((assumption) => (
+                    <li key={assumption}>{assumption}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </section>
+        ) : (
+          <p>利用できるワークスペースがありません。</p>
+        )}
       </div>
     );
   }
