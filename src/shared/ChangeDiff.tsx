@@ -232,6 +232,12 @@ function ChangeCard({
         <span className="change-meaning-label">{meaningLabels[meaning]}</span>
         <strong>{row.title}</strong>
         {row.steps > 1 && <small>{row.steps}操作を集約</small>}
+        {row.sideEffects.recordsCreated > 0 && (
+          <small>履歴を{row.sideEffects.recordsCreated}件追加</small>
+        )}
+        {row.sideEffects.notificationsCreated > 0 && (
+          <small>通知を{row.sideEffects.notificationsCreated}件作成</small>
+        )}
       </header>
       <FieldTable row={row} />
       {row.effect === "deleted" && row.collection !== "relations" && (

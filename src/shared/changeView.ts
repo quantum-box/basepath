@@ -45,7 +45,7 @@ export type ChangeRow = {
   effect: ChangeEffect;
   collection: string;
   method: string;
-  path: string;
+  sideEffects: { recordsCreated: number; notificationsCreated: number };
   fields: FieldChange[];
   /**
    * Values in this row that will be read afterwards as commitments — a date,
@@ -56,7 +56,7 @@ export type ChangeRow = {
   basis: string[];
   /** Why this operation matches an existing item or is genuinely new. */
   matchRationale: string[];
-  /** Ordinary edits collapse to a net row; history-producing operations stay separate. */
+  /** Ordinary edits collapse to a net row; operations with persisted side effects stay separate. */
   steps: number;
   interpretations: ChangeInterpretation[];
   /** Exact active subtree context captured on both sides of the preview. */
@@ -321,13 +321,21 @@ function relationChanges(change: Unknown): FieldChange[] {
 
 function rowFromChange(change: Unknown): ChangeRow {
   const interpretation = interpretationFrom(change.interpretation);
+  const sideEffects = object(change.side_effects);
   return {
     id: text(change.id),
     title: text(change.title, "（無題）"),
     effect: text(change.effect, "unknown") as ChangeEffect,
     collection: text(change.collection),
     method: text(change.method),
-    path: text(change.path),
+    sideEffects: {
+      recordsCreated: typeof sideEffects?.records_created === "number"
+        ? sideEffects.records_created
+        : 0,
+      notificationsCreated: typeof sideEffects?.notifications_created === "number"
+        ? sideEffects.notifications_created
+        : 0,
+    },
     fields: [
       ...(change.effect === "deleted"
         ? []
@@ -362,10 +370,9 @@ function effectBetween(before: unknown, after: unknown): ChangeEffect {
 function aggregateRows(rows: ChangeRow[]): ChangeRow[] {
   const groups = new Map<string, ChangeRow>();
   rows.forEach((row, index) => {
-    const preservesSideEffects =
-      /\/actions\/[^/]+\/(?:complete|reopen|skip)$/.test(row.path) ||
-      /\/items\/[^/]+\/reparent$/.test(row.path);
-    const key = row.id && !preservesSideEffects
+    const hasSideEffects =
+      row.sideEffects.recordsCreated > 0 || row.sideEffects.notificationsCreated > 0;
+    const key = row.id && !hasSideEffects
       ? `${row.collection}:${row.id}`
       : `${row.collection}:row-${index}`;
     const existing = groups.get(key);
@@ -416,6 +423,12 @@ function aggregateRows(rows: ChangeRow[]): ChangeRow[] {
         ...row.matchRationale,
       ]),
       steps: existing.steps + row.steps,
+      sideEffects: {
+        recordsCreated:
+          existing.sideEffects.recordsCreated + row.sideEffects.recordsCreated,
+        notificationsCreated:
+          existing.sideEffects.notificationsCreated + row.sideEffects.notificationsCreated,
+      },
       interpretations: [...interpretations.values()],
       impact,
       beforeSnapshot,

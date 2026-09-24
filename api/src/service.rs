@@ -5240,6 +5240,19 @@ async fn relation_snapshot(tx: &mut Tx, w: &str, relation_id: &str) -> Result<Op
     })))
 }
 
+async fn operation_side_effect_counts(tx: &mut Tx, w: &str) -> Result<(i64, i64)> {
+    let row = tx
+        .fetch_one(
+            "SELECT COUNT(CASE WHEN collection='records' THEN 1 END), \
+                    COUNT(CASE WHEN collection='notifications' THEN 1 END) \
+             FROM documents WHERE workspace_id=? \
+               AND collection IN ('records','notifications')",
+            &params![w],
+        )
+        .await?;
+    Ok((row.int(0)?, row.int(1)?))
+}
+
 /// Runs one proposed operation and records what it did.
 ///
 /// The caller is inside a savepoint that will be rolled back, so this is a
@@ -5306,7 +5319,13 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         get(tx, w, target_collection, target_id).await.ok()
     };
 
+    let (records_before, notifications_before) = operation_side_effect_counts(tx, w).await?;
     let result = dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+    let (records_after, notifications_after) = operation_side_effect_counts(tx, w).await?;
+    let side_effects = json!({
+        "records_created": records_after.saturating_sub(records_before),
+        "notifications_created": notifications_after.saturating_sub(notifications_before),
+    });
 
     let parent_after = match reparent_item {
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
@@ -5407,6 +5426,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         "basis": op.basis,
         "match_rationale": op.match_rationale,
         "interpretation": op.interpretation,
+        "side_effects": side_effects,
     }))
 }
 /// Runs a change set's operations and stamps it as applied.
