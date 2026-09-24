@@ -447,14 +447,12 @@ function BasepathApp() {
           if (nextProposal) {
             const workspaceId =
               workspaceIdFrom(payload) ?? workspaceRef.current;
-            const switchedWorkspace = pendingWorkspaceRefresh.current;
             pendingWorkspaceRefresh.current = undefined;
             pendingConversationDraft.current = null;
-            if (
-              nextProposal.noChange &&
-              switchedWorkspace &&
-              switchedWorkspace === workspaceId
-            ) {
+            if (nextProposal.noChange) {
+              // A no-change result has no preview graph. Reload the saved plan
+              // before showing it so an earlier temporary proposal cannot
+              // masquerade as the confirmed plan.
               pendingProposal.current = {
                 proposal: nextProposal,
                 payload,

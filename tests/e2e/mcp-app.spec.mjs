@@ -177,9 +177,9 @@ test("shows a conversation proposal as an uncommitted goal tree", async ({
   await expect(proposal).toBeVisible();
   await expect(proposal.getByText("会話からの戦略案")).toBeVisible();
   const diff = proposal.getByRole("region", { name: "今回の変更" });
-  await expect(
-    diff.getByText("既存顧客の継続率を上げる", { exact: true }),
-  ).toBeVisible();
+  await expect(diff.locator(".change-diff-card > header > strong")).toHaveText(
+    "既存顧客の継続率を上げる",
+  );
   await expect(proposal.getByText("未反映")).toBeVisible();
   await expect(
     app.getByRole("link", { name: "Basepathで内容を確認・承認" }),
@@ -195,9 +195,9 @@ test("shows a conversation proposal as an uncommitted goal tree", async ({
     );
   });
   await expect(proposal.getByText("未反映")).toBeVisible();
-  await expect(
-    diff.getByText("既存顧客の継続率を上げる", { exact: true }),
-  ).toBeVisible();
+  await expect(diff.locator(".change-diff-card > header > strong")).toHaveText(
+    "既存顧客の継続率を上げる",
+  );
 
   await page.evaluate(async () => {
     await window.__pushToolResult(
