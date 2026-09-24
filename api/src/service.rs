@@ -2255,6 +2255,7 @@ impl Service {
             crate::collaboration::authorize_replay(&mut tx, method, &parts, &response).await?;
             if !include_preview_graph {
                 strip_preview_graph(&mut response);
+                strip_change_impacts(&mut response);
                 if let Some(fields) = response.as_object_mut() {
                     fields.remove("workspaces");
                 }
@@ -5093,6 +5094,29 @@ async fn preview(
 fn strip_preview_graph(value: &mut Value) {
     if let Value::Object(fields) = value {
         fields.remove("preview_graph");
+    }
+}
+
+fn strip_change_impacts(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            if let Some(changes) = fields.get_mut("changes").and_then(Value::as_array_mut) {
+                for change in changes {
+                    if let Value::Object(change_fields) = change {
+                        change_fields.remove("impact");
+                    }
+                }
+            }
+            for child in fields.values_mut() {
+                strip_change_impacts(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_change_impacts(item);
+            }
+        }
+        _ => {}
     }
 }
 
