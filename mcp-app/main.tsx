@@ -247,6 +247,7 @@ function isFinishedChange(value: unknown): boolean {
   const source = value as Record<string, unknown>;
   const change = changeFromPayload(value);
   return (
+    source.status === "no_change" ||
     source.already_applied === true ||
     source.auto_applied === true ||
     change?.status === "applied" ||

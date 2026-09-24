@@ -420,6 +420,11 @@ pub struct Operation {
     /// AI suggested it.
     #[serde(default)]
     pub basis: Option<String>,
+    /// Why a conversation integration matched this operation to an existing
+    /// plan item or concluded that it is a genuinely new item. Kept separate
+    /// from `basis`, which records where the claim itself came from.
+    #[serde(default)]
+    pub match_rationale: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {

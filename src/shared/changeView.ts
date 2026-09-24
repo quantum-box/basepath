@@ -25,6 +25,8 @@ export type ChangeRow = {
   guardedValues: string[];
   /** Where those values came from, in the proposer's words. */
   basis: string;
+  /** Why this operation matches an existing item or is genuinely new. */
+  matchRationale: string;
 };
 
 export type ChangeSet = {
@@ -138,6 +140,49 @@ function fieldChanges(before: unknown, after: unknown): FieldChange[] {
   return changes;
 }
 
+function relationChanges(change: Unknown): FieldChange[] {
+  const delta = change.relation_delta as Unknown | null | undefined;
+  if (!delta) return [];
+
+  const parentSnapshot = (snapshot: unknown): Unknown | null =>
+    snapshot && typeof snapshot === "object" ? (snapshot as Unknown) : null;
+  if (delta.type === "relation") {
+    const beforeRelation = parentSnapshot(delta.before);
+    const afterRelation = parentSnapshot(delta.after);
+    const relationLabel = (relation: Unknown | null) => {
+      if (!relation) return "（関連なし）";
+      const source = text(relation.source_title) || text(relation.source_id, "（不明）");
+      const type = text(relation.relation_type, "関連");
+      const target = text(relation.target_title) || text(relation.target_id, "（不明）");
+      return `${source} — ${type} → ${target}`;
+    };
+    return [
+      {
+        field: "関連",
+        before: relationLabel(beforeRelation),
+        after: relationLabel(afterRelation),
+      },
+    ];
+  }
+  if (delta.type !== "part_of") return [];
+
+  const beforeParent = parentSnapshot(delta.before);
+  const afterParent = parentSnapshot(delta.after);
+  const beforeId = text(beforeParent?.target_id);
+  const afterId = text(afterParent?.target_id);
+  if (beforeId === afterId) return [];
+
+  const parentTitle = (parent: Unknown | null) =>
+    parent ? text(parent.parent_title) || text(parent.target_id, "（不明）") : "（親なし）";
+  let before = parentTitle(beforeParent);
+  let after = parentTitle(afterParent);
+  if (beforeParent && afterParent && before === after) {
+    before = `${before}（${beforeId}）`;
+    after = `${after}（${afterId}）`;
+  };
+  return [{ field: "親項目", before, after }];
+}
+
 export function changeSetFrom(value: unknown): ChangeSet | null {
   const source = value as Unknown | undefined;
   // Recognised by what a person needs in order to act on it, not by having an
@@ -159,16 +204,19 @@ export function changeSetFrom(value: unknown): ChangeSet | null {
         effect: text(change.effect, "unknown") as ChangeEffect,
         collection: text(change.collection),
         method: text(change.method),
-        fields:
-          change.effect === "deleted"
+        fields: [
+          ...(change.effect === "deleted"
             ? []
-            : fieldChanges(change.before, change.after),
+            : fieldChanges(change.before, change.after)),
+          ...relationChanges(change),
+        ],
         guardedValues: Array.isArray(change.guarded_values)
           ? (change.guarded_values as unknown[]).filter(
               (value): value is string => typeof value === "string",
             )
           : [],
         basis: text(change.basis),
+        matchRationale: text(change.match_rationale),
       }))
     : [];
   return {

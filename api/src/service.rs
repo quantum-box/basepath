@@ -2607,7 +2607,10 @@ async fn dispatch_inner(
                 "memories",
             ];
             let personal = personal_only(tx, w).await.is_ok();
-            let mut result = json!({"workspace_id":w});
+            let mut result = json!({
+                "workspace_id": w,
+                "plan_version": workspace_version(tx, w).await?,
+            });
             for col in cols {
                 // A shared workspace has no memory key at all. An empty list
                 // would suggest there could be one here, and there cannot.
@@ -4355,6 +4358,7 @@ async fn graph_snapshot_with_priority(
         "relations": relations,
         "truncated": total > limit,
         "limit": limit,
+        "plan_version": workspace_version(tx, w).await?,
     }))
 }
 
@@ -4404,6 +4408,93 @@ fn add_graph_priority_str(ids: &mut Vec<String>, id: &str) {
     }
 }
 
+async fn integration_conversation_link(
+    tx: &mut Tx,
+    actor: &Actor,
+    workspace_id: &str,
+    conversation_id: &str,
+) -> Result<crate::conversation::ConversationLink> {
+    if conversation_id.is_empty()
+        || conversation_id.chars().count() > crate::conversation::MAX_CONVERSATION_ID_LENGTH
+    {
+        return Err(ApiError::invalid(
+            "conversation_idは1〜191文字で指定してください",
+        ));
+    }
+    let connection = actor.connection.as_deref().unwrap_or("");
+    let Some(link) = crate::conversation::get(tx, actor, connection, conversation_id).await? else {
+        return Err(ApiError::new(
+            409,
+            "CONTEXT_LINK_REQUIRED",
+            "この会話を対象ワークスペースにリンクしてから統合してください",
+        ));
+    };
+    if link.status != "active" || link.workspace_id != workspace_id {
+        return Err(ApiError::new(
+            409,
+            "CONTEXT_LINK_CONFLICT",
+            "この会話の有効なワークスペースリンクを確認してください",
+        ));
+    }
+    Ok(link)
+}
+
+fn validate_conversation_integration_ops(workspace_id: &str, ops: &[Operation]) -> Result<()> {
+    for (index, op) in ops.iter().enumerate() {
+        let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
+        let same_workspace = parts.len() >= 4
+            && parts[0] == "v1"
+            && parts[1] == "workspaces"
+            && parts[2] == workspace_id;
+        let collection = parts.get(3).copied().unwrap_or("");
+        if same_workspace && op.method == "DELETE" && collection == "items" {
+            return Err(ApiError::invalid(
+                "会話統合から計画項目は削除できません。撤回候補として提示してください",
+            ));
+        }
+        if same_workspace
+            && op.method == "PATCH"
+            && collection == "items"
+            && parts.len() == 5
+            && op.body.get("archived_at").is_some()
+        {
+            return Err(ApiError::invalid(
+                "会話統合から計画項目はアーカイブできません。撤回候補として提示してください",
+            ));
+        }
+        let supported = match (op.method.as_str(), collection) {
+            ("POST", "items") if parts.len() == 4 => true,
+            ("POST", "items") if parts.len() == 6 && parts[5] == "reparent" => true,
+            ("PATCH", "items") => parts.len() == 5,
+            ("POST", "relations") => parts.len() == 4,
+            ("DELETE", "relations") => parts.len() == 5,
+            // Moving an existing item preserves its identity and execution
+            // history; the service validates the resulting parent graph.
+            _ => false,
+        };
+        if !same_workspace || !supported {
+            return Err(ApiError::invalid(
+                "会話統合では同じワークスペースのitemsとrelationsのみ提案できます",
+            ));
+        }
+        if op
+            .match_rationale
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+            || op
+                .match_rationale
+                .as_deref()
+                .is_some_and(|rationale| rationale.chars().count() > 500)
+        {
+            return Err(ApiError::invalid(&format!(
+                "operations[{index}].match_rationaleは1〜500文字で指定してください"
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn preview(
     tx: &mut Tx,
     actor: &Actor,
@@ -4411,10 +4502,101 @@ async fn preview(
     b: &Value,
     include_preview_graph: bool,
 ) -> Result<Value> {
-    only(b, &["operations", "title", "assumptions"])?;
+    only(
+        b,
+        &[
+            "operations",
+            "title",
+            "assumptions",
+            "expected_base_version",
+            "conversation_id",
+        ],
+    )?;
+    let conversation_id = match &b["conversation_id"] {
+        Value::Null => None,
+        Value::String(id) if !id.trim().is_empty() => Some(id.as_str()),
+        _ if b["conversation_id"].is_null() => None,
+        _ => return Err(ApiError::invalid("conversation_idを確認してください")),
+    };
+    let conversation_link = if let Some(conversation_id) = conversation_id {
+        Some(integration_conversation_link(tx, actor, w, conversation_id).await?)
+    } else {
+        None
+    };
+    let expected_base_version = match &b["expected_base_version"] {
+        Value::Null => None,
+        Value::String(version) if !version.trim().is_empty() => Some(version.as_str()),
+        _ if b["expected_base_version"].is_null() => None,
+        _ => return Err(ApiError::invalid("expected_base_versionを確認してください")),
+    };
+    if conversation_id.is_some() && expected_base_version.is_none() {
+        return Err(ApiError::new(
+            428,
+            "VERSION_REQUIRED",
+            "会話を統合する前にplan_versionを取得し、expected_base_versionで指定してください",
+        ));
+    }
+    let base_version = workspace_version(tx, w).await?;
+    if let Some(expected) = expected_base_version.filter(|expected| *expected != base_version) {
+        let mut error = ApiError::new(
+            409,
+            "VERSION_CONFLICT",
+            "計画が読み取り後に更新されています。最新状態を再読込して差分を作り直してください",
+        );
+        error.details =
+            json!({"expected_base_version": expected, "current_base_version": base_version});
+        return Err(error);
+    }
     let ops: Vec<Operation> = serde_json::from_value(b["operations"].clone())?;
-    if ops.is_empty() || ops.len() > 100 {
-        return Err(ApiError::invalid("変更は1〜100操作にしてください"));
+    if ops.len() > 100 {
+        return Err(ApiError::invalid("変更は100操作以内にしてください"));
+    }
+    if conversation_id.is_some() {
+        validate_conversation_integration_ops(w, &ops)?;
+    } else if ops.is_empty() {
+        return Err(ApiError::invalid(
+            "変更がない場合はリンク済みのconversation_idを指定してください",
+        ));
+    }
+    let assumptions: Vec<String> = b["assumptions"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .take(20)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let title = b["title"].as_str().unwrap_or("計画の変更案").to_owned();
+    let proposal_version = fingerprint(
+        "PLAN_PROPOSAL",
+        w,
+        &json!({
+            "base_version": base_version,
+            "conversation_id": conversation_id,
+            "operations": ops,
+            "assumptions": assumptions,
+            "title": title,
+        }),
+    );
+    if ops.is_empty() {
+        let link = conversation_link.as_ref().unwrap();
+        return Ok(json!({
+            "status": "no_change",
+            "workspace_id": w,
+            "conversation_id": conversation_id,
+            "conversation_link_id": link.id,
+            "base_version": base_version,
+            "proposal_version": proposal_version,
+            "hash": proposal_version,
+            "title": title,
+            "assumptions": assumptions,
+            "changes": [],
+        }));
     }
     for op in &ops {
         let p: Vec<_> = op.path.trim_matches('/').split('/').collect();
@@ -4500,6 +4682,16 @@ async fn preview(
     let mut changes = Vec::new();
     for op in &ops {
         match describe_operation(tx, &human, w, op).await {
+            Ok(change)
+                if conversation_id.is_some()
+                    && op.method == "DELETE"
+                    && change["before"]["type"] == "part_of" =>
+            {
+                validation = Err(ApiError::invalid(
+                    "part_ofは削除せず、同じ項目IDへのreparentを提案してください",
+                ));
+                break;
+            }
             Ok(change) => changes.push(change),
             Err(error) => {
                 validation = Err(error);
@@ -4518,22 +4710,25 @@ async fn preview(
     };
     tx.rollback_to_savepoint("preview_validation").await?;
     validation?;
-    // What the AI assumed, in its own words, kept next to the diff. A person
-    // approving a breakdown is agreeing to the reasoning as much as the rows.
-    let assumptions: Vec<String> = b["assumptions"]
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .take(20)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let c = json!({"id":new_id("change"),"workspace_id":w,"title":b["title"].as_str().unwrap_or("計画の変更案"),"operations":ops,"changes":changes,"assumptions":assumptions,"status":"pending","actor":actor.id,"proposed_by_connection":actor.connection,"hash":fingerprint("PREVIEW",w,&b["operations"]),"base_version":workspace_version(tx,w).await?,"created_at":now(),"expires_at":(Utc::now()+chrono::Duration::minutes(30)).to_rfc3339()});
+    let link_id = conversation_link.as_ref().map(|link| link.id.as_str());
+    let c = json!({
+        "id": new_id("change"),
+        "workspace_id": w,
+        "title": title,
+        "operations": ops,
+        "changes": changes,
+        "assumptions": assumptions,
+        "status": "pending",
+        "actor": actor.id,
+        "proposed_by_connection": actor.connection,
+        "conversation_id": conversation_id,
+        "conversation_link_id": link_id,
+        "proposal_version": proposal_version,
+        "hash": proposal_version,
+        "base_version": base_version,
+        "created_at": now(),
+        "expires_at": (Utc::now() + chrono::Duration::minutes(30)).to_rfc3339(),
+    });
     put(tx, w, "changesets", text(&c, "id"), &c).await?;
     // Answered on the way out, never stored: a range can be revoked a second
     // later, and a flag written into the row would still say yes.
@@ -4572,6 +4767,49 @@ async fn latest_weekly_review(tx: &mut Tx, w: &str, week_start: &str) -> Result<
     })
 }
 
+/// Captures the link and its parent label so a move remains reviewable even
+/// though the item itself is unchanged.
+async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<Value>> {
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let Some(relation) = relations
+        .into_iter()
+        .find(|relation| relation.relation_type == "part_of" && relation.source_id == item_id)
+    else {
+        return Ok(None);
+    };
+    let parent: Item = get(tx, w, "items", &relation.target_id).await?;
+    Ok(Some(json!({
+        "relation_id": relation.id,
+        "source_id": relation.source_id,
+        "target_id": relation.target_id,
+        "parent_title": parent.title,
+        "position": relation.position,
+    })))
+}
+
+/// Captures a relation with both endpoint labels so adding or removing a link
+/// remains understandable in the approval view.
+async fn relation_snapshot(tx: &mut Tx, w: &str, relation_id: &str) -> Result<Option<Value>> {
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let Some(relation) = relations
+        .into_iter()
+        .find(|relation| relation.id == relation_id)
+    else {
+        return Ok(None);
+    };
+    let source: Item = get(tx, w, "items", &relation.source_id).await?;
+    let target: Item = get(tx, w, "items", &relation.target_id).await?;
+    Ok(Some(json!({
+        "relation_id": relation.id,
+        "relation_type": relation.relation_type,
+        "source_id": relation.source_id,
+        "source_title": source.title,
+        "target_id": relation.target_id,
+        "target_title": target.title,
+        "position": relation.position,
+    })))
+}
+
 /// Runs one proposed operation and records what it did.
 ///
 /// The caller is inside a savepoint that will be rolled back, so this is a
@@ -4580,6 +4818,24 @@ async fn latest_weekly_review(tx: &mut Tx, w: &str, week_start: &str) -> Result<
 async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation) -> Result<Value> {
     let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
     let collection = parts.get(3).copied().unwrap_or("");
+    let reparent_item = (op.method == "POST"
+        && collection == "items"
+        && parts.len() == 6
+        && parts[5] == "reparent")
+        .then(|| parts[4]);
+    let create_item_with_parent = op.method == "POST"
+        && collection == "items"
+        && parts.len() == 4
+        && op.body["parent_id"].as_str().is_some();
+    let parent_before = match reparent_item {
+        Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+        None => None,
+    };
+    let relation_before = if op.method == "DELETE" && collection == "relations" {
+        relation_snapshot(tx, w, parts.get(4).copied().unwrap_or("")).await?
+    } else {
+        None
+    };
     // `actions` operate on an item; a weekly review draft is addressed by its
     // week rather than by a row id; everything else names its own collection.
     let checkin = collection == "items" && parts.get(5) == Some(&"checkins");
@@ -4622,6 +4878,38 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
 
     let result = dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
 
+    let parent_after = match reparent_item {
+        Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+        None if create_item_with_parent => match result["id"].as_str() {
+            Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+            None => None,
+        },
+        None => None,
+    };
+    let relation_after = if op.method == "POST" && collection == "relations" {
+        match result["id"].as_str() {
+            Some(relation_id) => relation_snapshot(tx, w, relation_id).await?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let relation_delta = if reparent_item.is_some() || create_item_with_parent {
+        Some(json!({
+            "type": "part_of",
+            "before": parent_before,
+            "after": parent_after,
+        }))
+    } else if collection == "relations" {
+        Some(json!({
+            "type": "relation",
+            "before": relation_before,
+            "after": relation_after,
+        }))
+    } else {
+        None
+    };
+
     // The identifier of what the operation actually touched: for a create it
     // only exists in the result.
     let id = if target_id.is_empty() {
@@ -4661,6 +4949,17 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
                         .map(|kind| format!("記憶の候補（{kind}）"))
                 })
         })
+        .or_else(|| {
+            let delta = relation_delta.as_ref()?;
+            if delta["type"] != "relation" {
+                return None;
+            }
+            let relation = delta["after"].as_object().or(delta["before"].as_object())?;
+            let source = relation.get("source_title")?.as_str()?;
+            let relation_type = relation.get("relation_type")?.as_str()?;
+            let target = relation.get("target_title")?.as_str()?;
+            Some(format!("{source} — {relation_type} → {target}"))
+        })
         .unwrap_or_default();
     Ok(json!({
         "method": op.method,
@@ -4671,10 +4970,12 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         "effect": effect,
         "before": before,
         "after": after,
+        "relation_delta": relation_delta,
         // Which committing values this operation sets, and where they came
         // from, next to the diff rather than buried in the operation list.
         "guarded_values": crate::copilot::guarded_values(&op.body),
         "basis": op.basis,
+        "match_rationale": op.match_rationale,
     }))
 }
 /// Runs a change set's operations and stamps it as applied.
