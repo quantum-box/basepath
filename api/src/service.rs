@@ -4903,6 +4903,7 @@ async fn preview(
         // no-change result so the widget can show the authoritative plan.
         if include_preview_graph {
             result["preview_graph"] = graph_snapshot(tx, w, 200).await?;
+            result["workspaces"] = json!(memberships(tx, actor).await?);
         }
         return Ok(result);
     }

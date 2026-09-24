@@ -451,15 +451,15 @@ function BasepathApp() {
             pendingConversationDraft.current = null;
             if (nextProposal.noChange) {
               const hasSavedGraph = Boolean(previewGraphFrom(payload));
-              const workspaceIsKnown = workspaceId
-                ? viewRef.current.workspaces.some(
+              const workspaceIsKnown = Boolean(
+                (workspaceId &&
+                  viewRef.current.workspaces.some(
                     (workspace) => workspace.id === workspaceId,
-                  )
-                : false;
-              const needsContextRefresh =
-                !workspaceId ||
-                !workspaceIsKnown ||
-                viewRef.current.workspace?.id !== workspaceId;
+                  )) ||
+                  (isContextPayload(payload) &&
+                    buildPlanView({ context: payload, workspaceId }).workspace),
+              );
+              const needsContextRefresh = !workspaceIsKnown;
               if (
                 hasSavedGraph &&
                 needsContextRefresh &&
@@ -467,20 +467,6 @@ function BasepathApp() {
               ) {
                 // Refresh context first when this result targets a workspace
                 // the widget has not loaded, then reapply its saved graph.
-                pendingProposal.current = {
-                  proposal: nextProposal,
-                  payload,
-                  workspaceId,
-                };
-                setLoading(true);
-                setStale(true);
-                void refreshRef.current(workspaceId);
-                return;
-              }
-              if (!hasSavedGraph && hostFor()?.capabilities.serverTools) {
-                // Older hosts or proposal-only connections may omit the
-                // read-protected graph. Refresh it only when this host can
-                // make a follow-up tool call.
                 pendingProposal.current = {
                   proposal: nextProposal,
                   payload,
