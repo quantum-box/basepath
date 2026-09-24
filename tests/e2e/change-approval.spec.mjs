@@ -65,8 +65,10 @@ test("a deep link approves the shown content, and approving is what applies it",
   await expect(
     review.getByRole("heading", { name: "E2E: 承認画面の変更案" }),
   ).toBeVisible();
-  // The diff shows what would be created, before anything is.
-  await expect(review.getByText("追加1・更新0・削除0")).toBeVisible();
+  // The semantic diff shows what would be created, before anything is.
+  const diff = review.getByRole("region", { name: "今回の変更" });
+  await expect(diff.getByRole("heading", { name: "今回の変更" })).toBeVisible();
+  await expect(diff.locator(".change-diff-summary")).toContainText("1 追加");
   await expect(
     review.getByText("E2E: 承認で作られる行動").first(),
   ).toBeVisible();
