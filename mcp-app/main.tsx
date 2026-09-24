@@ -445,10 +445,26 @@ function BasepathApp() {
           }
           const nextProposal = proposalFrom(payload);
           if (nextProposal) {
-            pendingWorkspaceRefresh.current = undefined;
-            pendingConversationDraft.current = null;
             const workspaceId =
               workspaceIdFrom(payload) ?? workspaceRef.current;
+            const switchedWorkspace = pendingWorkspaceRefresh.current;
+            pendingWorkspaceRefresh.current = undefined;
+            pendingConversationDraft.current = null;
+            if (
+              nextProposal.noChange &&
+              switchedWorkspace &&
+              switchedWorkspace === workspaceId
+            ) {
+              pendingProposal.current = {
+                proposal: nextProposal,
+                payload,
+                workspaceId,
+              };
+              setLoading(true);
+              setStale(true);
+              void refreshRef.current(workspaceId);
+              return;
+            }
             if (!viewRef.current.workspace) {
               pendingProposal.current = {
                 proposal: nextProposal,
