@@ -357,6 +357,13 @@ function MapCanvas({
         id: item.id,
         type: "goal",
         position: { x: left + (width - size.width) / 2, y: rowY(depth) },
+        // React Flow treats a node as dimensionless until its ResizeObserver
+        // runs when width/height exist only in `style`. Replacing node data
+        // after a save can reset those measurements and leave every node
+        // hidden while the observer catches up. These cards have fixed sizes,
+        // so keep their dimensions in the node model as well as its CSS.
+        width: size.width,
+        height: size.height,
         style: size,
         data:
           item.kind === "goal"

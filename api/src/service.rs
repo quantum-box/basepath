@@ -5260,6 +5260,32 @@ async fn operation_side_effect_counts(tx: &mut Tx, w: &str) -> Result<(i64, i64)
     Ok((row.int(0)?, row.int(1)?))
 }
 
+fn operation_may_create_side_effects(op: &Operation) -> bool {
+    let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
+    match (op.method.as_str(), parts.get(3).copied(), parts.len()) {
+        ("POST", Some("records"), 4) => true,
+        ("POST", Some("items"), 4) => op.body["fields"]["assignee_id"]
+            .as_str()
+            .is_some_and(|assignee| !assignee.is_empty()),
+        ("PATCH", Some("items"), 5) => {
+            ["start_date", "due_date"]
+                .iter()
+                .any(|field| op.body.get(*field).is_some())
+                || ["recurrence", "assignee_id"]
+                    .iter()
+                    .any(|field| op.body["fields"].get(*field).is_some())
+        }
+        ("POST", Some("items"), 6) => parts.get(5) == Some(&"reparent"),
+        ("POST", Some("actions"), 6) => {
+            matches!(
+                parts.get(5),
+                Some(&"complete") | Some(&"reopen") | Some(&"skip")
+            )
+        }
+        _ => false,
+    }
+}
+
 /// Runs one proposed operation and records what it did.
 ///
 /// The caller is inside a savepoint that will be rolled back, so this is a
@@ -5326,13 +5352,23 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         get(tx, w, target_collection, target_id).await.ok()
     };
 
-    let (records_before, notifications_before) = operation_side_effect_counts(tx, w).await?;
-    let result = dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
-    let (records_after, notifications_after) = operation_side_effect_counts(tx, w).await?;
-    let side_effects = json!({
-        "records_created": records_after.saturating_sub(records_before),
-        "notifications_created": notifications_after.saturating_sub(notifications_before),
-    });
+    let (result, side_effects) = if operation_may_create_side_effects(op) {
+        let (records_before, notifications_before) = operation_side_effect_counts(tx, w).await?;
+        let result = dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+        let (records_after, notifications_after) = operation_side_effect_counts(tx, w).await?;
+        (
+            result,
+            json!({
+                "records_created": records_after.saturating_sub(records_before),
+                "notifications_created": notifications_after.saturating_sub(notifications_before),
+            }),
+        )
+    } else {
+        (
+            dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?,
+            json!({"records_created": 0, "notifications_created": 0}),
+        )
+    };
 
     let parent_after = match reparent_item {
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
