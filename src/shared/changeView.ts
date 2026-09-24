@@ -144,14 +144,22 @@ function relationChanges(change: Unknown): FieldChange[] {
   const delta = change.relation_delta as Unknown | null | undefined;
   if (!delta || delta.type !== "part_of") return [];
 
-  const parentLabel = (snapshot: unknown) => {
-    if (!snapshot || typeof snapshot !== "object") return "（親なし）";
-    const parent = snapshot as Unknown;
-    return text(parent.parent_title) || text(parent.target_id, "（不明）");
+  const parentSnapshot = (snapshot: unknown): Unknown | null =>
+    snapshot && typeof snapshot === "object" ? (snapshot as Unknown) : null;
+  const beforeParent = parentSnapshot(delta.before);
+  const afterParent = parentSnapshot(delta.after);
+  const beforeId = text(beforeParent?.target_id);
+  const afterId = text(afterParent?.target_id);
+  if (beforeId === afterId) return [];
+
+  const parentTitle = (parent: Unknown | null) =>
+    parent ? text(parent.parent_title) || text(parent.target_id, "（不明）") : "（親なし）";
+  let before = parentTitle(beforeParent);
+  let after = parentTitle(afterParent);
+  if (beforeParent && afterParent && before === after) {
+    before = `${before}（${beforeId}）`;
+    after = `${after}（${afterId}）`;
   };
-  const before = parentLabel(delta.before);
-  const after = parentLabel(delta.after);
-  if (before === after) return [];
   return [{ field: "親項目", before, after }];
 }
 

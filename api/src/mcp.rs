@@ -783,7 +783,11 @@ fn with_change_links(value: &mut Value) {
         // preview, a read, a list row and an apply.
         let is_change = value.get("changes").is_some_and(Value::is_array)
             && value.get("status").is_some_and(Value::is_string)
-            && value.get("workspace_id").is_some_and(Value::is_string);
+            && value.get("workspace_id").is_some_and(Value::is_string)
+            && value
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty());
         if is_change {
             let workspace = value["workspace_id"].as_str().unwrap_or_default();
             let id = value["id"].as_str().unwrap_or_default();
@@ -846,14 +850,20 @@ fn validate_arguments(name: &str, args: &Value) -> crate::model::Result<()> {
             "Unknown argument: {key}"
         )));
     }
+    let conversation_integration =
+        matches!(name, "pathbase_preview_changes" | "pathbase_propose_plan")
+            && object
+                .get("conversation_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.trim().is_empty());
     for key in required {
         let value = object
             .get(*key)
             .ok_or_else(|| crate::model::ApiError::invalid(&format!("Missing argument: {key}")))?;
         let valid = match *key {
-            "operations" => value
-                .as_array()
-                .is_some_and(|operations| !operations.is_empty() && operations.len() <= 100),
+            "operations" => value.as_array().is_some_and(|operations| {
+                operations.len() <= 100 && (!operations.is_empty() || conversation_integration)
+            }),
             "children" => value
                 .as_array()
                 .is_some_and(|children| !children.is_empty() && children.len() <= 50),
