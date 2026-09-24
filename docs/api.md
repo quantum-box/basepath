@@ -143,20 +143,20 @@ POST /v1/workspaces/{w}/actions/{id}/reopen
 | `GET /v1/workspaces/{w}/items/{id}/breakdown?depth=&limit=` | その項目の下。`depth`は既定2（最大20）、`limit`は既定200（最大500） |
 | `GET /v1/workspaces/{w}/items/{id}/ancestry` | その項目の上。なぜ存在するのかを、記録された理由ごと |
 | `GET /v1/workspaces/{w}/breakdown/gaps` | 降りきっていない場所。**報告するだけで、埋めません** |
-| `POST /v1/workspaces/{w}/items/{id}/reparent` | 位置を変える。`parent_id`に`null`で「どこにも属さない」 |
+| `POST /v1/workspaces/{w}/items/{id}/reparent` | 親または同じ親内の順序を変える。`position`は0始まり。`parent_id: null`で「どこにも属さない」 |
 | `POST /v1/workspaces/{w}/items/{id}/children` | 兄弟の並び。`order`に子のidを並べて一度に指定 |
 
 **階層数は固定していません。** level列もtier enumもありません。10年計画の人と2週間計画の人の両方が正しく、どちらかを選ぶschemaはもう一方にとって間違いです。深さはedgeが決めます。`depth`と`limit`が縛るのは「一度に読む量」で、別の話です。
 
 **深い計画は少しずつ読めます。** `has_more_children`が真のnodeは、そのidをrootにして呼び直すための取っ手です。`truncated`は「途中で止めた」を明示します。黙って短い結果を返しません。
 
-**移動は移動です。** `reparent`はlinkのidを保ったまま向き先を変えます。下にあるものは親の親ではなくその項目に付いているので、一緒に動きます。自己参照・循環・他ワークスペースのparentは書き込む前に拒否し、失敗した移動は元の位置を1つも変えません。`parent_id: null`は外すだけで、消しません。
+**移動と並び替えは同じlinkを保ちます。** `reparent`はlinkのidを保ったまま親を変えます。下にあるものは親の親ではなくその項目に付いているので、一緒に動きます。`position`は移動先の子項目内での0始まりの挿入位置です。親を変えずに`position`だけ指定すれば兄弟間で並び替え、`position`を省略して別の親へ移動すれば末尾に加わります。自己参照・循環・他ワークスペースのparentや範囲外の位置は書き込む前に拒否し、失敗した操作は順序も含め元の状態を保ちます。`parent_id: null`は外すだけで、消しません。
 
 **親をarchiveしても子は消えません。** 親を整理することは子についての判断ではありません。子は残り、何の一部だったかも残ります。
 
 **理由はlinkに載ります。** `ancestry`の各要素は上から順に並び、`rationale`とそれが説明する`child_id`を持ちます。理由が空なら「誰も書いていない」であって、こちらで作文はしません。
 
-**変更は記録されます。** `reparent`は`breakdown_change`のrecordを残し（`from` / `to` / `rationale`）、リクエスト自体は他の変更と同じくauditに入ります。
+**変更は記録されます。** `reparent`は`breakdown_change`のrecordを残し（`from` / `to` / `from_position` / `to_position` / `rationale`）、リクエスト自体は他の変更と同じくauditに入ります。
 
 ## Goal Breakdown Copilot
 
@@ -329,6 +329,8 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 別の会話で出た内容を既存計画へ統合する変更案では、`conversation_id`を追加します。会話IDは同じworkspaceに現在`active`でリンクされていなければならず、他workspaceへのリンクや停止済みリンクは409になります。この経路では`expected_base_version`も必須です。`operations`には同じworkspaceのitems / relations操作だけを指定し、各操作に1〜500文字の`match_rationale`（既存項目との一致根拠、または重複でない新規項目と判断した根拠）を付けます。既存項目の同定はタイトルだけで行わず、更新・移動には既存IDを使います。項目削除は拒否し、`part_of`の付け替えは同じIDのreparentとして提案します。変更案にはreparent前後の親項目と各操作の`match_rationale`を保存し、承認画面に表示します。適用前のシミュレーションは全操作をSAVEPOINT内で行い、1件でも矛盾すれば案全体を保存しません。`operations: []`はリンク済み会話の変更なしを表し、`status: "no_change"`を返して変更案を作りません。タイムアウト後の再試行では同じ`Idempotency-Key`と同じ入力を使います。計画版が変わった場合は最新グラフを読み直し、差分を作り直してください。
 - `POST …/changesets/{id}/approve`：`hash`（任意）。人のアプリ操作のみが承認できます。**承認がそのまま適用です。**同じトランザクションで操作を実行し、`status`は`applied`になります。承認だけして反映されていない状態は作られません。2段階に分かれているのはAIが適用する経路のためで、人に二度押させるためではありませんでした。
 - `POST …/changesets/{id}/apply`：空オブジェクト。承認・期限・内容ハッシュ・領域の更新状態を確認して原子的に適用します。作成後に領域のデータや権限が変わった案は再プレビューが必要です。承認時に適用されるようになる前に承認された案のための経路で、すでに適用済みのものには`already_applied: true`を返し、何も書きません。**本人が事前に決めた範囲に入る案は、個別の承認なしでもここで適用されます**（下記）。
+
+各operationには任意の`interpretation`を付けられます。`status`は`decided` / `considering` / `hypothesis` / `suggested` / `question` / `conflict`、`origin`は`person` / `assistant` / `inference`です。`source_ref`はホストが実際に提供したメッセージIDや範囲、`quote`は取得できた正確な抜粋だけを指定し、分からない参照・引用は省略します。これは提案者が記録した解釈であり、PathBaseは会話本文を取得できないため参照元との一致を検証しません。AI接続が`decided`を付けるには`origin=person`と`source_ref`または`quote`が必要です。`conflict`には確認理由が必要です。応答の各変更には変更前後の実際の下位項目数・行動数・依存/寄与関係数と、下位項目名の最大12件が含まれます。これらは影響範囲を示すもので、日付や状態を自動変更する指示ではありません。同一項目への複数operationは画面で一つの変更に集約します。
 
 ### 事前に決めた範囲（自動反映）
 

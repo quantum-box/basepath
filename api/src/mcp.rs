@@ -1349,8 +1349,32 @@ fn tools() -> Vec<Tool> {
                 "maxLength": 500,
                 "description": "Required for conversation integration: why an existing item matches, or why a new item is not a duplicate."
             });
+            props["operations"]["items"]["properties"]["interpretation"] = json!({
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["decided", "considering", "hypothesis", "suggested", "question", "conflict"]},
+                    "origin": {"type": "string", "enum": ["person", "assistant", "inference"]},
+                    "source_ref": {"type": "string", "maxLength": 191, "description": "Exact host-provided message ID or span/range. Omit if unavailable; never invent one."},
+                    "source_url": {"type": "string", "maxLength": 2048, "description": "Exact host-provided HTTP(S) source URL without credentials. Omit if unavailable."},
+                    "speaker": {"type": "string", "maxLength": 100},
+                    "quote": {"type": "string", "maxLength": 500, "description": "Exact available excerpt only. Do not reconstruct missing transcript text."},
+                    "at": {"type": "string", "description": "Known date (YYYY-MM-DD) or RFC3339 timestamp; omit if unknown."},
+                    "reason": {"type": "string", "maxLength": 500, "description": "Why this is a hypothesis, question, or conflict. Required for conflict."}
+                },
+                "required": ["status", "origin"],
+                "additionalProperties": false
+            });
+            props["operations"]["items"]["properties"]["basis"]["description"] = json!(
+                "Where a date, target, baseline, owner or self-assessment came from. Required when the body sets one."
+            );
         }
         let mut tool = json!({"name":shape.name,"description":shape.description,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":shape.read_only,"destructiveHint":shape.destructive,"idempotentHint":true,"openWorldHint":false}});
+        if matches!(shape.name, "pathbase_preview_changes" | "pathbase_propose_plan") {
+            tool["description"] = json!(format!(
+                "{} For each changed item, include interpretation.status (decided|considering|hypothesis|suggested|question|conflict) and origin (person|assistant|inference) when known. Cite only exact host-provided source_ref/source_url and quote; never invent message IDs, ranges, timestamps or quotations. The approval view labels this as proposer-supplied attribution, not verified transcript evidence. Conflict requires a reason. To move an item within its current parent's sibling order, use POST /items/{{id}}/reparent with that parent_id and a zero-based position. The UI compares the affected subtree and reports related actions and dependency links without changing their dates or states.",
+                shape.description
+            ));
+        }
         if shape.name == "pathbase_save_plan_draft" {
             tool["inputSchema"]["oneOf"] = json!([
                 {"not":{"anyOf":[{"required":["draft_id"]},{"required":["expected_revision"]}]}},

@@ -23,14 +23,11 @@ import {
   workspaceIdFrom,
   type PlanView,
 } from "../src/shared/viewModel";
-import {
-  changeSetFrom,
-  summarize,
-  type ChangeSet,
-} from "../src/shared/changeView";
+import { changeSetFrom, type ChangeSet } from "../src/shared/changeView";
 import {
   PlanViewPanel,
   type ConversationDraftView,
+  type PlanProposal,
 } from "../src/shared/PlanView";
 import { useTreeState } from "../src/shared/useTreeState";
 import { PlanFlow } from "./PlanFlow";
@@ -96,16 +93,7 @@ function isContextPayload(value: unknown): boolean {
   );
 }
 
-type ProposalState = {
-  id: string;
-  workspaceId: string;
-  title: string;
-  status: string;
-  approvalUrl: string | null;
-  autoApplyEligible: boolean;
-  assumptions: string[];
-  summary: ReturnType<typeof summarize>;
-};
+type ProposalState = PlanProposal;
 
 type PendingProposal = {
   proposal: ProposalState;
@@ -136,9 +124,56 @@ function previewGraphFrom(value: unknown): unknown | null {
   return isGraphPayload(graph) ? graph : null;
 }
 
+function noChangeSetFrom(value: unknown): ChangeSet | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  if (
+    source.status !== "no_change" ||
+    typeof source.workspace_id !== "string"
+  ) {
+    return null;
+  }
+  const id =
+    typeof source.proposal_version === "string"
+      ? source.proposal_version
+      : "no-change";
+  return {
+    id,
+    workspaceId: source.workspace_id,
+    title: typeof source.title === "string" ? source.title : "今回の変更",
+    status: "no_change",
+    hash: typeof source.hash === "string" ? source.hash : id,
+    conversationId:
+      typeof source.conversation_id === "string"
+        ? source.conversation_id
+        : null,
+    approvedBy: null,
+    approvedAt: null,
+    rejectedBy: null,
+    appliedAt: null,
+    proposedBy: null,
+    proposedByConnection: null,
+    createdAt: "",
+    expiresAt: "",
+    autoApplyEligible: false,
+    autoApplied: false,
+    autoApplyRule: null,
+    approvalUrl: null,
+    rows: [],
+    assumptions: Array.isArray(source.assumptions)
+      ? source.assumptions.filter(
+          (line): line is string => typeof line === "string",
+        )
+      : [],
+  };
+}
+
 function proposalFrom(value: unknown): ProposalState | null {
-  if (!previewGraphFrom(value)) return null;
-  const change = changeFromPayload(value);
+  if (!value || typeof value !== "object") return null;
+  const source = value as Record<string, unknown>;
+  const noChange = source.status === "no_change";
+  if (!noChange && !previewGraphFrom(value)) return null;
+  const change = noChange ? noChangeSetFrom(value) : changeFromPayload(value);
   if (!change) return null;
   return {
     id: change.id,
@@ -148,7 +183,8 @@ function proposalFrom(value: unknown): ProposalState | null {
     approvalUrl: change.approvalUrl,
     autoApplyEligible: change.autoApplyEligible,
     assumptions: change.assumptions,
-    summary: summarize(change),
+    noChange,
+    change,
   };
 }
 
