@@ -137,14 +137,14 @@ Publish** (workspace admin only).
 
 ## MCP Apps plan surface
 
-Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan-v3.html`,
+Basepath publishes one reusable MCP Apps resource, `ui://basepath/plan-v4.html`,
 and plan-reading tools point to it through `_meta.ui.resourceUri` plus the
 ChatGPT compatibility alias `openai/outputTemplate`. Every `tools/call`
 response still carries the same information in two model-facing forms:
 
-The previous `ui://basepath/plan-v2.html` URI remains readable as a legacy alias,
-but new tool metadata advertises v3 so hosts do not reuse a cached widget that
-predates conversation proposals.
+The previous `ui://basepath/plan-v3.html` and `ui://basepath/plan-v2.html` URIs
+remain readable as legacy aliases, but new tool metadata advertises v4 so hosts
+do not reuse a cached widget that predates meaningful conversation diffs.
 
 - `structuredContent` contains stable identifiers, workspace scope, graph
   relations, truncation markers, and change-set fields for reliable follow-up

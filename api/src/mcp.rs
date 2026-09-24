@@ -27,7 +27,10 @@ use std::sync::Arc;
 /// screens.
 // UI resource URIs are cache keys in ChatGPT. Bump the URI when the embedded
 // document changes so a host does not keep an older template after a deploy.
-pub const UI_RESOURCE_URI: &str = "ui://basepath/plan-v3.html";
+pub const UI_RESOURCE_URI: &str = "ui://basepath/plan-v4.html";
+/// The previous cache key remains readable for conversations that already
+/// reference the v3 document.
+const LEGACY_UI_RESOURCE_V3_URI: &str = "ui://basepath/plan-v3.html";
 /// Keep the previous widget URI readable for conversations that already reference it.
 const LEGACY_UI_RESOURCE_V2_URI: &str = "ui://basepath/plan-v2.html";
 const LEGACY_UI_RESOURCE_URI: &str = "ui://basepath/plan.html";
@@ -46,6 +49,7 @@ const UI_RESOURCE_HTML: &str = include_str!("../ui/mcp-app.html");
 fn ui_resource_mime(uri: &str) -> Option<&'static str> {
     match uri {
         UI_RESOURCE_URI
+        | LEGACY_UI_RESOURCE_V3_URI
         | LEGACY_UI_RESOURCE_V2_URI
         | LEGACY_UI_RESOURCE_URI
         | LEGACY_UI_RESOURCE_PERSONAL_URI
