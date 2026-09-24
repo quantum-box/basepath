@@ -41,12 +41,24 @@ struct Structure {
 /// Unset sorts last rather than first: a child nobody has placed is new, and
 /// new work appearing at the top of someone's plan is a small theft of
 /// attention.
-fn placement(relation: &Relation) -> (i64, String) {
-    (relation.position.unwrap_or(i64::MAX), relation.id.clone())
+fn placement(relation: &Relation, item_order: &HashMap<String, usize>) -> (i64, usize, String) {
+    (
+        relation.position.unwrap_or(i64::MAX),
+        item_order
+            .get(&relation.source_id)
+            .copied()
+            .unwrap_or(usize::MAX),
+        relation.id.clone(),
+    )
 }
 
 async fn structure(tx: &mut Tx, w: &str) -> Result<Structure> {
     let items: Vec<Item> = list(tx, w, "items").await?;
+    let item_order: HashMap<String, usize> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.clone(), index))
+        .collect();
     let relations: Vec<Relation> = list(tx, w, "relations").await?;
     let mut children: HashMap<String, Vec<Relation>> = HashMap::new();
     let mut parent = HashMap::new();
@@ -63,7 +75,7 @@ async fn structure(tx: &mut Tx, w: &str) -> Result<Structure> {
         }
     }
     for edges in children.values_mut() {
-        edges.sort_by_key(placement);
+        edges.sort_by_key(|relation| placement(relation, &item_order));
     }
     Ok(Structure {
         items: items

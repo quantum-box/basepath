@@ -3041,6 +3041,7 @@ async fn dispatch_inner(
             guard_personal_goal(tx, actor, w, &item).await?;
             version(body, item.version)?;
             let relations: Vec<Relation> = list(tx, w, "relations").await?;
+            let items: Vec<Item> = list(tx, w, "items").await?;
             let existing = relations
                 .iter()
                 .find(|r| r.relation_type == "part_of" && r.source_id == item.id)
@@ -3098,7 +3099,7 @@ async fn dispatch_inner(
 
             let destination_siblings = to
                 .as_deref()
-                .map(|parent| ordered_part_of_siblings(&relations, parent, Some(&item.id)))
+                .map(|parent| ordered_part_of_siblings(&relations, &items, parent, Some(&item.id)))
                 .unwrap_or_default();
             let position = if to.is_some() {
                 Some(requested_position.unwrap_or(destination_siblings.len()))
@@ -3119,11 +3120,15 @@ async fn dispatch_inner(
                 destination_order.insert(position, item.id.clone());
             }
             if to == from {
-                let current_order =
-                    ordered_part_of_siblings(&relations, to.as_deref().unwrap_or_default(), None)
-                        .into_iter()
-                        .map(|relation| relation.source_id)
-                        .collect::<Vec<_>>();
+                let current_order = ordered_part_of_siblings(
+                    &relations,
+                    &items,
+                    to.as_deref().unwrap_or_default(),
+                    None,
+                )
+                .into_iter()
+                .map(|relation| relation.source_id)
+                .collect::<Vec<_>>();
                 if destination_order == current_order {
                     return Err(ApiError::invalid("すでにその順序です"));
                 }
@@ -3192,7 +3197,7 @@ async fn dispatch_inner(
                 .filter(|parent| Some(*parent) != to.as_deref())
             {
                 for (index, mut sibling) in
-                    ordered_part_of_siblings(&relations, old_parent, Some(&item.id))
+                    ordered_part_of_siblings(&relations, &items, old_parent, Some(&item.id))
                         .into_iter()
                         .enumerate()
                 {
@@ -4423,6 +4428,17 @@ async fn graph_snapshot_with_priority(
             selected.push(item.clone());
         }
     }
+    let active_order: HashMap<&str, usize> = active
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index))
+        .collect();
+    selected.sort_by_key(|item| {
+        active_order
+            .get(item.id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
     let items = selected;
     let ids: HashSet<_> = items.iter().map(|item| item.id.as_str()).collect();
     let relations: Vec<_> = relations
@@ -5087,9 +5103,15 @@ async fn latest_weekly_review(tx: &mut Tx, w: &str, week_start: &str) -> Result<
 /// though the item itself is unchanged.
 fn ordered_part_of_siblings(
     relations: &[Relation],
+    items: &[Item],
     parent_id: &str,
     exclude_item_id: Option<&str>,
 ) -> Vec<Relation> {
+    let item_order: HashMap<&str, usize> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index))
+        .collect();
     let mut siblings: Vec<Relation> = relations
         .iter()
         .filter(|relation| {
@@ -5100,9 +5122,16 @@ fn ordered_part_of_siblings(
         .cloned()
         .collect();
     siblings.sort_by_key(|relation| {
-        // Match breakdown::placement exactly so normalizing missing or
-        // duplicate positions never silently changes the order people see.
-        (relation.position.unwrap_or(i64::MAX), relation.id.clone())
+        // Keep the dashboard's item creation order when siblings have unset
+        // or duplicate positions; relation IDs are only a final stable tie.
+        (
+            relation.position.unwrap_or(i64::MAX),
+            item_order
+                .get(relation.source_id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX),
+            relation.id.clone(),
+        )
     });
     siblings
 }
