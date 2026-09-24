@@ -4452,6 +4452,16 @@ fn validate_conversation_integration_ops(workspace_id: &str, ops: &[Operation]) 
                 "会話統合から計画項目は削除できません。撤回候補として提示してください",
             ));
         }
+        if same_workspace
+            && op.method == "PATCH"
+            && collection == "items"
+            && parts.len() == 5
+            && op.body.get("archived_at").is_some()
+        {
+            return Err(ApiError::invalid(
+                "会話統合から計画項目はアーカイブできません。撤回候補として提示してください",
+            ));
+        }
         let supported = match (op.method.as_str(), collection) {
             ("POST", "items") if parts.len() == 4 => true,
             ("POST", "items") if parts.len() == 6 && parts[5] == "reparent" => true,
@@ -4777,6 +4787,29 @@ async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<
     })))
 }
 
+/// Captures a relation with both endpoint labels so adding or removing a link
+/// remains understandable in the approval view.
+async fn relation_snapshot(tx: &mut Tx, w: &str, relation_id: &str) -> Result<Option<Value>> {
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let Some(relation) = relations
+        .into_iter()
+        .find(|relation| relation.id == relation_id)
+    else {
+        return Ok(None);
+    };
+    let source: Item = get(tx, w, "items", &relation.source_id).await?;
+    let target: Item = get(tx, w, "items", &relation.target_id).await?;
+    Ok(Some(json!({
+        "relation_id": relation.id,
+        "relation_type": relation.relation_type,
+        "source_id": relation.source_id,
+        "source_title": source.title,
+        "target_id": relation.target_id,
+        "target_title": target.title,
+        "position": relation.position,
+    })))
+}
+
 /// Runs one proposed operation and records what it did.
 ///
 /// The caller is inside a savepoint that will be rolled back, so this is a
@@ -4793,6 +4826,11 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     let parent_before = match reparent_item {
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
         None => None,
+    };
+    let relation_before = if op.method == "DELETE" && collection == "relations" {
+        relation_snapshot(tx, w, parts.get(4).copied().unwrap_or("")).await?
+    } else {
+        None
     };
     // `actions` operate on an item; a weekly review draft is addressed by its
     // week rather than by a row id; everything else names its own collection.
@@ -4840,13 +4878,29 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
         None => None,
     };
-    let relation_delta = reparent_item.map(|_| {
-        json!({
+    let relation_after = if op.method == "POST" && collection == "relations" {
+        match result["id"].as_str() {
+            Some(relation_id) => relation_snapshot(tx, w, relation_id).await?,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let relation_delta = if reparent_item.is_some() {
+        Some(json!({
             "type": "part_of",
             "before": parent_before,
             "after": parent_after,
-        })
-    });
+        }))
+    } else if collection == "relations" {
+        Some(json!({
+            "type": "relation",
+            "before": relation_before,
+            "after": relation_after,
+        }))
+    } else {
+        None
+    };
 
     // The identifier of what the operation actually touched: for a create it
     // only exists in the result.
@@ -4886,6 +4940,17 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
                         .as_str()
                         .map(|kind| format!("記憶の候補（{kind}）"))
                 })
+        })
+        .or_else(|| {
+            let delta = relation_delta.as_ref()?;
+            if delta["type"] != "relation" {
+                return None;
+            }
+            let relation = delta["after"].as_object().or(delta["before"].as_object())?;
+            let source = relation.get("source_title")?.as_str()?;
+            let relation_type = relation.get("relation_type")?.as_str()?;
+            let target = relation.get("target_title")?.as_str()?;
+            Some(format!("{source} — {relation_type} → {target}"))
         })
         .unwrap_or_default();
     Ok(json!({

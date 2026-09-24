@@ -142,10 +142,30 @@ function fieldChanges(before: unknown, after: unknown): FieldChange[] {
 
 function relationChanges(change: Unknown): FieldChange[] {
   const delta = change.relation_delta as Unknown | null | undefined;
-  if (!delta || delta.type !== "part_of") return [];
+  if (!delta) return [];
 
   const parentSnapshot = (snapshot: unknown): Unknown | null =>
     snapshot && typeof snapshot === "object" ? (snapshot as Unknown) : null;
+  if (delta.type === "relation") {
+    const beforeRelation = parentSnapshot(delta.before);
+    const afterRelation = parentSnapshot(delta.after);
+    const relationLabel = (relation: Unknown | null) => {
+      if (!relation) return "（関連なし）";
+      const source = text(relation.source_title) || text(relation.source_id, "（不明）");
+      const type = text(relation.relation_type, "関連");
+      const target = text(relation.target_title) || text(relation.target_id, "（不明）");
+      return `${source} — ${type} → ${target}`;
+    };
+    return [
+      {
+        field: "関連",
+        before: relationLabel(beforeRelation),
+        after: relationLabel(afterRelation),
+      },
+    ];
+  }
+  if (delta.type !== "part_of") return [];
+
   const beforeParent = parentSnapshot(delta.before);
   const afterParent = parentSnapshot(delta.after);
   const beforeId = text(beforeParent?.target_id);
