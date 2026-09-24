@@ -212,15 +212,24 @@ has already said the proposal is inside a range set in Basepath.
 
 The description is captured while the operations actually run, because that is
 the only moment both the state before an operation and the state after it
-exist, in order, without touching the live plan. Each row carries:
+exist, in order, without touching the live plan. The web approval view and MCP
+App use the same normalized diff:
 
-- the effect — created, updated or deleted, derived from whether the target
-  existed before and after, not from the HTTP method;
-- the item's title;
-- the fields that changed, before and after.
+- multiple operations against one stable item are grouped into one net change;
+- additions, content edits, parent moves, relationship edits, hold/retire
+  candidates, questions, and conflicts receive distinct labels;
+- changed fields and parent/relation endpoints keep their before/after values;
+- with read access, item changes carry the before/after subtree counts for descendants, actions,
+  dependencies, and contribution links, with up to twelve descendant names for
+  context. These are structural counts; dates and states are not recalculated;
+- an operation may carry `interpretation.status` and `origin`, plus a
+  host-provided source reference, quote, speaker, date, reason, or URL. The UI
+  says these were supplied by the proposer. PathBase cannot read the host
+  transcript, so it does not claim the reference or quotation is verified.
 
-A deletion is labelled a deletion and marked, because "this proposal removes
-something" is the thing most worth not missing.
+An empty linked-conversation result is displayed as “no change” and does not
+create a pending change set. A deletion is still labelled and marked, because
+the fact that a proposal removes something must remain easy to spot.
 
 ## Audit
 

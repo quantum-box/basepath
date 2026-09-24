@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
+  getViewportForBounds,
   Handle,
   Position,
   useReactFlow,
@@ -356,6 +357,13 @@ function MapCanvas({
         id: item.id,
         type: "goal",
         position: { x: left + (width - size.width) / 2, y: rowY(depth) },
+        // React Flow treats a node as dimensionless until its ResizeObserver
+        // runs when width/height exist only in `style`. Replacing node data
+        // after a save can reset those measurements and leave every node
+        // hidden while the observer catches up. These cards have fixed sizes,
+        // so keep their dimensions in the node model as well as its CSS.
+        width: size.width,
+        height: size.height,
         style: size,
         data:
           item.kind === "goal"
@@ -417,19 +425,62 @@ function MapCanvas({
     onAddChild,
     canEdit,
   ]);
+  const nodesForFit = useRef(nodes);
+  nodesForFit.current = nodes;
   const resetView = useCallback(() => {
-    // Establish the baseline after fitting async-loaded data, before animation
-    // callbacks can report a percentage relative to an earlier empty graph.
-    void flow
-      .fitView({ ...MAP_FIT_VIEW_OPTIONS, duration: 0 })
-      .then(() => {
-        setBaseZoom(flow.getZoom());
-        setZoom(100);
-      });
+    const element = container.current;
+    const currentNodes = nodesForFit.current;
+    if (!element || currentNodes.length === 0) return;
+
+    const width = element.clientWidth;
+    const height = element.clientHeight;
+    if (width <= 0 || height <= 0) return;
+
+    // fitView depends on React Flow's measured node bounds. After a deep graph
+    // update it can reuse stale bounds for nodes that were culled offscreen.
+    // These cards have fixed dimensions, so calculate bounds from the positions
+    // and sizes used to render every visible node in the tree.
+    const bounds = currentNodes.reduce(
+      (result, node) => {
+        const nodeWidth = typeof node.style?.width === "number"
+          ? node.style.width
+          : node.width ?? 184;
+        const nodeHeight = typeof node.style?.height === "number"
+          ? node.style.height
+          : node.height ?? 62;
+        result.left = Math.min(result.left, node.position.x);
+        result.top = Math.min(result.top, node.position.y);
+        result.right = Math.max(result.right, node.position.x + nodeWidth);
+        result.bottom = Math.max(result.bottom, node.position.y + nodeHeight);
+        return result;
+      },
+      { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity },
+    );
+    const viewport = getViewportForBounds(
+      {
+        x: bounds.left,
+        y: bounds.top,
+        width: bounds.right - bounds.left,
+        height: bounds.bottom - bounds.top,
+      },
+      width,
+      height,
+      MAP_FIT_VIEW_OPTIONS.minZoom,
+      MAP_FIT_VIEW_OPTIONS.maxZoom,
+      MAP_FIT_VIEW_OPTIONS.padding,
+    );
+    void flow.setViewport(viewport, { duration: 0 }).then(() => {
+      setBaseZoom(viewport.zoom);
+      setZoom(100);
+    });
   }, [flow]);
   useEffect(() => {
-    const timer = setTimeout(resetView, 90);
-    return () => clearTimeout(timer);
+    // Let React Flow commit its controlled node update before applying the
+    // viewport calculated from this render's complete graph positions.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(resetView);
+    });
+    return () => cancelAnimationFrame(frame);
   // `tree` is the complete graph projection, including milestones and
   // actions. Counting the legacy collections here would leave a newly-added
   // deeper action outside the current viewport.

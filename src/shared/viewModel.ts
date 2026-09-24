@@ -295,12 +295,16 @@ export function treeFrom(graph: unknown): {
     : asArray(source.relations);
 
   const byId = new Map<string, PlanNode>();
+  const itemOrder = new Map<string, number>();
+  const partOfPositions = new Map<string, number | null>();
   const isConversationDraft = typeof source.draft_id === "string";
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     const fields = (item.fields as Unknown | undefined) ?? {};
     const assessment = fields.self_assessment ?? item.self_assessment;
-    byId.set(asString(item.id), {
-      id: asString(item.id),
+    const id = asString(item.id);
+    itemOrder.set(id, index);
+    byId.set(id, {
+      id,
       title: asString(item.title),
       kind: asString(item.kind, "outcome") as PlanNodeKind,
       state: asString(item.state, "active"),
@@ -347,6 +351,10 @@ export function treeFrom(graph: unknown): {
       if (relationship.type === "part_of") child.parentRelation = relationship;
     }
     if (relation.type !== "part_of") continue;
+    partOfPositions.set(
+      sourceId,
+      typeof relation.position === "number" ? relation.position : null,
+    );
     // A parent outside the slice leaves the child at the top level.
     if (!child || !parent || child === parent) continue;
     parent.children.push(child);
@@ -354,9 +362,15 @@ export function treeFrom(graph: unknown): {
   }
 
   const order = (a: PlanNode, b: PlanNode) => {
-    const aPosition = a.parentRelation?.position ?? Number.MAX_SAFE_INTEGER;
-    const bPosition = b.parentRelation?.position ?? Number.MAX_SAFE_INTEGER;
-    return aPosition - bPosition || a.title.localeCompare(b.title);
+    const aPosition = partOfPositions.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const bPosition = partOfPositions.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    const aItemOrder = itemOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+    const bItemOrder = itemOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    return (
+      aPosition - bPosition ||
+      aItemOrder - bItemOrder ||
+      a.id.localeCompare(b.id)
+    );
   };
   for (const node of byId.values()) node.children.sort(order);
   const roots = [...byId.values()]

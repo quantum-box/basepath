@@ -169,13 +169,37 @@ export type WeeklyReview = {
   finalized_at: string | null;
   supersedes_id: string | null;
 };
-export type Operation = { method: string; path: string; body: unknown };
+export type Operation = {
+  method: string;
+  path: string;
+  body: unknown;
+  basis?: string | null;
+  match_rationale?: string | null;
+  interpretation?: {
+    status:
+      | "decided"
+      | "considering"
+      | "hypothesis"
+      | "suggested"
+      | "question"
+      | "conflict";
+    origin: "person" | "assistant" | "inference";
+    source_ref?: string | null;
+    source_url?: string | null;
+    speaker?: string | null;
+    quote?: string | null;
+    at?: string | null;
+    reason?: string | null;
+  };
+};
 export type ChangeSet = {
   id: string;
   workspace_id: string;
   title: string;
   status: "pending" | "approved" | "applied" | "rejected";
   operations: Operation[];
+  changes?: unknown[];
+  conversation_id?: string | null;
   expires_at: string;
   created_at: string;
   /** Applied under a range the person set in advance, rather than approved. */

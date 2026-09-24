@@ -405,6 +405,47 @@ pub struct WeeklyReview {
     pub supersedes_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeInterpretationStatus {
+    Decided,
+    Considering,
+    Hypothesis,
+    Suggested,
+    Question,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeInterpretationOrigin {
+    Person,
+    Assistant,
+    Inference,
+}
+
+/// A proposal's reading of what a conversation said, kept distinct from the
+/// plan data the operation would write. Source details are host-provided
+/// references; the server does not have the host transcript to verify them.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChangeInterpretation {
+    pub status: ChangeInterpretationStatus,
+    pub origin: ChangeInterpretationOrigin,
+    #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub speaker: Option<String>,
+    #[serde(default)]
+    pub quote: Option<String>,
+    #[serde(default)]
+    pub at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Operation {
     pub method: String,
@@ -425,6 +466,10 @@ pub struct Operation {
     /// from `basis`, which records where the claim itself came from.
     #[serde(default)]
     pub match_rationale: Option<String>,
+    /// How the proposal interprets this operation in the linked conversation.
+    /// This remains attribution supplied by the proposer, not a verified fact.
+    #[serde(default)]
+    pub interpretation: Option<ChangeInterpretation>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {

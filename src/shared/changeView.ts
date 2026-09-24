@@ -11,12 +11,41 @@ export type ChangeEffect = "created" | "updated" | "deleted" | "unknown";
 
 export type FieldChange = { field: string; before: string; after: string };
 
+export type ChangeInterpretationStatus =
+  | "decided"
+  | "considering"
+  | "hypothesis"
+  | "suggested"
+  | "question"
+  | "conflict";
+
+export type ChangeInterpretation = {
+  status: ChangeInterpretationStatus;
+  origin: "person" | "assistant" | "inference";
+  sourceRef: string;
+  sourceUrl: string;
+  speaker: string;
+  quote: string;
+  at: string;
+  reason: string;
+};
+
+export type BranchImpact = {
+  descendantCount: number;
+  actionCount: number;
+  dependencyCount: number;
+  contributionCount: number;
+  items: { id: string; title: string; kind: string; depth: number }[];
+  truncated: boolean;
+};
+
 export type ChangeRow = {
   id: string;
   title: string;
   effect: ChangeEffect;
   collection: string;
   method: string;
+  sideEffects: { recordsCreated: number; notificationsCreated: number };
   fields: FieldChange[];
   /**
    * Values in this row that will be read afterwards as commitments — a date,
@@ -24,9 +53,16 @@ export type ChangeRow = {
    */
   guardedValues: string[];
   /** Where those values came from, in the proposer's words. */
-  basis: string;
+  basis: string[];
   /** Why this operation matches an existing item or is genuinely new. */
-  matchRationale: string;
+  matchRationale: string[];
+  /** Ordinary edits collapse to a net row; operations with persisted side effects stay separate. */
+  steps: number;
+  interpretations: ChangeInterpretation[];
+  /** Exact active subtree context captured on both sides of the preview. */
+  impact: { before: BranchImpact; after: BranchImpact } | null;
+  beforeSnapshot: unknown;
+  afterSnapshot: unknown;
 };
 
 export type ChangeSet = {
@@ -36,6 +72,7 @@ export type ChangeSet = {
   status: "pending" | "approved" | "applied" | "rejected" | string;
   /** Digest of the content. An approval is bound to this exact value. */
   hash: string;
+  conversationId: string | null;
   approvedBy: string | null;
   approvedAt: string | null;
   rejectedBy: string | null;
@@ -80,6 +117,88 @@ type Unknown = Record<string, unknown>;
 
 const text = (value: unknown, fallback = "") =>
   typeof value === "string" ? value : fallback;
+
+function object(value: unknown): Unknown | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Unknown)
+    : null;
+}
+
+const INTERPRETATION_STATUSES = new Set<ChangeInterpretationStatus>([
+  "decided",
+  "considering",
+  "hypothesis",
+  "suggested",
+  "question",
+  "conflict",
+]);
+
+function interpretationFrom(value: unknown): ChangeInterpretation | null {
+  const source = object(value);
+  if (
+    !source ||
+    typeof source.status !== "string" ||
+    !INTERPRETATION_STATUSES.has(source.status as ChangeInterpretationStatus) ||
+    !["person", "assistant", "inference"].includes(text(source.origin))
+  ) {
+    return null;
+  }
+  return {
+    status: source.status as ChangeInterpretationStatus,
+    origin: source.origin as ChangeInterpretation["origin"],
+    sourceRef: text(source.source_ref),
+    sourceUrl: text(source.source_url),
+    speaker: text(source.speaker),
+    quote: text(source.quote),
+    at: text(source.at),
+    reason: text(source.reason),
+  };
+}
+
+function branchImpactFrom(value: unknown): BranchImpact | null {
+  const source = object(value);
+  if (!source) return null;
+  const items = Array.isArray(source.items)
+    ? source.items.flatMap((entry) => {
+        const item = object(entry);
+        if (!item || typeof item.id !== "string") return [];
+        return [
+          {
+            id: item.id,
+            title: text(item.title, "（無題）"),
+            kind: text(item.kind),
+            depth: typeof item.depth === "number" ? item.depth : 0,
+          },
+        ];
+      })
+    : [];
+  return {
+    descendantCount:
+      typeof source.descendant_count === "number" ? source.descendant_count : 0,
+    actionCount:
+      typeof source.action_count === "number" ? source.action_count : 0,
+    dependencyCount:
+      typeof source.dependency_count === "number" ? source.dependency_count : 0,
+    contributionCount:
+      typeof source.contribution_count === "number"
+        ? source.contribution_count
+        : 0,
+    items,
+    truncated: source.truncated === true,
+  };
+}
+
+function impactFrom(value: unknown): ChangeRow["impact"] {
+  const source = object(value);
+  if (!source) return null;
+  const before = branchImpactFrom(source.before);
+  const after = branchImpactFrom(source.after);
+  return before && after ? { before, after } : null;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
 
 /** Fields worth showing a person. Bookkeeping is noise in a review. */
 const REVIEWABLE = [
@@ -151,9 +270,11 @@ function relationChanges(change: Unknown): FieldChange[] {
     const afterRelation = parentSnapshot(delta.after);
     const relationLabel = (relation: Unknown | null) => {
       if (!relation) return "（関連なし）";
-      const source = text(relation.source_title) || text(relation.source_id, "（不明）");
+      const source =
+        text(relation.source_title) || text(relation.source_id, "（不明）");
       const type = text(relation.relation_type, "関連");
-      const target = text(relation.target_title) || text(relation.target_id, "（不明）");
+      const target =
+        text(relation.target_title) || text(relation.target_id, "（不明）");
       return `${source} — ${type} → ${target}`;
     };
     return [
@@ -170,17 +291,151 @@ function relationChanges(change: Unknown): FieldChange[] {
   const afterParent = parentSnapshot(delta.after);
   const beforeId = text(beforeParent?.target_id);
   const afterId = text(afterParent?.target_id);
-  if (beforeId === afterId) return [];
+  if (beforeId === afterId) {
+    const beforePosition = beforeParent?.position;
+    const afterPosition = afterParent?.position;
+    if (display(beforePosition) === display(afterPosition)) return [];
+    const positionLabel = (value: unknown) =>
+      typeof value === "number" ? `${value + 1}番目` : "順序指定なし";
+    return [
+      {
+        field: "並び順",
+        before: positionLabel(beforePosition),
+        after: positionLabel(afterPosition),
+      },
+    ];
+  }
 
   const parentTitle = (parent: Unknown | null) =>
-    parent ? text(parent.parent_title) || text(parent.target_id, "（不明）") : "（親なし）";
+    parent
+      ? text(parent.parent_title) || text(parent.target_id, "（不明）")
+      : "（親なし）";
   let before = parentTitle(beforeParent);
   let after = parentTitle(afterParent);
   if (beforeParent && afterParent && before === after) {
     before = `${before}（${beforeId}）`;
     after = `${after}（${afterId}）`;
-  };
+  }
   return [{ field: "親項目", before, after }];
+}
+
+function rowFromChange(change: Unknown): ChangeRow {
+  const interpretation = interpretationFrom(change.interpretation);
+  const sideEffects = object(change.side_effects);
+  return {
+    id: text(change.id),
+    title: text(change.title, "（無題）"),
+    effect: text(change.effect, "unknown") as ChangeEffect,
+    collection: text(change.collection),
+    method: text(change.method),
+    sideEffects: {
+      recordsCreated: typeof sideEffects?.records_created === "number"
+        ? sideEffects.records_created
+        : 0,
+      notificationsCreated: typeof sideEffects?.notifications_created === "number"
+        ? sideEffects.notifications_created
+        : 0,
+    },
+    fields: [
+      ...(change.effect === "deleted"
+        ? []
+        : fieldChanges(change.before, change.after)),
+      ...relationChanges(change),
+    ],
+    guardedValues: Array.isArray(change.guarded_values)
+      ? (change.guarded_values as unknown[]).filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+    basis: unique([text(change.basis)]),
+    matchRationale: unique([text(change.match_rationale)]),
+    steps: 1,
+    interpretations: interpretation ? [interpretation] : [],
+    impact: impactFrom(change.impact),
+    beforeSnapshot: change.before ?? null,
+    afterSnapshot: change.after ?? null,
+  };
+}
+
+function effectBetween(before: unknown, after: unknown): ChangeEffect {
+  const hadBefore = object(before) !== null;
+  const hasAfter = object(after) !== null;
+  if (!hadBefore && hasAfter) return "created";
+  if (hadBefore && !hasAfter) return "deleted";
+  if (hadBefore && hasAfter) return "updated";
+  return "unknown";
+}
+
+/** Combine repeated edits to one stable item into its net before/after state. */
+function aggregateRows(rows: ChangeRow[]): ChangeRow[] {
+  const groups = new Map<string, ChangeRow>();
+  rows.forEach((row, index) => {
+    const hasSideEffects =
+      row.sideEffects.recordsCreated > 0 || row.sideEffects.notificationsCreated > 0;
+    const key = row.id && !hasSideEffects
+      ? `${row.collection}:${row.id}`
+      : `${row.collection}:row-${index}`;
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, row);
+      return;
+    }
+
+    const fields = new Map<string, FieldChange>();
+    for (const field of existing.fields) fields.set(field.field, field);
+    for (const field of row.fields) {
+      const prior = fields.get(field.field);
+      fields.set(field.field, {
+        field: field.field,
+        before: prior?.before ?? field.before,
+        after: field.after,
+      });
+    }
+    const mergedFields = [...fields.values()].filter(
+      (field) => field.before !== field.after,
+    );
+    const beforeSnapshot = existing.beforeSnapshot;
+    const afterSnapshot = row.afterSnapshot;
+    const interpretations = new Map<string, ChangeInterpretation>();
+    for (const interpretation of [
+      ...existing.interpretations,
+      ...row.interpretations,
+    ]) {
+      interpretations.set(JSON.stringify(interpretation), interpretation);
+    }
+    const impact =
+      existing.impact || row.impact
+        ? {
+            before: existing.impact?.before ?? row.impact!.before,
+            after: row.impact?.after ?? existing.impact!.after,
+          }
+        : null;
+    groups.set(key, {
+      ...existing,
+      title: row.title || existing.title,
+      effect: effectBetween(beforeSnapshot, afterSnapshot),
+      method: existing.method === row.method ? row.method : "複数操作",
+      fields: mergedFields,
+      guardedValues: unique([...existing.guardedValues, ...row.guardedValues]),
+      basis: unique([...existing.basis, ...row.basis]),
+      matchRationale: unique([
+        ...existing.matchRationale,
+        ...row.matchRationale,
+      ]),
+      steps: existing.steps + row.steps,
+      sideEffects: {
+        recordsCreated:
+          existing.sideEffects.recordsCreated + row.sideEffects.recordsCreated,
+        notificationsCreated:
+          existing.sideEffects.notificationsCreated + row.sideEffects.notificationsCreated,
+      },
+      interpretations: [...interpretations.values()],
+      impact,
+      beforeSnapshot,
+      afterSnapshot,
+    });
+  });
+  return [...groups.values()];
 }
 
 export function changeSetFrom(value: unknown): ChangeSet | null {
@@ -198,26 +453,7 @@ export function changeSetFrom(value: unknown): ChangeSet | null {
     return null;
   }
   const rows = Array.isArray(source.changes)
-    ? (source.changes as Unknown[]).map((change) => ({
-        id: text(change.id),
-        title: text(change.title, "（無題）"),
-        effect: text(change.effect, "unknown") as ChangeEffect,
-        collection: text(change.collection),
-        method: text(change.method),
-        fields: [
-          ...(change.effect === "deleted"
-            ? []
-            : fieldChanges(change.before, change.after)),
-          ...relationChanges(change),
-        ],
-        guardedValues: Array.isArray(change.guarded_values)
-          ? (change.guarded_values as unknown[]).filter(
-              (value): value is string => typeof value === "string",
-            )
-          : [],
-        basis: text(change.basis),
-        matchRationale: text(change.match_rationale),
-      }))
+    ? aggregateRows((source.changes as Unknown[]).map(rowFromChange))
     : [];
   return {
     id: text(source.id),
@@ -225,6 +461,10 @@ export function changeSetFrom(value: unknown): ChangeSet | null {
     title: text(source.title, "計画の変更案"),
     status: text(source.status, "pending"),
     hash: text(source.hash),
+    conversationId:
+      typeof source.conversation_id === "string"
+        ? source.conversation_id
+        : null,
     approvedBy:
       typeof source.approved_by === "string" ? source.approved_by : null,
     approvedAt:

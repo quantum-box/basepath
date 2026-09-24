@@ -18,6 +18,8 @@ import type {
 } from "./viewModel";
 import { countNodes, findNode, nodeIds } from "./viewModel";
 import type { TreeState } from "./useTreeState";
+import type { ChangeSet } from "./changeView";
+import { ChangeDiff } from "./ChangeDiff";
 
 function stateLabel(state: string) {
   switch (state) {
@@ -224,12 +226,17 @@ function Node({
           )}
           {node.relationships && node.relationships.length > 0 && (
             <details>
-              <summary>関係と根拠を見る（{node.relationships.length}件）</summary>
+              <summary>
+                関係と根拠を見る（{node.relationships.length}件）
+              </summary>
               <ul>
                 {node.relationships.map((relation, index) => (
-                  <li key={`${relation.sourceId}:${relation.targetId}:${relation.type}:${index}`}>
+                  <li
+                    key={`${relation.sourceId}:${relation.targetId}:${relation.type}:${index}`}
+                  >
                     <strong>
-                      {relation.sourceTitle} → {relation.targetTitle} · {relation.type}
+                      {relation.sourceTitle} → {relation.targetTitle} ·{" "}
+                      {relation.type}
                     </strong>
                     {relation.position !== null && (
                       <p>表示順 {relation.position + 1}</p>
@@ -352,12 +359,8 @@ export type PlanProposal = {
   approvalUrl: string | null;
   autoApplyEligible: boolean;
   assumptions: string[];
-  summary: {
-    created: number;
-    updated: number;
-    deleted: number;
-    unknown: number;
-  };
+  noChange: boolean;
+  change: ChangeSet;
 };
 
 export type ConversationDraftView = {
@@ -585,8 +588,34 @@ export function PlanViewPanel({
   }
   if (!view.workspace) {
     return (
-      <div className="plan-panel plan-empty-state">
-        <p>利用できるワークスペースがありません。</p>
+      <div
+        className="plan-panel plan-empty-state"
+        data-proposal={proposal ? "true" : undefined}
+      >
+        {proposal?.noChange ? (
+          <section className="plan-proposal" aria-label="会話からの変更案">
+            <div className="plan-proposal-heading">
+              <div>
+                <span className="plan-eyebrow">CONVERSATION DRAFT</span>
+                <h3>{proposal.title}</h3>
+              </div>
+              <span className="plan-proposal-status">変更なし</span>
+            </div>
+            <ChangeDiff change={proposal.change} />
+            {proposal.assumptions.length > 0 && (
+              <details>
+                <summary>この案の前提 {proposal.assumptions.length}件</summary>
+                <ul>
+                  {proposal.assumptions.map((assumption) => (
+                    <li key={assumption}>{assumption}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </section>
+        ) : (
+          <p>利用できるワークスペースがありません。</p>
+        )}
       </div>
     );
   }
@@ -651,25 +680,11 @@ export function PlanViewPanel({
               <span className="plan-eyebrow">CONVERSATION DRAFT</span>
               <h3>{proposal.title}</h3>
             </div>
-            <span className="plan-proposal-status">未反映</span>
+            <span className="plan-proposal-status">
+              {proposal.noChange ? "変更なし" : "未反映"}
+            </span>
           </div>
-          <p>
-            会話で整理した案を表示しています。まだBasepathの計画には反映されていません。
-          </p>
-          <ul className="plan-proposal-summary">
-            {proposal.summary.created > 0 && (
-              <li>追加 {proposal.summary.created}件</li>
-            )}
-            {proposal.summary.updated > 0 && (
-              <li>更新 {proposal.summary.updated}件</li>
-            )}
-            {proposal.summary.deleted > 0 && (
-              <li>削除 {proposal.summary.deleted}件</li>
-            )}
-            {proposal.summary.unknown > 0 && (
-              <li>確認が必要 {proposal.summary.unknown}件</li>
-            )}
-          </ul>
+          <ChangeDiff change={proposal.change} />
           {proposal.assumptions.length > 0 && (
             <details>
               <summary>この案の前提 {proposal.assumptions.length}件</summary>

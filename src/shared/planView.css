@@ -729,6 +729,201 @@
   color: var(--plan-accent);
 }
 
+/* The same strategy-oriented diff is used by the approval screen and MCP App. */
+.change-diff {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+}
+.change-diff-heading h4,
+.change-impact h5 {
+  margin: 0;
+  font-size: 13px;
+}
+.change-diff-heading p,
+.change-impact > p,
+.change-evidence-missing {
+  margin: 3px 0 0;
+  color: var(--plan-muted);
+  font-size: 11px;
+}
+.change-diff-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.change-diff-summary li {
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--plan-muted);
+  font-size: 10px;
+}
+.change-diff-summary strong {
+  color: var(--plan-text);
+}
+.change-diff-list {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.change-diff-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--plan-line);
+  border-radius: 11px;
+  padding: 10px;
+  background: var(--plan-surface);
+}
+.change-diff-card[data-meaning="conflict"],
+.change-diff-card[data-meaning="question"] {
+  border-color: color-mix(in srgb, #a85c35 55%, var(--plan-line));
+}
+.change-diff-card > header {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+.change-diff-card > header strong {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.change-diff-card > header small {
+  color: var(--plan-muted);
+  font-size: 10px;
+}
+.change-meaning-label {
+  flex: 0 0 auto;
+  border: 1px solid var(--plan-line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--plan-accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+.change-diff-fields {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.change-diff-fields th,
+.change-diff-fields td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--plan-line);
+  text-align: start;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.change-diff-fields thead th {
+  color: var(--plan-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.change-diff-fields th:first-child {
+  width: 22%;
+}
+.change-diff-fields td {
+  width: 39%;
+  white-space: pre-wrap;
+}
+.change-interpretations {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.change-interpretation {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border-inline-start: 3px solid color-mix(in srgb, var(--plan-accent) 55%, var(--plan-line));
+  padding-inline-start: 8px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.change-interpretation p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  margin: 0;
+}
+.change-interpretation blockquote {
+  margin: 2px 0;
+  border-inline-start: 2px solid var(--plan-line);
+  padding-inline-start: 7px;
+  color: var(--plan-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.change-interpretation small,
+.change-impact-side small {
+  color: var(--plan-muted);
+  font-size: 10px;
+}
+.change-interpretation a {
+  color: var(--plan-accent);
+  overflow-wrap: anywhere;
+}
+.change-impact {
+  display: grid;
+  gap: 5px;
+  border-top: 1px solid var(--plan-line);
+  padding-top: 7px;
+}
+.change-impact-sides {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.change-impact-side {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  color: var(--plan-muted);
+  font-size: 10px;
+}
+.change-impact-side > strong {
+  color: var(--plan-text);
+  font-size: 11px;
+}
+.change-impact-side ul {
+  display: grid;
+  gap: 2px;
+  margin: 3px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.change-impact-side li {
+  min-width: 0;
+  padding-inline-start: 8px;
+  overflow-wrap: anywhere;
+}
+.change-impact-side li::before {
+  content: "↳ ";
+  color: var(--plan-muted);
+}
+@media (max-width: 560px) {
+  .change-impact-sides {
+    grid-template-columns: 1fr;
+  }
+  .change-diff-fields th:first-child {
+    width: 25%;
+  }
+}
+
 /* The weekly review.
  *
  * The markup is shared, so the class names are the ones Basepath's own
