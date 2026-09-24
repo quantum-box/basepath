@@ -676,6 +676,11 @@
   font-weight: 500;
   border-top: 0;
 }
+.change-match-rationale {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--plan-muted);
+}
 .change-warning {
   margin: 4px 0 0;
   font-size: 12px;

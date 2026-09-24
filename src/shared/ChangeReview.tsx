@@ -72,6 +72,11 @@ function Row({ row }: { row: ChangeRow }) {
           </tbody>
         </table>
       )}
+      {row.matchRationale && (
+        <p className="change-match-rationale">
+          <strong>照合理由：</strong>{row.matchRationale}
+        </p>
+      )}
       {/* A date, an owner or a target reads afterwards as something the
           person decided, so it is called out with where it came from rather
           than left as one row in a table of many. */}

@@ -4757,6 +4757,26 @@ async fn latest_weekly_review(tx: &mut Tx, w: &str, week_start: &str) -> Result<
     })
 }
 
+/// Captures the link and its parent label so a move remains reviewable even
+/// though the item itself is unchanged.
+async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<Value>> {
+    let relations: Vec<Relation> = list(tx, w, "relations").await?;
+    let Some(relation) = relations
+        .into_iter()
+        .find(|relation| relation.relation_type == "part_of" && relation.source_id == item_id)
+    else {
+        return Ok(None);
+    };
+    let parent: Item = get(tx, w, "items", &relation.target_id).await?;
+    Ok(Some(json!({
+        "relation_id": relation.id,
+        "source_id": relation.source_id,
+        "target_id": relation.target_id,
+        "parent_title": parent.title,
+        "position": relation.position,
+    })))
+}
+
 /// Runs one proposed operation and records what it did.
 ///
 /// The caller is inside a savepoint that will be rolled back, so this is a
@@ -4765,6 +4785,15 @@ async fn latest_weekly_review(tx: &mut Tx, w: &str, week_start: &str) -> Result<
 async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation) -> Result<Value> {
     let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
     let collection = parts.get(3).copied().unwrap_or("");
+    let reparent_item = (op.method == "POST"
+        && collection == "items"
+        && parts.len() == 6
+        && parts[5] == "reparent")
+        .then(|| parts[4]);
+    let parent_before = match reparent_item {
+        Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+        None => None,
+    };
     // `actions` operate on an item; a weekly review draft is addressed by its
     // week rather than by a row id; everything else names its own collection.
     let checkin = collection == "items" && parts.get(5) == Some(&"checkins");
@@ -4806,6 +4835,18 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     };
 
     let result = dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+
+    let parent_after = match reparent_item {
+        Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+        None => None,
+    };
+    let relation_delta = reparent_item.map(|_| {
+        json!({
+            "type": "part_of",
+            "before": parent_before,
+            "after": parent_after,
+        })
+    });
 
     // The identifier of what the operation actually touched: for a create it
     // only exists in the result.
@@ -4856,6 +4897,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         "effect": effect,
         "before": before,
         "after": after,
+        "relation_delta": relation_delta,
         // Which committing values this operation sets, and where they came
         // from, next to the diff rather than buried in the operation list.
         "guarded_values": crate::copilot::guarded_values(&op.body),
