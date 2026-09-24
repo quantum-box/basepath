@@ -2253,6 +2253,22 @@ impl Service {
             }
             let mut response: Value = serde_json::from_str(&row.text(1)?)?;
             crate::collaboration::authorize_replay(&mut tx, method, &parts, &response).await?;
+            if response["status"] == "no_change" {
+                let expected_base_version = response["base_version"].as_str().map(str::to_owned);
+                let current_base_version = workspace_version(&mut tx, w).await?;
+                if expected_base_version.as_deref() != Some(current_base_version.as_str()) {
+                    let mut error = ApiError::new(
+                        409,
+                        "VERSION_CONFLICT",
+                        "計画が読み取り後に更新されています。最新状態を再読込して差分を作り直してください",
+                    );
+                    error.details = json!({
+                        "expected_base_version": expected_base_version,
+                        "current_base_version": current_base_version,
+                    });
+                    return Err(error);
+                }
+            }
             if !include_preview_graph {
                 strip_preview_graph(&mut response);
                 strip_change_impacts(&mut response);

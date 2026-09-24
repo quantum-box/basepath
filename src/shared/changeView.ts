@@ -45,6 +45,7 @@ export type ChangeRow = {
   effect: ChangeEffect;
   collection: string;
   method: string;
+  path: string;
   fields: FieldChange[];
   /**
    * Values in this row that will be read afterwards as commitments — a date,
@@ -55,7 +56,7 @@ export type ChangeRow = {
   basis: string[];
   /** Why this operation matches an existing item or is genuinely new. */
   matchRationale: string[];
-  /** Operations against one stable item are shown as one logical change. */
+  /** Ordinary edits collapse to a net row; history-producing operations stay separate. */
   steps: number;
   interpretations: ChangeInterpretation[];
   /** Exact active subtree context captured on both sides of the preview. */
@@ -326,6 +327,7 @@ function rowFromChange(change: Unknown): ChangeRow {
     effect: text(change.effect, "unknown") as ChangeEffect,
     collection: text(change.collection),
     method: text(change.method),
+    path: text(change.path),
     fields: [
       ...(change.effect === "deleted"
         ? []
@@ -360,7 +362,10 @@ function effectBetween(before: unknown, after: unknown): ChangeEffect {
 function aggregateRows(rows: ChangeRow[]): ChangeRow[] {
   const groups = new Map<string, ChangeRow>();
   rows.forEach((row, index) => {
-    const key = row.id
+    const preservesSideEffects =
+      /\/actions\/[^/]+\/(?:complete|reopen|skip)$/.test(row.path) ||
+      /\/items\/[^/]+\/reparent$/.test(row.path);
+    const key = row.id && !preservesSideEffects
       ? `${row.collection}:${row.id}`
       : `${row.collection}:row-${index}`;
     const existing = groups.get(key);
