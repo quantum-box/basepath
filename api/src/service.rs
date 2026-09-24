@@ -2270,11 +2270,7 @@ impl Service {
                 }
             }
             if !include_preview_graph {
-                strip_preview_graph(&mut response);
-                strip_change_impacts(&mut response);
-                if let Some(fields) = response.as_object_mut() {
-                    fields.remove("workspaces");
-                }
+                strip_read_access_details(&mut response);
             } else if response["status"] == "no_change" {
                 // The no-change plan and membership can change between
                 // retries. Never replay stale read-authorized snapshots.
@@ -2283,7 +2279,7 @@ impl Service {
             }
             return Ok(response);
         }
-        let result = dispatch_with_preview_graph(
+        let mut result = dispatch_with_preview_graph(
             &mut tx,
             actor,
             method,
@@ -2293,6 +2289,9 @@ impl Service {
             include_preview_graph,
         )
         .await?;
+        if !include_preview_graph {
+            strip_read_access_details(&mut result);
+        }
         tx.execute(
             "INSERT INTO idempotency(actor,workspace_id,`key`,fingerprint,response,created_at) \
              VALUES(?,?,?,?,?,?)",
@@ -5110,6 +5109,14 @@ async fn preview(
 fn strip_preview_graph(value: &mut Value) {
     if let Value::Object(fields) = value {
         fields.remove("preview_graph");
+    }
+}
+
+fn strip_read_access_details(value: &mut Value) {
+    strip_preview_graph(value);
+    strip_change_impacts(value);
+    if let Value::Object(fields) = value {
+        fields.remove("workspaces");
     }
 }
 
