@@ -4823,6 +4823,10 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         && parts.len() == 6
         && parts[5] == "reparent")
         .then(|| parts[4]);
+    let create_item_with_parent = op.method == "POST"
+        && collection == "items"
+        && parts.len() == 4
+        && op.body["parent_id"].as_str().is_some();
     let parent_before = match reparent_item {
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
         None => None,
@@ -4876,6 +4880,10 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
 
     let parent_after = match reparent_item {
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+        None if create_item_with_parent => match result["id"].as_str() {
+            Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
+            None => None,
+        },
         None => None,
     };
     let relation_after = if op.method == "POST" && collection == "relations" {
@@ -4886,7 +4894,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
     } else {
         None
     };
-    let relation_delta = if reparent_item.is_some() {
+    let relation_delta = if reparent_item.is_some() || create_item_with_parent {
         Some(json!({
             "type": "part_of",
             "before": parent_before,
