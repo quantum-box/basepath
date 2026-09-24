@@ -450,17 +450,33 @@ function BasepathApp() {
             pendingWorkspaceRefresh.current = undefined;
             pendingConversationDraft.current = null;
             if (nextProposal.noChange) {
-              // A no-change result has no preview graph. Reload the saved plan
-              // before showing it so an earlier temporary proposal cannot
-              // masquerade as the confirmed plan.
-              pendingProposal.current = {
-                proposal: nextProposal,
-                payload,
-                workspaceId,
-              };
-              setLoading(true);
-              setStale(true);
-              void refreshRef.current(workspaceId);
+              const hasSavedGraph = Boolean(previewGraphFrom(payload));
+              if (!hasSavedGraph && hostFor()?.capabilities.serverTools) {
+                // Older hosts or proposal-only connections may omit the
+                // read-protected graph. Refresh it only when this host can
+                // make a follow-up tool call.
+                pendingProposal.current = {
+                  proposal: nextProposal,
+                  payload,
+                  workspaceId,
+                };
+                setLoading(true);
+                setStale(true);
+                void refreshRef.current(workspaceId);
+                return;
+              }
+              generation.current += 1;
+              pendingProposal.current = null;
+              const next = hasSavedGraph
+                ? mergeToolPayload(viewRef.current, payload, workspaceId)
+                : clearForWorkspace(viewRef.current, workspaceId ?? "");
+              viewRef.current = next;
+              setView(next);
+              setProposal(nextProposal);
+              setConversationDraft(null);
+              setLoading(false);
+              setProblem(null);
+              setStale(false);
               return;
             }
             if (!viewRef.current.workspace) {

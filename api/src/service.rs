@@ -4886,7 +4886,7 @@ async fn preview(
     );
     if ops.is_empty() {
         let link = conversation_link.as_ref().unwrap();
-        return Ok(json!({
+        let mut result = json!({
             "status": "no_change",
             "workspace_id": w,
             "conversation_id": conversation_id,
@@ -4897,7 +4897,14 @@ async fn preview(
             "title": title,
             "assumptions": assumptions,
             "changes": [],
-        }));
+        });
+        // A result-only MCP host cannot make a follow-up graph request. When
+        // the caller has read access, include the saved graph with the
+        // no-change result so the widget can show the authoritative plan.
+        if include_preview_graph {
+            result["preview_graph"] = graph_snapshot(tx, w, 200).await?;
+        }
+        return Ok(result);
     }
     for op in &ops {
         let p: Vec<_> = op.path.trim_matches('/').split('/').collect();
@@ -5107,6 +5114,11 @@ fn ordered_part_of_siblings(
     parent_id: &str,
     exclude_item_id: Option<&str>,
 ) -> Vec<Relation> {
+    let active_item_ids: HashSet<&str> = items
+        .iter()
+        .filter(|item| item.archived_at.is_none())
+        .map(|item| item.id.as_str())
+        .collect();
     let item_order: HashMap<&str, usize> = items
         .iter()
         .enumerate()
@@ -5117,6 +5129,7 @@ fn ordered_part_of_siblings(
         .filter(|relation| {
             relation.relation_type == "part_of"
                 && relation.target_id == parent_id
+                && active_item_ids.contains(relation.source_id.as_str())
                 && exclude_item_id != Some(relation.source_id.as_str())
         })
         .cloned()
