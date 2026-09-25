@@ -7483,6 +7483,13 @@ async fn item_has_activity(tx: &mut Tx, workspace_id: &str, item_id: &str) -> Re
         .any(|metric| metric.item_id == item_id))
 }
 
+#[derive(Default)]
+struct RelationActivityProjection {
+    relation_ids: HashSet<String>,
+    snapshots: Vec<Value>,
+    part_of_parent_ids: HashSet<String>,
+}
+
 async fn item_has_later_activity(
     tx: &mut Tx,
     workspace_id: &str,
@@ -7490,9 +7497,7 @@ async fn item_has_later_activity(
     source_applied_at: &str,
     source_metric_ids: Option<&[Value]>,
     source_relation_state: Option<&[Value]>,
-    ignored_relation_ids: &HashSet<String>,
-    ignored_relation_snapshots: &[Value],
-    ignored_part_of_parent_ids: &HashSet<String>,
+    ignored_relations: &RelationActivityProjection,
 ) -> Result<bool> {
     if source_applied_at.is_empty() {
         return Ok(true);
@@ -7539,12 +7544,17 @@ async fn item_has_later_activity(
     let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
     if let Some(source_state) = source_relation_state {
         let is_projected_out = |relation: &Value| {
-            ignored_relation_ids.contains(text(relation, "id"))
-                || ignored_relation_snapshots
+            ignored_relations
+                .relation_ids
+                .contains(text(relation, "id"))
+                || ignored_relations
+                    .snapshots
                     .iter()
                     .any(|snapshot| relation_value_identity_matches(relation, snapshot))
                 || (text(relation, "relation_type") == "part_of"
-                    && ignored_part_of_parent_ids.contains(text(relation, "target_id")))
+                    && ignored_relations
+                        .part_of_parent_ids
+                        .contains(text(relation, "target_id")))
         };
         let current_state = item_relation_activity_state(&relations, item_id)
             .into_iter()
@@ -7559,12 +7569,15 @@ async fn item_has_later_activity(
     }
     Ok(relations.iter().any(|relation| {
         (relation.source_id == item_id || relation.target_id == item_id)
-            && !ignored_relation_ids.contains(&relation.id)
-            && !ignored_relation_snapshots
+            && !ignored_relations.relation_ids.contains(&relation.id)
+            && !ignored_relations
+                .snapshots
                 .iter()
                 .any(|snapshot| relation_snapshot_identity_matches(relation, snapshot))
             && !(relation.relation_type == "part_of"
-                && ignored_part_of_parent_ids.contains(&relation.target_id))
+                && ignored_relations
+                    .part_of_parent_ids
+                    .contains(&relation.target_id))
             && relation
                 .created_at
                 .as_deref()
@@ -7613,10 +7626,8 @@ fn selected_later_relation_activity_projection(
     selected: &[usize],
     operation_index: usize,
     item_id: &str,
-) -> (HashSet<String>, Vec<Value>, HashSet<String>) {
-    let mut relation_ids = HashSet::new();
-    let mut relation_snapshots = Vec::new();
-    let mut part_of_parent_ids = HashSet::new();
+) -> RelationActivityProjection {
+    let mut projection = RelationActivityProjection::default();
     for later_index in selected
         .iter()
         .copied()
@@ -7631,7 +7642,7 @@ fn selected_later_relation_activity_projection(
         let delta = &change["relation_delta"];
         if text(delta, "type") == "children_order" && text(&delta["before"], "parent_id") == item_id
         {
-            part_of_parent_ids.insert(item_id.to_owned());
+            projection.part_of_parent_ids.insert(item_id.to_owned());
         }
 
         let relation_delta = matches!(text(delta, "type"), "relation" | "part_of");
@@ -7653,16 +7664,16 @@ fn selected_later_relation_activity_projection(
                 text(snapshot, "relation_id")
             };
             if !relation_id.is_empty() {
-                relation_ids.insert(relation_id.to_owned());
+                projection.relation_ids.insert(relation_id.to_owned());
             }
-            relation_snapshots.push(snapshot.clone());
+            projection.snapshots.push(snapshot.clone());
             if text(snapshot, "relation_type") == "part_of"
                 && text(snapshot, "target_id") == item_id
             {
                 // Moving or deleting one child can shift every sibling's
                 // position. The selected inverse validates the saved sibling
                 // order, so exclude that parent-scoped position change here.
-                part_of_parent_ids.insert(item_id.to_owned());
+                projection.part_of_parent_ids.insert(item_id.to_owned());
             }
         }
 
@@ -7678,13 +7689,13 @@ fn selected_later_relation_activity_projection(
             {
                 let relation_id = text(snapshot, "relation_id");
                 if !relation_id.is_empty() {
-                    relation_ids.insert(relation_id.to_owned());
+                    projection.relation_ids.insert(relation_id.to_owned());
                 }
-                part_of_parent_ids.insert(item_id.to_owned());
+                projection.part_of_parent_ids.insert(item_id.to_owned());
             }
         }
     }
-    (relation_ids, relation_snapshots, part_of_parent_ids)
+    projection
 }
 
 fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
@@ -8044,11 +8055,7 @@ async fn reverse_preview(
                         }));
                         continue;
                     }
-                    let (
-                        selected_later_relation_ids,
-                        selected_later_relation_snapshots,
-                        selected_later_part_of_parent_ids,
-                    ) = selected_later_relation_activity_projection(
+                    let selected_later_relations = selected_later_relation_activity_projection(
                         &operations,
                         changes,
                         &selected,
@@ -8064,9 +8071,7 @@ async fn reverse_preview(
                         change["relation_state"]["after"]
                             .as_array()
                             .map(Vec::as_slice),
-                        &selected_later_relation_ids,
-                        &selected_later_relation_snapshots,
-                        &selected_later_part_of_parent_ids,
+                        &selected_later_relations,
                     )
                     .await?
                     {
