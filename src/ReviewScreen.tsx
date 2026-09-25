@@ -72,6 +72,170 @@ function List({
   );
 }
 
+type PlanHistoryChange = {
+  id: string;
+  collection: string;
+  title?: string;
+  effect?: string;
+  operation_index?: number;
+  undoable?: boolean;
+  basis?: string;
+  match_rationale?: string;
+  interpretation?: {
+    status?: string;
+    origin?: string;
+    source_ref?: string;
+    source_url?: string;
+    speaker?: string;
+    at?: string;
+    quote?: string;
+    reason?: string;
+    assumptions?: string[];
+  } | null;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  relation_delta?: {
+    type?: string;
+    before?: (Record<string, unknown> & {
+      source_title?: string;
+      target_title?: string;
+      relation_type?: string;
+      parent_title?: string;
+      position?: number | null;
+    }) | null;
+    after?: (Record<string, unknown> & {
+      source_title?: string;
+      target_title?: string;
+      relation_type?: string;
+      parent_title?: string;
+      position?: number | null;
+    }) | null;
+  } | null;
+};
+
+type PlanHistoryVersion = {
+  id: string;
+  title: string;
+  kind?: "audit" | "changeset";
+  undoable?: boolean;
+  actor?: string;
+  proposed_by?: string;
+  approved_by?: string;
+  applied_by?: string;
+  applied_at?: string;
+  conversation_id?: string | null;
+  source_status?: "available" | "unavailable" | "not_linked";
+  undo_of?: string;
+  undo_reason?: string;
+  assumptions?: string[];
+  changes: PlanHistoryChange[];
+};
+
+type HistoryComparison = {
+  coverage_complete: boolean;
+  coverage_gaps: unknown[];
+  changes: PlanHistoryChange[];
+};
+
+function valueLabel(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "なし";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function changesItem(change: PlanHistoryChange, itemId: string): boolean {
+  return (
+    change.id === itemId ||
+    change.relation_delta?.before?.source_id === itemId ||
+    change.relation_delta?.before?.target_id === itemId ||
+    change.relation_delta?.after?.source_id === itemId ||
+    change.relation_delta?.after?.target_id === itemId
+  );
+}
+
+function comparedFields(change: PlanHistoryChange): string[] {
+  const relation = change.relation_delta;
+  if (relation?.type === "relation") {
+    const describe = (value: NonNullable<typeof relation.before>) => {
+      const relationType =
+        value.relation_type ?? (typeof value.type === "string" ? value.type : "関連");
+      const source = valueLabel(value.source_title ?? value.source_id ?? "項目");
+      const target = valueLabel(value.target_title ?? value.target_id ?? "項目");
+      return `${source} — ${relationType} → ${target}`;
+    };
+    if (!relation.before && relation.after) return ["関連を追加: " + describe(relation.after)];
+    if (relation.before && !relation.after) return ["関連を解除: " + describe(relation.before)];
+    if (relation.before && relation.after) {
+      const before = describe(relation.before);
+      const after = describe(relation.after);
+      return before === after
+        ? ["関連の内容に変更なし"]
+        : ["関連: " + before + " → " + after];
+    }
+  }
+  const before = change.before ?? null;
+  const after = change.after ?? null;
+  const changed: string[] = [];
+  if (!before) changed.push("項目を追加");
+  else if (!after) changed.push("項目を削除");
+  if (!before || !after) {
+    if (relation?.type === "part_of") {
+      changed.push(
+        "親: " + valueLabel(relation.before?.parent_title) + " → " + valueLabel(relation.after?.parent_title),
+      );
+    }
+    return changed.length ? changed : ["変更内容を確認できません"];
+  }
+  const labels: Record<string, string> = {
+    title: "名前",
+    description: "説明",
+    state: "状態",
+    start_date: "開始日",
+    due_date: "期限",
+    scheduled_date: "予定日",
+    scheduled_time: "予定時刻",
+    archived_at: "アーカイブ",
+  };
+  changed.push(...Object.keys(labels)
+    .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+    .map((key) => labels[key] + ": " + valueLabel(before[key]) + " → " + valueLabel(after[key])));
+  const beforeFields = (before.fields ?? {}) as Record<string, unknown>;
+  const afterFields = (after.fields ?? {}) as Record<string, unknown>;
+  const fieldLabels: Record<string, string> = {
+    memo: "メモ",
+    assignee_id: "担当者",
+    priority: "優先度",
+    self_assessment: "自己評価",
+    cycle_id: "計画期間",
+    owner: "担当範囲",
+  };
+  for (const key of new Set([...Object.keys(beforeFields), ...Object.keys(afterFields)])) {
+    if (JSON.stringify(beforeFields[key]) !== JSON.stringify(afterFields[key])) {
+      changed.push(
+        (fieldLabels[key] ?? key) + ": " + valueLabel(beforeFields[key]) + " → " + valueLabel(afterFields[key]),
+      );
+    }
+  }
+  if (relation?.type === "part_of") {
+    changed.push(
+      "親: " + valueLabel(relation.before?.parent_title) + "（順序 " + valueLabel(relation.before?.position) + "） → " +
+        valueLabel(relation.after?.parent_title) + "（順序 " + valueLabel(relation.after?.position) + "）",
+    );
+  }
+  return changed.length ? changed : ["版間で内容の変更なし"];
+}
+
+function safeSourceUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function History({
   workspaceId,
   entry,
@@ -85,6 +249,16 @@ function History({
 }) {
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [checkins, setCheckins] = useState<Checkin[]>([]);
+  const [versions, setVersions] = useState<PlanHistoryVersion[]>([]);
+  const [compareFrom, setCompareFrom] = useState("");
+  const [compareTo, setCompareTo] = useState("");
+  const [comparison, setComparison] = useState<HistoryComparison | null>(null);
+  const [undoTarget, setUndoTarget] = useState<{
+    versionId: string;
+    operationIndex: number;
+  } | null>(null);
+  const [undoReason, setUndoReason] = useState("");
+  const [undoPending, setUndoPending] = useState(false);
   const [draft, setDraft] = useState({
     health: "",
     comment: "",
@@ -97,7 +271,7 @@ function History({
   const load = useCallback(async () => {
     setError("");
     try {
-      const [line, history] = await Promise.all([
+      const [line, checkinHistory, planHistory] = await Promise.all([
         request<unknown>(
           "GET",
           `/v1/workspaces/${workspaceId}/items/${entry.id}/timeline`,
@@ -106,9 +280,20 @@ function History({
           "GET",
           `/v1/workspaces/${workspaceId}/items/${entry.id}/checkins`,
         ),
+        request<{ items: PlanHistoryVersion[] }>(
+          "GET",
+          `/v1/workspaces/${workspaceId}/history`,
+        ),
       ]);
       setTimeline(timelineFrom(line));
-      setCheckins(checkinsFrom(history));
+      setCheckins(checkinsFrom(checkinHistory));
+      const nextVersions = planHistory.items ?? [];
+      setVersions(nextVersions);
+      const itemChanges = nextVersions.filter((version) =>
+        version.changes.some((change) => changesItem(change, entry.id)),
+      );
+      setCompareFrom((current) => current || itemChanges.at(-2)?.id || "");
+      setCompareTo((current) => current || itemChanges.at(-1)?.id || "");
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -121,6 +306,64 @@ function History({
   useEffect(() => {
     void load();
   }, [load]);
+
+  const itemVersions = versions
+    .map((version) => ({
+      ...version,
+      changes: version.changes.filter((change) => changesItem(change, entry.id)),
+    }))
+    .filter((version) => version.changes.length > 0);
+
+  const compare = async () => {
+    setError("");
+    setComparison(null);
+    try {
+      const query = new URLSearchParams({ from: compareFrom, to: compareTo });
+      setComparison(
+        await request<HistoryComparison>(
+          "GET",
+          "/v1/workspaces/" + workspaceId + "/history/compare?" + query.toString(),
+        ),
+      );
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "版間の比較を読み込めませんでした",
+      );
+    }
+  };
+
+  const createUndoProposal = async () => {
+    if (!undoTarget || !undoReason.trim()) return;
+    setError("");
+    setUndoPending(true);
+    try {
+      const graph = await request<{ plan_version: string }>(
+        "GET",
+        "/v1/workspaces/" + workspaceId + "/graph",
+      );
+      const proposal = await store.write<{ id: string }>(
+        "POST",
+        "/v1/workspaces/" + workspaceId + "/changesets/" + undoTarget.versionId + "/undo-preview",
+        {
+          expected_base_version: graph.plan_version,
+          reason: undoReason.trim(),
+          operation_indexes: [undoTarget.operationIndex],
+        },
+      );
+      window.location.assign(
+        "/changes/" + encodeURIComponent(workspaceId) + "/" + encodeURIComponent(proposal.id),
+      );
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "取り消し案を作成できませんでした",
+      );
+      setUndoPending(false);
+    }
+  };
 
   const save = async () => {
     setError("");
@@ -240,6 +483,226 @@ function History({
           </ul>
         </div>
       )}
+
+      <div className="review-plan-history">
+        <div className="section-header">
+          <h4>方針の確定履歴</h4>
+          <span>{itemVersions.length}版</span>
+        </div>
+        <p className="review-note">
+          この目標に反映された変更案の版、根拠、確認者、適用者を確認できます。チェックインや実行記録は取り消しません。
+        </p>
+        {itemVersions.length === 0 ? (
+          <p className="empty-value">この目標に反映された変更案の履歴はありません。</p>
+        ) : (
+          <ol className="review-plan-history-list">
+            {[...itemVersions].reverse().map((version) => (
+              <li key={version.id} className="review-plan-history-version">
+                <strong>{version.title}</strong>
+                <small>
+                  {version.applied_at
+                    ? new Date(version.applied_at).toLocaleString("ja-JP")
+                    : "日時不明"}
+                  {version.kind === "audit"
+                    ? " · 直接操作 "
+                    : " · 提案者 "}
+                  {version.actor ?? version.proposed_by ?? "不明"}
+                  {version.kind !== "audit" && (
+                    <>
+                      {" · 承認者 "}
+                      {version.approved_by ??
+                        (version.applied_by_connection ? "事前承認" : "承認記録なし")}
+                    </>
+                  )}
+                  {" · 適用者 "}
+                  {version.applied_by ?? "不明"}
+                </small>
+                {version.undo_of && <small>変更 {version.undo_of} の取り消しを反映</small>}
+                {version.conversation_id && version.source_status === "available" ? (
+                  <small>出典会話: {version.conversation_id}</small>
+                ) : version.conversation_id && version.source_status === "unavailable" ? (
+                  <small>出典会話は失効または参照権限がなく、引用を表示できません。</small>
+                ) : null}
+                <p>
+                  {version.undo_reason ||
+                    version.assumptions?.join(" / ") ||
+                    "変更理由の記録はありません。"}
+                </p>
+                <ul>
+                  {version.changes.map((change, index) => (
+                    <li key={change.operation_index ?? index} className="review-plan-history-change">
+                      <div>
+                        <strong>{change.title || entry.title}</strong>
+                        <ul>
+                          {comparedFields(change).map((field, fieldIndex) => (
+                            <li key={fieldIndex}>{field}</li>
+                          ))}
+                        </ul>
+                        {change.match_rationale && (
+                          <small className="review-history-evidence">
+                            一致・変更の根拠: {change.match_rationale}
+                          </small>
+                        )}
+                        {change.basis && (
+                          <small className="review-history-evidence">
+                            出典の説明: {change.basis}
+                          </small>
+                        )}
+                        {change.interpretation && (
+                          <div className="review-history-evidence">
+                            {(change.interpretation.status || change.interpretation.origin) && (
+                              <small>
+                                解釈: {change.interpretation.status ?? "状態不明"}
+                                {change.interpretation.origin
+                                  ? ` · ${change.interpretation.origin}`
+                                  : ""}
+                              </small>
+                            )}
+                            {(change.interpretation.speaker || change.interpretation.at) && (
+                              <small>
+                                {change.interpretation.speaker ?? "話者不明"}
+                                {change.interpretation.at ? ` · ${change.interpretation.at}` : ""}
+                              </small>
+                            )}
+                            {change.interpretation.source_ref && (
+                              <small>参照: {change.interpretation.source_ref}</small>
+                            )}
+                            {change.interpretation.quote && (
+                              <blockquote>{change.interpretation.quote}</blockquote>
+                            )}
+                            {change.interpretation.reason && (
+                              <small>判断理由: {change.interpretation.reason}</small>
+                            )}
+                            {change.interpretation.assumptions?.map((assumption, assumptionIndex) => (
+                              <small key={assumptionIndex}>前提: {assumption}</small>
+                            ))}
+                            {safeSourceUrl(change.interpretation.source_url) && (
+                              <a
+                                href={safeSourceUrl(change.interpretation.source_url)}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                根拠ソースを開く
+                              </a>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      {version.undoable !== false && change.undoable !== false &&
+                        typeof change.operation_index === "number" && (
+                        <button
+                          className="secondary-button"
+                          onClick={() => {
+                            setUndoTarget({
+                              versionId: version.id,
+                              operationIndex: change.operation_index!,
+                            });
+                            setUndoReason("");
+                          }}
+                        >
+                          この変更を取り消す
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {itemVersions.length > 1 && (
+          <div className="review-history-compare">
+            <h5>確定版を比較</h5>
+            <div className="review-checkin-form">
+              <label>
+                <span>比較元</span>
+                <select value={compareFrom} onChange={(event) => setCompareFrom(event.target.value)}>
+                  {itemVersions.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      {version.title} · {version.applied_at?.slice(0, 10) ?? "日時不明"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>比較先</span>
+                <select value={compareTo} onChange={(event) => setCompareTo(event.target.value)}>
+                  {itemVersions.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      {version.title} · {version.applied_at?.slice(0, 10) ?? "日時不明"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="review-form-actions">
+                <button
+                  className="secondary-button"
+                  disabled={!compareFrom || !compareTo || compareFrom === compareTo}
+                  onClick={() => void compare()}
+                >
+                  版間の差分を見る
+                </button>
+              </div>
+            </div>
+            {comparison && (
+              <div className="review-history-comparison">
+                {!comparison.coverage_complete && (
+                  <p className="conflict-note">
+                    版の間にchangesetで記録されていない変更が含まれる可能性があります。以下は保存された変更記録の差分です。
+                  </p>
+                )}
+                <ul>
+                  {comparison.changes
+                    .filter((change) => changesItem(change, entry.id))
+                    .map((change, index) => (
+                      <li key={change.id + ":" + index}>
+                        <strong>{change.title || entry.title}</strong>
+                        <ul>
+                          {comparedFields(change).map((field, fieldIndex) => (
+                            <li key={fieldIndex}>{field}</li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        {undoTarget && (
+          <div className="review-history-undo">
+            <label>
+              <span>取り消す理由</span>
+              <textarea
+                value={undoReason}
+                maxLength={500}
+                onChange={(event) => setUndoReason(event.target.value)}
+              />
+            </label>
+            <p className="review-note">
+              逆変更案を作成して差分を開きます。内容を確認して明示的に承認するまで計画は変わりません。
+            </p>
+            <div className="review-form-actions">
+              <button
+                className="secondary-button"
+                onClick={() => setUndoTarget(null)}
+                disabled={undoPending}
+              >
+                戻る
+              </button>
+              <button
+                className="primary-button"
+                disabled={undoPending || !undoReason.trim()}
+                onClick={() => void createUndoProposal()}
+              >
+                {undoPending ? "作成中…" : "逆変更案を作って差分を確認"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {timeline && timeline.events.length > 0 && (
         <div className="review-timeline">

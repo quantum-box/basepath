@@ -2279,6 +2279,13 @@ impl Service {
             }
             return Ok(response);
         }
+        let history_before =
+            plan_history_state(&mut tx, w, method, path, &body, None, false).await?;
+        let base_version = if history_before.is_some() {
+            Some(workspace_version(&mut tx, w).await?)
+        } else {
+            None
+        };
         let mut result = dispatch_with_preview_graph(
             &mut tx,
             actor,
@@ -2289,6 +2296,23 @@ impl Service {
             include_preview_graph,
         )
         .await?;
+        let history_after = if history_before.is_some() {
+            plan_history_state(&mut tx, w, method, path, &body, Some(&result), true).await?
+        } else {
+            None
+        };
+        let audit_details = match (history_before, history_after, base_version) {
+            (Some(before), Some(after), Some(base_version)) => {
+                let change = plan_history_change(method, path, &body, before, after);
+                Some(json!({
+                    "base_version": base_version,
+                    "applied_version": workspace_version(&mut tx, w).await?,
+                    "operation": {"method": method, "path": path, "body": body},
+                    "changes": [change],
+                }))
+            }
+            _ => None,
+        };
         if !include_preview_graph {
             strip_read_access_details(&mut result);
         }
@@ -2299,8 +2323,8 @@ impl Service {
         )
         .await?;
         tx.execute(
-            "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq,connection) \
-             VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO audit(id,workspace_id,actor,origin,command,created_at,seq,connection,details) \
+             VALUES(?,?,?,?,?,?,?,?,?)",
             &params![
                 new_id("audit"),
                 w,
@@ -2309,7 +2333,8 @@ impl Service {
                 format!("{method} {path}"),
                 now(),
                 sequence(),
-                actor.connection.clone().unwrap_or_default()
+                actor.connection.clone().unwrap_or_default(),
+                audit_details.as_ref().map(Value::to_string)
             ],
         )
         .await?;
@@ -2643,6 +2668,11 @@ async fn dispatch_inner(
                 }
                 result[col] = value(list::<Value>(tx, w, col).await?)?;
             }
+            if let Some(changesets) = result["changesets"].as_array_mut() {
+                for change in changesets {
+                    mask_unavailable_change_source(tx, actor, w, change).await?;
+                }
+            }
             result["notifications"] = value(
                 list::<Notification>(tx, w, "notifications")
                     .await?
@@ -2805,6 +2835,8 @@ async fn dispatch_inner(
                 .await?;
             value(rows.iter().map(|r| Ok(json!({"id":r.text(0)?,"command":r.text(1)?,"created_at":r.text(2)?,"origin":r.text(3)?,"actor":r.text(4)?,"connection":r.opt_text(5)?.filter(|value| !value.is_empty())}))).collect::<Result<Vec<_>>>()?)
         }
+        ("GET", "history", "", "") => history_versions(tx, actor, w).await,
+        ("GET", "history", "compare", "") => history_compare(tx, actor, w, query).await,
         ("GET", col, "", "")
             if [
                 "items",
@@ -2853,6 +2885,7 @@ async fn dispatch_inner(
                 let rule = crate::auto_apply::in_force(tx, actor, w).await?;
                 for change in &mut page {
                     mark_auto_apply(&rule, change);
+                    mask_unavailable_change_source(tx, actor, w, change).await?;
                 }
             }
             let cursor = if more {
@@ -2882,6 +2915,7 @@ async fn dispatch_inner(
             if col == "changesets" {
                 let rule = crate::auto_apply::in_force(tx, actor, w).await?;
                 mark_auto_apply(&rule, &mut row);
+                mask_unavailable_change_source(tx, actor, w, &mut row).await?;
             }
             Ok(row)
         }
@@ -4060,6 +4094,9 @@ async fn dispatch_inner(
         ("POST", "changesets", "preview", "") => {
             preview(tx, actor, w, body, include_preview_graph).await
         }
+        ("POST", "changesets", id, "undo-preview") if !actor.agent => {
+            reverse_preview(tx, actor, w, id, body, include_preview_graph).await
+        }
         // Approval is a person's act, and only a person's.
         //
         // An MCP client's call — whether the model made it or a button in the
@@ -4366,6 +4403,171 @@ fn validate_metric(m: &Metric) -> Result<()> {
     }
     Ok(())
 }
+async fn plan_history_state(
+    tx: &mut Tx,
+    workspace_id: &str,
+    method: &str,
+    path: &str,
+    _body: &Value,
+    result: Option<&Value>,
+    after: bool,
+) -> Result<Option<Value>> {
+    let parts: Vec<_> = path.trim_matches('/').split('/').collect();
+    if parts.len() < 4 || parts[0] != "v1" || parts[1] != "workspaces" || parts[2] != workspace_id {
+        return Ok(None);
+    }
+    let value = match (method, parts.get(3).copied(), parts.len()) {
+        ("PATCH", Some("items"), 5) => {
+            let snapshot = if after {
+                result.cloned().ok_or_else(ApiError::missing)?
+            } else {
+                get::<Value>(tx, workspace_id, "items", parts[4]).await?
+            };
+            json!({"item": snapshot})
+        }
+        ("POST", Some("items"), 4) => {
+            if !after {
+                Value::Null
+            } else {
+                let item = result.cloned().ok_or_else(ApiError::missing)?;
+                let item_id = text(&item, "id");
+                let parent = part_of_snapshot(tx, workspace_id, item_id).await?;
+                json!({"item": item, "parent": parent})
+            }
+        }
+        ("POST", Some("items"), 6) if parts[5] == "reparent" => {
+            let item: Value = get(tx, workspace_id, "items", parts[4]).await?;
+            let parent = part_of_snapshot(tx, workspace_id, parts[4]).await?;
+            json!({"item": item, "parent": parent})
+        }
+        ("POST", Some("relations"), 4) => {
+            if after {
+                let relation_id = result
+                    .and_then(|value| value["id"].as_str())
+                    .ok_or_else(ApiError::missing)?;
+                relation_snapshot(tx, workspace_id, relation_id)
+                    .await?
+                    .ok_or_else(ApiError::missing)?
+            } else {
+                Value::Null
+            }
+        }
+        ("DELETE", Some("relations"), 5) => {
+            if after {
+                Value::Null
+            } else {
+                relation_snapshot(tx, workspace_id, parts[4])
+                    .await?
+                    .ok_or_else(ApiError::missing)?
+            }
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}
+
+fn plan_history_change(
+    method: &str,
+    path: &str,
+    body: &Value,
+    before_state: Value,
+    after_state: Value,
+) -> Value {
+    let parts: Vec<_> = path.trim_matches('/').split('/').collect();
+    let collection = parts.get(3).copied().unwrap_or_default();
+    let item_path = collection == "items";
+    let reparent = method == "POST" && item_path && parts.get(5) == Some(&"reparent");
+    let created_item = method == "POST" && item_path && parts.len() == 4;
+    let item_before = if reparent || (item_path && !created_item) {
+        before_state.get("item").cloned().unwrap_or(Value::Null)
+    } else if created_item {
+        Value::Null
+    } else {
+        before_state.clone()
+    };
+    let item_after = if reparent || created_item || item_path {
+        after_state.get("item").cloned().unwrap_or(Value::Null)
+    } else {
+        after_state.clone()
+    };
+    let id = if item_path {
+        if created_item {
+            text(&item_after, "id").to_owned()
+        } else {
+            parts.get(4).copied().unwrap_or_default().to_owned()
+        }
+    } else if method == "POST" {
+        text(&after_state, "id").to_owned()
+    } else {
+        parts.get(4).copied().unwrap_or_default().to_owned()
+    };
+    let relation_delta = if reparent {
+        Some(json!({
+            "type": "part_of",
+            "before": before_state.get("parent").cloned().unwrap_or(Value::Null),
+            "after": after_state.get("parent").cloned().unwrap_or(Value::Null),
+        }))
+    } else if created_item && body["parent_id"].is_string() {
+        Some(json!({
+            "type": "part_of",
+            "before": Value::Null,
+            "after": after_state.get("parent").cloned().unwrap_or(Value::Null),
+        }))
+    } else if collection == "relations" {
+        Some(json!({
+            "type": "relation",
+            "before": item_before.clone(),
+            "after": item_after.clone(),
+        }))
+    } else {
+        None
+    };
+    let title = item_after
+        .get("title")
+        .and_then(Value::as_str)
+        .or_else(|| item_before.get("title").and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let relation = item_after.as_object().or(item_before.as_object());
+            relation.map_or_else(
+                || "関連".to_owned(),
+                |relation| {
+                    format!(
+                        "{} — {} → {}",
+                        relation
+                            .get("source_title")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                        relation
+                            .get("relation_type")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                        relation
+                            .get("target_title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                    )
+                },
+            )
+        });
+    json!({
+        "method": method,
+        "path": path,
+        "collection": collection,
+        "id": id,
+        "title": title,
+        "effect": match (item_before.is_null(), item_after.is_null()) {
+            (true, false) => "created",
+            (false, true) => "deleted",
+            (false, false) => "updated",
+            (true, true) => "unknown",
+        },
+        "before": item_before,
+        "after": item_after,
+        "relation_delta": relation_delta,
+    })
+}
+
 async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
     let mut parts = String::new();
     for col in ["items", "relations", "metrics", "views"] {
@@ -5221,6 +5423,7 @@ async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<
         "target_id": relation.target_id,
         "parent_title": parent.title,
         "position": relation.position,
+        "rationale": relation.rationale,
     })))
 }
 
@@ -5244,6 +5447,7 @@ async fn relation_snapshot(tx: &mut Tx, w: &str, relation_id: &str) -> Result<Op
         "target_id": relation.target_id,
         "target_title": target.title,
         "position": relation.position,
+        "rationale": relation.rationale,
     })))
 }
 
@@ -5497,8 +5701,814 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
     c["applied_at"] = json!(now());
     c["applied_by"] = json!(actor.id);
     c["applied_by_connection"] = json!(actor.connection);
+    c["applied_version"] = json!(workspace_version(tx, text(c, "workspace_id")).await?);
     Ok(output)
 }
+/// Keep source material visible only while its workspace-bound conversation
+/// link is active and the person reading it is the person who linked it.
+async fn mask_unavailable_change_source(
+    tx: &mut Tx,
+    actor: &Actor,
+    workspace_id: &str,
+    change: &mut Value,
+) -> Result<()> {
+    if change["conversation_id"].is_null() {
+        change["source_status"] = json!("not_linked");
+        return Ok(());
+    }
+    let link_id = change["conversation_link_id"].as_str().unwrap_or_default();
+    let active = if link_id.is_empty() {
+        false
+    } else if let Some(row) = tx
+        .fetch_optional(
+            "SELECT status,actor,workspace_id FROM conversation_links WHERE id=?",
+            &params![link_id],
+        )
+        .await?
+    {
+        row.text(0)? == "active"
+            && row.text(1)? == actor.id
+            && row.text(1)? == text(change, "actor")
+            && row.text(2)? == workspace_id
+    } else {
+        false
+    };
+    change["source_status"] = json!(if active { "available" } else { "unavailable" });
+    if !active {
+        change["assumptions"] = json!([]);
+        strip_change_source(change);
+    }
+    Ok(())
+}
+
+/// Removes linked-conversation material at every nesting level, including the
+/// saved operation body. History and undo use the same response object, so
+/// masking only the rendered diff would still expose a revoked quote.
+fn strip_change_source(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            for key in [
+                "basis",
+                "match_rationale",
+                "interpretation",
+                "source_ref",
+                "source_url",
+                "quote",
+                "speaker",
+            ] {
+                fields.remove(key);
+            }
+            for nested in fields.values_mut() {
+                strip_change_source(nested);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                strip_change_source(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn stored_history_versions(
+    tx: &mut Tx,
+    actor: &Actor,
+    workspace_id: &str,
+) -> Result<Vec<Value>> {
+    let mut versions: Vec<Value> = list::<Value>(tx, workspace_id, "changesets")
+        .await?
+        .into_iter()
+        .filter(|change| change["status"] == "applied")
+        .collect();
+    for version in &mut versions {
+        version["kind"] = json!("changeset");
+        version["undoable"] = json!(true);
+        mask_unavailable_change_source(tx, actor, workspace_id, version).await?;
+        let operations = version["operations"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if let Some(changes) = version["changes"].as_array_mut() {
+            for (index, change) in changes.iter_mut().enumerate() {
+                change["operation_index"] = json!(index);
+                let operation = operations.get(index);
+                change["undoable"] = json!(operation
+                    .is_some_and(|operation| { safely_reversible_operation(operation, change) }));
+            }
+        }
+    }
+
+    let rows = tx
+        .fetch_all(
+            "SELECT id,actor,command,created_at,origin,connection,details FROM audit \
+             WHERE workspace_id=? AND details IS NOT NULL ORDER BY seq",
+            &params![workspace_id],
+        )
+        .await?;
+    for row in rows {
+        let Some(serialized) = row.opt_text(6)? else {
+            continue;
+        };
+        let details: Value = serde_json::from_str(&serialized)?;
+        let Some(saved_changes) = details["changes"].as_array() else {
+            continue;
+        };
+        if saved_changes.is_empty() {
+            continue;
+        }
+        let mut changes = saved_changes.clone();
+        for (index, change) in changes.iter_mut().enumerate() {
+            change["operation_index"] = json!(index);
+            change["undoable"] = json!(true);
+        }
+        versions.push(json!({
+            "id": row.text(0)?,
+            "kind": "audit",
+            "undoable": true,
+            "title": row.text(2)?,
+            "status": "applied",
+            "actor": row.text(1)?,
+            "applied_by": row.text(1)?,
+            "applied_by_connection": row.opt_text(5)?.filter(|value| !value.is_empty()),
+            "origin": row.text(4)?,
+            "applied_at": row.text(3)?,
+            "source_status": "not_linked",
+            "base_version": details["base_version"],
+            "applied_version": details["applied_version"],
+            "operation": details["operation"],
+            "changes": changes,
+        }));
+    }
+    versions.sort_by(|left, right| {
+        text(left, "applied_at")
+            .cmp(text(right, "applied_at"))
+            .then_with(|| text(left, "id").cmp(text(right, "id")))
+    });
+    Ok(versions)
+}
+
+fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
+    let parts: Vec<_> = text(operation, "path")
+        .trim_matches('/')
+        .split('/')
+        .collect();
+    match (
+        text(operation, "method"),
+        parts.get(3).copied(),
+        parts.len(),
+    ) {
+        ("PATCH", Some("items"), 5) => true,
+        ("POST", Some("items"), 4) => change["effect"] == "created",
+        ("POST", Some("items"), 6) => parts.get(5) == Some(&"reparent"),
+        ("POST", Some("relations"), 4) => change["relation_delta"]["after"].is_object(),
+        ("DELETE", Some("relations"), 5) => change["relation_delta"]["before"].is_object(),
+        _ => false,
+    }
+}
+
+async fn history_versions(tx: &mut Tx, actor: &Actor, workspace_id: &str) -> Result<Value> {
+    let versions = stored_history_versions(tx, actor, workspace_id).await?;
+    Ok(json!({
+        "workspace_id": workspace_id,
+        "current_version": workspace_version(tx, workspace_id).await?,
+        "items": versions,
+    }))
+}
+async fn history_compare(
+    tx: &mut Tx,
+    actor: &Actor,
+    workspace_id: &str,
+    query: &HashMap<String, String>,
+) -> Result<Value> {
+    let from_id = query
+        .get("from")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| ApiError::invalid("from（比較元の版）が必要です"))?;
+    let to_id = query
+        .get("to")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| ApiError::invalid("to（比較先の版）が必要です"))?;
+    let versions = stored_history_versions(tx, actor, workspace_id).await?;
+    let from_index = versions
+        .iter()
+        .position(|version| text(version, "id") == from_id)
+        .ok_or_else(ApiError::missing)?;
+    let to_index = versions
+        .iter()
+        .position(|version| text(version, "id") == to_id)
+        .ok_or_else(ApiError::missing)?;
+    if from_index >= to_index {
+        return Err(ApiError::invalid(
+            "比較元には比較先より古い確定版を指定してください",
+        ));
+    }
+
+    let mut coverage_complete = versions[from_index]["applied_version"].is_string();
+    let mut expected_version = versions[from_index]["applied_version"]
+        .as_str()
+        .map(str::to_owned);
+    let mut coverage_gaps = Vec::new();
+    let mut merged = Vec::<Value>::new();
+    let mut positions = HashMap::<String, usize>::new();
+    for version in versions.iter().take(to_index + 1).skip(from_index + 1) {
+        let base = version["base_version"].as_str();
+        if expected_version.as_deref() != base {
+            coverage_complete = false;
+            coverage_gaps.push(json!({
+                "change_id": version["id"],
+                "expected_version": expected_version,
+                "recorded_base_version": base,
+            }));
+        }
+        expected_version = version["applied_version"].as_str().map(str::to_owned);
+        if expected_version.is_none() {
+            coverage_complete = false;
+        }
+        for change in version["changes"].as_array().into_iter().flatten() {
+            let collection = text(change, "collection");
+            let id = text(change, "id");
+            if collection.is_empty() || id.is_empty() {
+                continue;
+            }
+            let key = format!("{collection}:{id}");
+            if let Some(index) = positions.get(&key).copied() {
+                let row = &mut merged[index];
+                row["after"] = change.get("after").cloned().unwrap_or(Value::Null);
+                row["title"] = change.get("title").cloned().unwrap_or(Value::Null);
+                row["effect"] = json!(match (row["before"].is_null(), row["after"].is_null()) {
+                    (true, false) => "created",
+                    (false, true) => "deleted",
+                    (false, false) => "updated",
+                    (true, true) => "unchanged",
+                });
+                row["operation_count"] = json!(row["operation_count"].as_u64().unwrap_or(1) + 1);
+                if change.get("relation_delta").is_some() {
+                    if row["relation_delta"].is_null() {
+                        row["relation_delta"] = change["relation_delta"].clone();
+                    } else {
+                        row["relation_delta"]["after"] = change["relation_delta"]
+                            .get("after")
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                    }
+                }
+            } else {
+                positions.insert(key, merged.len());
+                merged.push(json!({
+                    "collection": collection,
+                    "id": id,
+                    "title": change.get("title").cloned().unwrap_or(Value::Null),
+                    "effect": change.get("effect").cloned().unwrap_or(Value::Null),
+                    "before": change.get("before").cloned().unwrap_or(Value::Null),
+                    "after": change.get("after").cloned().unwrap_or(Value::Null),
+                    "relation_delta": change.get("relation_delta").cloned().unwrap_or(Value::Null),
+                    "operation_count": 1,
+                }));
+            }
+        }
+    }
+    Ok(json!({
+        "workspace_id": workspace_id,
+        "from": {"id": versions[from_index]["id"], "title": versions[from_index]["title"], "applied_at": versions[from_index]["applied_at"]},
+        "to": {"id": versions[to_index]["id"], "title": versions[to_index]["title"], "applied_at": versions[to_index]["applied_at"]},
+        "coverage_complete": coverage_complete,
+        "coverage_gaps": coverage_gaps,
+        "changes": merged,
+    }))
+}
+
+fn undo_conflict(conflicts: Vec<Value>) -> ApiError {
+    let mut error = ApiError::new(
+        409,
+        "UNDO_CONFLICT",
+        "後続変更または未対応の操作があります。影響を確認してから別の変更案を作成してください",
+    );
+    error.details = json!({"conflicts": conflicts});
+    error
+}
+
+fn inverse_operation(method: &str, path: String, body: Value) -> Operation {
+    Operation {
+        method: method.to_owned(),
+        path,
+        body,
+        basis: None,
+        match_rationale: None,
+        interpretation: None,
+    }
+}
+
+fn history_item_matches(current: &Value, expected: &Value) -> bool {
+    let mut current = current.clone();
+    let mut expected = expected.clone();
+    for snapshot in [&mut current, &mut expected] {
+        if let Some(fields) = snapshot.as_object_mut() {
+            fields.remove("version");
+            fields.remove("updated_at");
+        }
+    }
+    current == expected
+}
+
+fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
+    relation.source_id == text(expected, "source_id")
+        && relation.target_id == text(expected, "target_id")
+        && relation.relation_type == text(expected, "relation_type")
+        && relation.rationale == text(expected, "rationale")
+        && expected["position"] == json!(relation.position)
+}
+
+async fn reverse_preview(
+    tx: &mut Tx,
+    actor: &Actor,
+    workspace_id: &str,
+    change_id: &str,
+    body: &Value,
+    include_preview_graph: bool,
+) -> Result<Value> {
+    only(
+        body,
+        &["expected_base_version", "reason", "operation_indexes"],
+    )?;
+    let reason = body["reason"].as_str().unwrap_or_default().trim();
+    if reason.is_empty() || reason.chars().count() > 500 {
+        return Err(ApiError::invalid(
+            "取り消し理由を1〜500文字で入力してください",
+        ));
+    }
+    let expected_base = body["expected_base_version"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| ApiError::new(428, "VERSION_REQUIRED", "expected_base_versionが必要です"))?;
+    let current_base = workspace_version(tx, workspace_id).await?;
+    if expected_base != current_base {
+        let mut error = ApiError::new(
+            409,
+            "VERSION_CONFLICT",
+            "計画が更新されています。最新の履歴を読み直して再プレビューしてください",
+        );
+        error.details = json!({
+            "expected_base_version": expected_base,
+            "current_base_version": current_base,
+        });
+        return Err(error);
+    }
+    let all: Vec<Value> = list(tx, workspace_id, "changesets").await?;
+    let original: Value =
+        if let Some(change) = all.iter().find(|change| text(change, "id") == change_id) {
+            change.clone()
+        } else {
+            let row = tx
+            .fetch_optional(
+                "SELECT actor,command,created_at,details FROM audit WHERE id=? AND workspace_id=?",
+                &params![change_id, workspace_id],
+            )
+            .await?
+            .ok_or_else(ApiError::missing)?;
+            let serialized = row.opt_text(3)?.ok_or_else(ApiError::missing)?;
+            let details: Value = serde_json::from_str(&serialized)?;
+            if details["operation"].is_null() || details["changes"].as_array().is_none() {
+                return Err(ApiError::missing());
+            }
+            json!({
+                "id": change_id,
+                "title": row.text(1)?,
+                "status": "applied",
+                "actor": row.text(0)?,
+                "applied_by": row.text(0)?,
+                "applied_at": row.text(2)?,
+                "base_version": details["base_version"],
+                "applied_version": details["applied_version"],
+                "operations": [details["operation"]],
+                "changes": details["changes"],
+            })
+        };
+    if original["status"] != "applied" {
+        return Err(ApiError::new(
+            409,
+            "VERSION_CONFLICT",
+            "適用済みの変更だけ取り消し案にできます",
+        ));
+    }
+    let operations: Vec<Operation> = serde_json::from_value(original["operations"].clone())?;
+    let changes = original["changes"]
+        .as_array()
+        .ok_or_else(|| ApiError::new(500, "STORAGE_ERROR", "変更履歴を読み取れませんでした"))?;
+    if operations.len() != changes.len() {
+        return Err(undo_conflict(vec![json!({
+            "reason": "operation_diff_mismatch",
+            "message": "保存された操作と差分の対応を確認できません",
+        })]));
+    }
+    let mut selected: Vec<usize> = if let Some(indexes) = body["operation_indexes"].as_array() {
+        if indexes.is_empty() || indexes.len() > 100 {
+            return Err(ApiError::invalid(
+                "operation_indexesは1〜100件で指定してください",
+            ));
+        }
+        indexes
+            .iter()
+            .map(|index| {
+                index
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok())
+                    .filter(|index| *index < operations.len())
+                    .ok_or_else(|| ApiError::invalid("operation_indexesの値を確認してください"))
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        (0..operations.len()).collect()
+    };
+    selected.sort_unstable();
+    if selected.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(ApiError::invalid("operation_indexesに重複があります"));
+    }
+    let selected_set: HashSet<usize> = selected.iter().copied().collect();
+    let already_undone: HashSet<usize> = all
+        .iter()
+        .filter(|change| {
+            change["undo_of"] == json!(change_id)
+                && ["pending", "approved", "applied"].contains(&text(change, "status"))
+        })
+        .flat_map(|change| {
+            change["undo_operations"]
+                .as_array()
+                .map(|indexes| {
+                    indexes
+                        .iter()
+                        .filter_map(Value::as_u64)
+                        .filter_map(|index| usize::try_from(index).ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| (0..operations.len()).collect())
+        })
+        .collect();
+    if selected_set
+        .iter()
+        .any(|index| already_undone.contains(index))
+    {
+        return Err(ApiError::new(
+            409,
+            "UNDO_ALREADY_PROPOSED",
+            "選択した操作にはすでに取り消し案があります",
+        ));
+    }
+    let created_items: HashSet<String> = selected
+        .iter()
+        .filter_map(|index| {
+            let operation = &operations[*index];
+            let change = &changes[*index];
+            (operation.method == "POST"
+                && operation.path.trim_matches('/').split('/').count() == 4
+                && operation.path.trim_matches('/').split('/').nth(3) == Some("items")
+                && change["effect"] == "created")
+                .then(|| change["id"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect();
+
+    let mut conflicts = Vec::new();
+    let mut inverse = Vec::new();
+    let mut seen_targets = HashSet::new();
+    for index in selected.iter().rev().copied() {
+        let operation = &operations[index];
+        let change = &changes[index];
+        let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
+        let collection = parts.get(3).copied().unwrap_or_default();
+        let target_id = text(change, "id");
+        let unique_target = format!("{collection}:{target_id}");
+        if !seen_targets.insert(unique_target) {
+            conflicts.push(json!({
+                "operation": index,
+                "reason": "multiple_operations_on_same_target",
+                "message": "同じ項目への複数操作があるため、この変更案を一括で安全に戻せません",
+            }));
+            continue;
+        }
+        match (operation.method.as_str(), collection, parts.len()) {
+            ("PATCH", "items", 5) if parts[4] == target_id => {
+                let current: Item = match get(tx, workspace_id, "items", &target_id).await {
+                    Ok(item) => item,
+                    Err(_) => {
+                        conflicts.push(
+                            json!({"operation":index,"item_id":target_id,"reason":"item_missing"}),
+                        );
+                        continue;
+                    }
+                };
+                let current_value = value(&current)?;
+                let before = &change["before"];
+                let after = &change["after"];
+                if before.is_null() || after.is_null() {
+                    conflicts.push(
+                        json!({"operation":index,"item_id":target_id,"reason":"snapshot_missing"}),
+                    );
+                    continue;
+                }
+                let mut reverse_body = json!({"expected_version":current.version});
+                let Some(requested) = operation.body.as_object() else {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"operation_body_invalid"}));
+                    continue;
+                };
+                let mut inverse_fields = serde_json::Map::new();
+                let mut mismatch = false;
+                for (key, value) in requested {
+                    if key == "expected_version" {
+                        continue;
+                    }
+                    if key == "fields" {
+                        let Some(fields) = value.as_object() else {
+                            mismatch = true;
+                            break;
+                        };
+                        for (field, _) in fields {
+                            let current_value = current_value["fields"]
+                                .get(field)
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            let expected_value =
+                                after["fields"].get(field).cloned().unwrap_or(Value::Null);
+                            if current_value != expected_value {
+                                mismatch = true;
+                                break;
+                            }
+                            inverse_fields.insert(
+                                field.clone(),
+                                before["fields"].get(field).cloned().unwrap_or(Value::Null),
+                            );
+                        }
+                        if mismatch {
+                            break;
+                        }
+                    } else {
+                        let current_value = current_value.get(key).cloned().unwrap_or(Value::Null);
+                        let expected_value = after.get(key).cloned().unwrap_or(Value::Null);
+                        if current_value != expected_value {
+                            mismatch = true;
+                            break;
+                        }
+                        reverse_body[key] = before.get(key).cloned().unwrap_or(Value::Null);
+                    }
+                }
+                if mismatch {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"field_changed_after_source"}));
+                    continue;
+                }
+                if !inverse_fields.is_empty() {
+                    reverse_body["fields"] = Value::Object(inverse_fields);
+                }
+                inverse.push(inverse_operation(
+                    "PATCH",
+                    format!("/v1/workspaces/{workspace_id}/items/{target_id}"),
+                    reverse_body,
+                ));
+            }
+            ("POST", "items", 4) if change["effect"] == "created" => {
+                let current: Item = match get(tx, workspace_id, "items", &target_id).await {
+                    Ok(item) => item,
+                    Err(_) => {
+                        conflicts.push(
+                            json!({"operation":index,"item_id":target_id,"reason":"item_missing"}),
+                        );
+                        continue;
+                    }
+                };
+                let current_value = value(&current)?;
+                if !history_item_matches(&current_value, &change["after"]) {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_changed_after_source"}));
+                    continue;
+                }
+                let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+                let mut has_unrelated_children = false;
+                for relation in relations.iter().filter(|relation| {
+                    relation.relation_type == "part_of" && relation.target_id == target_id
+                }) {
+                    let child: Item = get(tx, workspace_id, "items", &relation.source_id).await?;
+                    if child.archived_at.is_none() && !created_items.contains(&child.id) {
+                        has_unrelated_children = true;
+                    }
+                }
+                if has_unrelated_children {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_children"}));
+                    continue;
+                }
+                let parent = part_of_snapshot(tx, workspace_id, &target_id).await?;
+                let expected_parent = change["relation_delta"]
+                    .get("after")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if parent.as_ref().is_some_and(|parent| {
+                    parent["target_id"] != expected_parent["target_id"]
+                        || parent["position"] != expected_parent["position"]
+                        || parent["rationale"] != expected_parent["rationale"]
+                }) || (parent.is_none() && !expected_parent.is_null())
+                {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_moved_after_source"}));
+                    continue;
+                }
+                if parent.is_some() {
+                    inverse.push(inverse_operation(
+                        "POST",
+                        format!("/v1/workspaces/{workspace_id}/items/{target_id}/reparent"),
+                        json!({"expected_version":current.version,"parent_id":null}),
+                    ));
+                }
+                inverse.push(inverse_operation(
+                    "PATCH",
+                    format!("/v1/workspaces/{workspace_id}/items/{target_id}"),
+                    json!({"expected_version":current.version,"archived_at":now()}),
+                ));
+            }
+            ("POST", "items", 6) if parts[5] == "reparent" && parts[4] == target_id => {
+                let current_item: Item = match get(tx, workspace_id, "items", &target_id).await {
+                    Ok(item) => item,
+                    Err(_) => {
+                        conflicts.push(
+                            json!({"operation":index,"item_id":target_id,"reason":"item_missing"}),
+                        );
+                        continue;
+                    }
+                };
+                let current_parent = part_of_snapshot(tx, workspace_id, &target_id).await?;
+                let expected_parent = change["relation_delta"]
+                    .get("after")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if current_parent.as_ref().map(|parent| {
+                    (
+                        parent["target_id"].clone(),
+                        parent["position"].clone(),
+                        parent["rationale"].clone(),
+                    )
+                }) != expected_parent.as_object().map(|parent| {
+                    (
+                        parent.get("target_id").cloned().unwrap_or(Value::Null),
+                        parent.get("position").cloned().unwrap_or(Value::Null),
+                        parent.get("rationale").cloned().unwrap_or(Value::Null),
+                    )
+                }) {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"parent_changed_after_source"}));
+                    continue;
+                }
+                let before = change["relation_delta"]
+                    .get("before")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                inverse.push(inverse_operation(
+                    "POST",
+                    format!("/v1/workspaces/{workspace_id}/items/{target_id}/reparent"),
+                    json!({
+                        "expected_version":current_item.version,
+                        "parent_id":before.get("target_id").cloned().unwrap_or(Value::Null),
+                        "position":before.get("position").cloned().unwrap_or(Value::Null),
+                        "rationale":before.get("rationale").cloned().unwrap_or(json!("")),
+                    }),
+                ));
+            }
+            ("POST", "relations", 4) => {
+                let relation_id = change["relation_delta"]["after"]["relation_id"]
+                    .as_str()
+                    .unwrap_or_default();
+                let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+                let Some(relation) = relations.iter().find(|relation| relation.id == relation_id)
+                else {
+                    conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_missing"}));
+                    continue;
+                };
+                if !relation_snapshot_matches(relation, &change["relation_delta"]["after"]) {
+                    conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_changed_after_source"}));
+                    continue;
+                }
+                if relation.relation_type == "part_of" {
+                    let item: Item = get(tx, workspace_id, "items", &relation.source_id).await?;
+                    inverse.push(inverse_operation(
+                        "POST",
+                        format!("/v1/workspaces/{workspace_id}/items/{}/reparent", item.id),
+                        json!({"expected_version":item.version,"parent_id":null}),
+                    ));
+                } else {
+                    inverse.push(inverse_operation(
+                        "DELETE",
+                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                        json!({"expected_version":relation.version}),
+                    ));
+                }
+            }
+            ("DELETE", "relations", 5) => {
+                let old = &change["relation_delta"]["before"];
+                if old.is_null() {
+                    conflicts.push(json!({"operation":index,"reason":"relation_snapshot_missing"}));
+                    continue;
+                }
+                let relation_id = parts[4];
+                let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+                if relations.iter().any(|relation| {
+                    relation.id == relation_id
+                        || (relation.source_id == text(old, "source_id")
+                            && relation.target_id == text(old, "target_id")
+                            && relation.relation_type == text(old, "relation_type"))
+                }) {
+                    conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_recreated_after_source"}));
+                    continue;
+                }
+                if text(old, "relation_type") == "part_of" {
+                    let item_id = text(old, "source_id");
+                    let item: Item = match get(tx, workspace_id, "items", item_id).await {
+                        Ok(item) => item,
+                        Err(_) => {
+                            conflicts.push(json!({"operation":index,"item_id":item_id,"reason":"item_missing"}));
+                            continue;
+                        }
+                    };
+                    if part_of_snapshot(tx, workspace_id, item_id).await?.is_some() {
+                        conflicts.push(json!({"operation":index,"item_id":item_id,"reason":"item_reparented_after_source"}));
+                        continue;
+                    }
+                    let parent_id = text(old, "target_id");
+                    let parent: Item = match get::<Item>(tx, workspace_id, "items", parent_id).await
+                    {
+                        Ok(parent) if parent.archived_at.is_none() => parent,
+                        _ => {
+                            conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"parent_unavailable"}));
+                            continue;
+                        }
+                    };
+                    let sibling_count = relations
+                        .iter()
+                        .filter(|relation| {
+                            relation.relation_type == "part_of"
+                                && relation.target_id == parent.id
+                                && relation.source_id != item_id
+                        })
+                        .count();
+                    let position = old["position"].as_i64().unwrap_or(sibling_count as i64);
+                    if position < 0 || position as usize > sibling_count {
+                        conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"sibling_order_changed_after_source"}));
+                        continue;
+                    }
+                    inverse.push(inverse_operation(
+                        "POST",
+                        format!("/v1/workspaces/{workspace_id}/items/{item_id}/reparent"),
+                        json!({
+                            "expected_version":item.version,
+                            "parent_id":parent_id,
+                            "position":position,
+                            "rationale":old["rationale"],
+                        }),
+                    ));
+                } else {
+                    inverse.push(inverse_operation(
+                        "POST",
+                        format!("/v1/workspaces/{workspace_id}/relations"),
+                        json!({
+                            "source_id":old["source_id"],
+                            "target_id":old["target_id"],
+                            "type":old["relation_type"],
+                            "rationale":old["rationale"],
+                        }),
+                    ));
+                }
+            }
+            _ => conflicts.push(json!({
+                "operation": index,
+                "path": operation.path,
+                "reason": "operation_not_safely_reversible",
+                "message": "実行記録やレビューを消す操作は作らず、対象を個別に確認してください",
+            })),
+        }
+    }
+    if !conflicts.is_empty() {
+        return Err(undo_conflict(conflicts));
+    }
+    if inverse.is_empty() {
+        return Err(undo_conflict(vec![
+            json!({"reason":"no_reversible_changes"}),
+        ]));
+    }
+
+    let proposal_body = json!({
+        "title": format!("{}の取り消し案", text(&original, "title")),
+        "operations": inverse,
+        "assumptions": [format!("取り消し理由: {reason}")],
+        "expected_base_version": expected_base,
+    });
+    let mut proposal = preview(
+        tx,
+        actor,
+        workspace_id,
+        &proposal_body,
+        include_preview_graph,
+    )
+    .await?;
+    let proposal_id = text(&proposal, "id").to_owned();
+    proposal["undo_of"] = json!(change_id);
+    proposal["undo_reason"] = json!(reason);
+    proposal["undo_operations"] = json!(selected);
+    put(tx, workspace_id, "changesets", &proposal_id, &proposal).await?;
+    Ok(proposal)
+}
+
 /// Says, on a change set as it is read, whether it could be applied from the
 /// conversation it arrived in.
 ///

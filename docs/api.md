@@ -46,6 +46,8 @@ Rustルーター内のパスを記載しています。本番ではRust APIをAW
 | `GET /v1/workspaces/{w}/graph?limit=100` | グラフ投影と変更競合検出用の`plan_version`。最大200ノード、truncatedを確認 |
 | `GET /v1/workspaces/{w}/views` | 保存ビュー一覧 |
 | `GET /v1/workspaces/{w}/changesets` | 変更案一覧 |
+| `GET /v1/workspaces/{w}/history` | 適用済みchangesetと監査スナップショットを統合した確定履歴 |
+| `GET /v1/workspaces/{w}/history/compare?from={id}&to={id}` | 2版間の追加・変更・移動を同じ項目IDで比較 |
 | `GET /v1/workspaces/{w}/plan-drafts?limit=50&cursor=...&conversation_id=...&status=...` | 会話から作られた未確定の構造案一覧 |
 | `GET /v1/workspaces/{w}/audit` | 操作者、操作元、操作日時の監査一覧 |
 
@@ -324,6 +326,9 @@ AI接続（提案モード）は下書きを直接保存できません。`POST 
 - `PATCH /v1/settings`：compact、notifications、timezoneをすべて指定。タイムゾーンはIANA識別子です。
 + `POST /v1/workspaces/{w}/exports`：空オブジェクト。schema_version=1のJSONを返します。会話の構造案と全revision本文も含みます。
 + `POST /v1/workspaces/{w}/imports`：exportしたJSON。項目・関連・記録・指標・観測・ビュー・週次レビュー・会話の構造案とrevision履歴を再検証して追加します。構造案とrevisionの参照、連続したrevision番号、最新revisionと構造案本文の一致も検証し、同じIDや壊れた参照があれば全件ロールバックします。既存項目を上書きする機能ではありません。構造案の追加前に作られたschema_version=1のバックアップでは、この2つの一覧は省略できます。
+- `GET /v1/workspaces/{w}/history`：適用済みchangesetと、直接編集時にauditへ保存した項目・関連の変更前後を時系列で返します。各版は操作者・承認者・適用者・日時・理由・会話リンク状態を含みます。失効した会話リンク、または別の操作者が作成したリンクの引用・basis・match_rationaleは応答から除きます。古い履歴で版の連続性を証明できない場合は、`history/compare`が`coverage_complete:false`を返します。
+- `GET /v1/workspaces/{w}/history/compare?from={id}&to={id}`：古い版の適用後から新しい版の適用後までの変更を同じcollection/idごとにまとめます。`part_of`の移動は同じ項目の親変更として返します。版間に保存されていない更新がある場合は`coverage_gaps`に示し、比較結果を完全な履歴とは扱いません。
+- `POST /v1/workspaces/{w}/changesets/{id}/undo-preview`：`expected_base_version`、必須の`reason`（1〜500文字）、任意の`operation_indexes`（元変更案operationsの0始まり番号）を指定し、選んだ操作だけを反転する新しいchangesetを作ります。`id`はchangeset IDまたは監査履歴IDです。項目は削除せず、追加項目はアーカイブしてIDと記録を保持します。変更済み項目、後から追加した子、既に使われる関連などと矛盾する場合は409 `UNDO_CONFLICT`と影響箇所を返します。完了・チェックイン・週次レビューなどの記録は逆変更の対象にしません。返された案は通常の差分画面で確認・明示承認してから反映されます。別の操作への逆変更案は同じ元変更から作成できますが、重なる操作は409 `UNDO_ALREADY_PROPOSED`です。
 - `POST /v1/workspaces/{w}/changesets/preview`：titleとoperations（method / path / bodyの配列）。SAVEPOINT内で全件検証後に取り消し、30分有効な変更案を保存します。通常セッション、または`pathbase.read`を持つMCP接続の成功応答には、シミュレーション後の目標ツリーを`preview_graph`として含めます。形は`{items, relations, truncated, limit, plan_version}`で、`items`と`relations`は操作をSAVEPOINT内で反映した状態、`truncated`と`limit`は通常のグラフ取得と同じ上限情報です。上限に達した場合も、提案で変更・作成された項目と、その`part_of`上位経路を優先して含め、残りを作成順で補います。`pathbase.propose`だけを持つMCP接続には既存の計画データを返さないため、このフィールドを含めません。このフィールドは会話中の可視化専用で、保存されたchangesetには含まれません。`GET /changesets`や`GET /changesets/{id}`で後から再取得できる値ではありません。読み取り時の競合検出には通常の`GET /graph`または`GET /snapshot`が返す`plan_version`を使い、`expected_base_version`として渡します。指定版が現在と違えば409 `VERSION_CONFLICT`、会話統合で版を省略すれば428 `VERSION_REQUIRED`です。
 
 変更なしの応答にも、`pathbase.read`が許可されている場合は現在の保存済み計画を`preview_graph`として返し、同じtenantで参照可能なworkspace一覧を付けます。読み取り権限がないMCP接続にはこれらを返しません。
