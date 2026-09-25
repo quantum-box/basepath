@@ -5254,6 +5254,25 @@ fn item_relation_activity_state(relations: &[Relation], item_id: &str) -> Vec<Va
     state
 }
 
+async fn item_history_activity_snapshot(
+    tx: &mut Tx,
+    workspace_id: &str,
+    item_id: &str,
+) -> Result<Value> {
+    let mut metric_ids = list::<Metric>(tx, workspace_id, "metrics")
+        .await?
+        .into_iter()
+        .filter(|metric| metric.item_id == item_id)
+        .map(|metric| metric.id)
+        .collect::<Vec<_>>();
+    metric_ids.sort();
+    let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+    Ok(json!({
+        "metric_ids": metric_ids,
+        "relation_state": item_relation_activity_state(&relations, item_id),
+    }))
+}
+
 fn compound_item_relation_activity_state(relations: &Value, item_id: &str) -> Vec<Value> {
     let mut state = relations
         .as_object()
@@ -6286,6 +6305,12 @@ fn operation_may_create_side_effects(op: &Operation) -> bool {
 async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation) -> Result<Value> {
     let parts: Vec<_> = op.path.trim_matches('/').split('/').collect();
     let collection = parts.get(3).copied().unwrap_or("");
+    let item_patch_id =
+        (op.method == "PATCH" && collection == "items" && parts.len() == 5).then(|| parts[4]);
+    let item_activity_before = match item_patch_id {
+        Some(item_id) => Some(item_history_activity_snapshot(tx, w, item_id).await?),
+        None => None,
+    };
     let reparent_item = (op.method == "POST"
         && collection == "items"
         && parts.len() == 6
@@ -6371,6 +6396,18 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
             dispatch(tx, human, &op.method, &op.path, &HashMap::new(), &op.body).await?,
             json!({"records_created": 0, "notifications_created": 0}),
         )
+    };
+
+    let item_activity_after = match item_patch_id {
+        Some(item_id) => Some(item_history_activity_snapshot(tx, w, item_id).await?),
+        None => None,
+    };
+    let (metric_ids, relation_state) = match (item_activity_before, item_activity_after) {
+        (Some(before), Some(after)) => (
+            json!({"before": before["metric_ids"], "after": after["metric_ids"]}),
+            json!({"before": before["relation_state"], "after": after["relation_state"]}),
+        ),
+        _ => (Value::Null, Value::Null),
     };
 
     let parent_after = match reparent_item {
@@ -6498,6 +6535,8 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         "effect": effect,
         "before": before,
         "after": after,
+        "metric_ids": metric_ids,
+        "relation_state": relation_state,
         "relation_delta": relation_delta,
         // Which committing values this operation sets, and where they came
         // from, next to the diff rather than buried in the operation list.
@@ -6816,21 +6855,26 @@ fn history_operation_owner_allows_undo(
 ) -> bool {
     let path = text(operation, "path");
     let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
-    if parts.first() != Some(&"items") {
+    let Some(items_index) = parts.iter().position(|part| *part == "items") else {
         return true;
-    }
+    };
+    let item_id_index = items_index + 1;
+    let suffix_index = items_index + 2;
 
     let mut item_ids = HashSet::new();
-    if let Some(item_id) = parts.get(1).filter(|item_id| !item_id.is_empty()) {
+    if let Some(item_id) = parts
+        .get(item_id_index)
+        .filter(|item_id| !item_id.is_empty())
+    {
         item_ids.insert((*item_id).to_owned());
     }
-    if parts.len() == 1 && text(change, "collection") == "items" {
+    if parts.len() == item_id_index && text(change, "collection") == "items" {
         let item_id = text(change, "id");
         if !item_id.is_empty() {
             item_ids.insert(item_id.to_owned());
         }
     }
-    if parts.get(2) == Some(&"reparent") {
+    if parts.get(suffix_index) == Some(&"reparent") {
         if let Some(parent_id) = operation["body"]["parent_id"].as_str() {
             item_ids.insert(parent_id.to_owned());
         }
