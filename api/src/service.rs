@@ -4655,6 +4655,7 @@ async fn plan_history_compound_state(tx: &mut Tx, workspace_id: &str) -> Result<
                 "rationale": relation.rationale,
             });
             if relation.relation_type == "part_of" {
+                snapshot["parent_title"] = snapshot["target_title"].clone();
                 snapshot["parent_sibling_ids"] = json!(siblings_by_parent
                     .get(&relation.target_id)
                     .into_iter()
@@ -6720,7 +6721,12 @@ fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
         ("PATCH", Some("items"), 5) => {
             !item_patch_reopens_completed_action(&operation["body"], &change["before"])
         }
-        ("POST", Some("items"), 4) => change["effect"] == "created",
+        ("POST", Some("items"), 4) => {
+            change["effect"] == "created"
+                && change["metric_ids"]["after"]
+                    .as_array()
+                    .is_none_or(Vec::is_empty)
+        }
         ("POST", Some("items"), 6) => {
             parts.get(5) == Some(&"reparent") && reparent_has_sibling_snapshots(change)
         }
