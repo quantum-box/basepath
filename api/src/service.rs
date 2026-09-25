@@ -4474,7 +4474,12 @@ async fn plan_history_state(
                 .map(|metric| metric.id)
                 .collect::<Vec<_>>();
             metric_ids.sort();
-            json!({"item": snapshot, "metric_ids": metric_ids})
+            let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+            json!({
+                "item": snapshot,
+                "metric_ids": metric_ids,
+                "relation_state": item_relation_activity_state(&relations, parts[4]),
+            })
         }
         ("POST", Some("items"), 4) => {
             if !after {
@@ -4646,6 +4651,7 @@ async fn plan_history_compound_state(tx: &mut Tx, workspace_id: &str) -> Result<
         ) {
             let mut snapshot = json!({
                 "relation_id": relation.id,
+                "version": relation.version,
                 "relation_type": relation.relation_type,
                 "source_id": relation.source_id,
                 "source_title": source.title,
@@ -4886,11 +4892,19 @@ fn plan_history_compound_changes(
                 json!({
                     "item": Value::Null,
                     "metric_ids": compound_item_metric_ids(&before["metrics"], &item_id),
+                    "relation_state": compound_item_relation_activity_state(
+                        &before["relations"],
+                        &item_id,
+                    ),
                 }),
                 json!({
                     "item": new.cloned().unwrap_or(Value::Null),
                     "parent": parent.unwrap_or(Value::Null),
                     "metric_ids": compound_item_metric_ids(&after["metrics"], &item_id),
+                    "relation_state": compound_item_relation_activity_state(
+                        &after["relations"],
+                        &item_id,
+                    ),
                 }),
             )
         } else {
@@ -4905,11 +4919,19 @@ fn plan_history_compound_changes(
                 json!({
                     "item": old.cloned().unwrap_or(Value::Null),
                     "metric_ids": compound_item_metric_ids(&before["metrics"], &item_id),
+                    "relation_state": compound_item_relation_activity_state(
+                        &before["relations"],
+                        &item_id,
+                    ),
                 }),
                 json!({
                     "item": new.cloned().unwrap_or(Value::Null),
                     "parent": Value::Null,
                     "metric_ids": compound_item_metric_ids(&after["metrics"], &item_id),
+                    "relation_state": compound_item_relation_activity_state(
+                        &after["relations"],
+                        &item_id,
+                    ),
                 }),
             )
         };
@@ -5120,6 +5142,17 @@ fn plan_history_change(
     } else {
         Value::Null
     };
+    let relation_state = if item_path
+        && before_state["relation_state"].is_array()
+        && after_state["relation_state"].is_array()
+    {
+        json!({
+            "before": before_state["relation_state"],
+            "after": after_state["relation_state"],
+        })
+    } else {
+        Value::Null
+    };
     let title = item_after
         .get("title")
         .and_then(Value::as_str)
@@ -5165,6 +5198,7 @@ fn plan_history_change(
         "before": item_before,
         "after": item_after,
         "metric_ids": metric_ids,
+        "relation_state": relation_state,
         "relation_delta": relation_delta,
     })
 }
@@ -5179,6 +5213,50 @@ fn compound_item_metric_ids(metrics: &Value, item_id: &str) -> Vec<String> {
         .collect::<Vec<_>>();
     ids.sort();
     ids
+}
+
+fn item_relation_activity_state(relations: &[Relation], item_id: &str) -> Vec<Value> {
+    let mut state = relations
+        .iter()
+        .filter(|relation| relation.source_id == item_id || relation.target_id == item_id)
+        .map(|relation| {
+            json!({
+                "id": relation.id,
+                "version": relation.version,
+                "source_id": relation.source_id,
+                "target_id": relation.target_id,
+                "relation_type": relation.relation_type,
+                "position": relation.position,
+                "rationale": relation.rationale,
+            })
+        })
+        .collect::<Vec<_>>();
+    state.sort_by(|left, right| text(left, "id").cmp(text(right, "id")));
+    state
+}
+
+fn compound_item_relation_activity_state(relations: &Value, item_id: &str) -> Vec<Value> {
+    let mut state = relations
+        .as_object()
+        .into_iter()
+        .flat_map(|rows| rows.values())
+        .filter(|relation| {
+            text(relation, "source_id") == item_id || text(relation, "target_id") == item_id
+        })
+        .map(|relation| {
+            json!({
+                "id": relation["relation_id"],
+                "version": relation["version"],
+                "source_id": relation["source_id"],
+                "target_id": relation["target_id"],
+                "relation_type": relation["relation_type"],
+                "position": relation["position"],
+                "rationale": relation["rationale"],
+            })
+        })
+        .collect::<Vec<_>>();
+    state.sort_by(|left, right| text(left, "id").cmp(text(right, "id")));
+    state
 }
 
 async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
@@ -6078,6 +6156,21 @@ async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<
         "position": relation.position,
         "rationale": relation.rationale,
     })))
+}
+
+fn part_of_snapshot_matches(snapshot: &Value, expected: &Value) -> bool {
+    snapshot["source_id"] == expected["source_id"]
+        && snapshot["target_id"] == expected["target_id"]
+        && snapshot["position"] == expected["position"]
+        && snapshot["rationale"] == expected["rationale"]
+}
+
+fn part_of_relation_matches_snapshot(relation: &Relation, expected: &Value) -> bool {
+    relation.relation_type == "part_of"
+        && relation.source_id == text(expected, "source_id")
+        && relation.target_id == text(expected, "target_id")
+        && expected["position"] == json!(relation.position)
+        && relation.rationale == text(expected, "rationale")
 }
 
 /// Captures a relation with both endpoint labels so adding or removing a link
@@ -6990,10 +7083,10 @@ fn undo_change_is_live(change: &Value, current_time: &str) -> bool {
     }
 }
 
-/// Resolves which root operation each inverse operation reverses, then walks
-/// undo-of-undo chains to determine which source operations are still undone.
-/// Applied reversals toggle the source operation back; a pending reversal
-/// reserves it until the proposal is applied or withdrawn.
+/// Resolves inverse operations through undo-of-undo chains and keeps a source
+/// guarded while any part of its reversal remains applied. Separate child
+/// proposals can restore inverse operations independently; a live pending
+/// proposal reserves only the source operations it selected.
 fn active_undo_operations(
     all: &[Value],
     source_id: &str,
@@ -7179,6 +7272,7 @@ async fn item_has_later_activity(
     item_id: &str,
     source_applied_at: &str,
     source_metric_ids: Option<&[Value]>,
+    source_relation_state: Option<&[Value]>,
 ) -> Result<bool> {
     if source_applied_at.is_empty() {
         return Ok(true);
@@ -7222,22 +7316,34 @@ async fn item_has_later_activity(
         // the source snapshot, preserving compatibility with older history.
         return Ok(true);
     }
-    Ok(list::<Relation>(tx, workspace_id, "relations")
-        .await?
-        .iter()
-        .any(|relation| {
-            (relation.source_id == item_id || relation.target_id == item_id)
-                && relation
-                    .created_at
-                    .as_deref()
-                    .is_none_or(|created_at| created_at > source_applied_at)
-        }))
+    let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+    if let Some(source_state) = source_relation_state {
+        return Ok(item_relation_activity_state(&relations, item_id) != source_state);
+    }
+    Ok(relations.iter().any(|relation| {
+        (relation.source_id == item_id || relation.target_id == item_id)
+            && relation
+                .created_at
+                .as_deref()
+                .is_none_or(|created_at| created_at > source_applied_at)
+    }))
+}
+
+fn relation_snapshot_identity_matches(relation: &Relation, expected: &Value) -> bool {
+    let relation_type = text(expected, "relation_type");
+    let source_id = text(expected, "source_id");
+    let target_id = text(expected, "target_id");
+    relation.relation_type == relation_type
+        && if relation_type == "relates_to" {
+            (relation.source_id.as_str(), relation.target_id.as_str())
+                == (source_id.min(target_id), source_id.max(target_id))
+        } else {
+            relation.source_id == source_id && relation.target_id == target_id
+        }
 }
 
 fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
-    relation.source_id == text(expected, "source_id")
-        && relation.target_id == text(expected, "target_id")
-        && relation.relation_type == text(expected, "relation_type")
+    relation_snapshot_identity_matches(relation, expected)
         && relation.rationale == text(expected, "rationale")
         && expected["position"] == json!(relation.position)
 }
@@ -7271,9 +7377,11 @@ async fn changeset_has_unselected_later_item_activity(
             }
             ("POST", "items", 6) if parts[5] == "children" => {
                 parts[4] == item_id
-                    || operation.body["child_ids"]
-                        .as_array()
-                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id)))
+                    || ["order", "child_ids"].into_iter().any(|field| {
+                        operation.body[field]
+                            .as_array()
+                            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id)))
+                    })
             }
             ("POST", "actions", 6) => parts[4] == item_id,
             ("POST", "relations", 4) => {
@@ -7581,6 +7689,9 @@ async fn reverse_preview(
                         target_id,
                         text(&original, "applied_at"),
                         change["metric_ids"]["after"].as_array().map(Vec::as_slice),
+                        change["relation_state"]["after"]
+                            .as_array()
+                            .map(Vec::as_slice),
                     )
                     .await?
                     {
@@ -7643,9 +7754,14 @@ async fn reverse_preview(
                     continue;
                 }
                 let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+                let expected_parent = change["relation_delta"]
+                    .get("after")
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 let has_unrelated_relations = relations.iter().any(|relation| {
                     (relation.source_id == target_id || relation.target_id == target_id)
                         && !selected_relation_ids.contains(&relation.id)
+                        && !part_of_relation_matches_snapshot(relation, &expected_parent)
                 });
                 if has_unrelated_relations {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_relations"}));
@@ -7663,16 +7779,10 @@ async fn reverse_preview(
                     continue;
                 }
                 let parent = part_of_snapshot(tx, workspace_id, target_id).await?;
-                let expected_parent = change["relation_delta"]
-                    .get("after")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                if parent.as_ref().is_some_and(|parent| {
-                    parent["relation_id"] != expected_parent["relation_id"]
-                        || parent["target_id"] != expected_parent["target_id"]
-                        || parent["position"] != expected_parent["position"]
-                        || parent["rationale"] != expected_parent["rationale"]
-                }) || (parent.is_none() && !expected_parent.is_null())
+                if parent
+                    .as_ref()
+                    .is_some_and(|parent| !part_of_snapshot_matches(parent, &expected_parent))
+                    || (parent.is_none() && !expected_parent.is_null())
                 {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_moved_after_source"}));
                     continue;
@@ -7845,17 +7955,23 @@ async fn reverse_preview(
                 );
             }
             ("POST", "relations", 4) => {
-                let relation_id = change["relation_delta"]["after"]["relation_id"]
-                    .as_str()
-                    .unwrap_or_default();
+                let expected = &change["relation_delta"]["after"];
+                let stored_relation_id = expected["relation_id"].as_str().unwrap_or_default();
                 let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
-                let Some(relation) = relations.iter().find(|relation| relation.id == relation_id)
-                else {
-                    conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_missing"}));
+                let mut candidates = relations.iter().filter(|relation| {
+                    relation.id == stored_relation_id
+                        || relation_snapshot_identity_matches(relation, expected)
+                });
+                let Some(relation) = candidates.next() else {
+                    conflicts.push(json!({"operation":index,"relation_id":stored_relation_id,"reason":"relation_missing"}));
                     continue;
                 };
-                if !relation_snapshot_matches(relation, &change["relation_delta"]["after"]) {
-                    conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_changed_after_source"}));
+                if candidates.next().is_some() {
+                    conflicts.push(json!({"operation":index,"relation_id":stored_relation_id,"reason":"relation_identity_ambiguous"}));
+                    continue;
+                }
+                if !relation_snapshot_matches(relation, expected) {
+                    conflicts.push(json!({"operation":index,"relation_id":relation.id,"reason":"relation_changed_after_source"}));
                     continue;
                 }
                 push_undo_operation(
@@ -7864,7 +7980,7 @@ async fn reverse_preview(
                     index,
                     inverse_operation(
                         "DELETE",
-                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                        format!("/v1/workspaces/{workspace_id}/relations/{}", relation.id),
                         json!({"expected_version":relation.version}),
                     ),
                 );
