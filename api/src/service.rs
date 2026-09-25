@@ -6398,6 +6398,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
 /// the same trail whichever one the person went through.
 async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>> {
     let ops: Vec<Operation> = serde_json::from_value(c["operations"].clone())?;
+    let changes = c["changes"].as_array().cloned().unwrap_or_default();
     let workspace_id = text(c, "workspace_id").to_owned();
     let human = Actor {
         id: actor.id.clone(),
@@ -6406,17 +6407,33 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
         connection: actor.connection.clone(),
     };
     let mut output = vec![];
+    let mut recorded_operations = Vec::new();
+    let mut recorded_changes = Vec::new();
     for (index, op) in ops.into_iter().enumerate() {
-        let result = dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
-        if let Some(change) = c
-            .get_mut("changes")
-            .and_then(Value::as_array_mut)
-            .and_then(|changes| changes.get_mut(index))
-        {
-            rebind_committed_change(tx, &workspace_id, &op, &result, change).await?;
+        if is_compound_plan_write(&op.method, &op.path) {
+            let before = plan_history_compound_state(tx, &workspace_id).await?;
+            let result =
+                dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+            let after = plan_history_compound_state(tx, &workspace_id).await?;
+            let (operations, changes) =
+                plan_history_compound_changes(&workspace_id, &before, &after);
+            for (operation, change) in operations.into_iter().zip(changes) {
+                recorded_operations.push(operation);
+                recorded_changes.push(change);
+            }
+            output.push(result);
+            continue;
         }
+
+        let result = dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+        let mut change = changes.get(index).cloned().unwrap_or(Value::Null);
+        rebind_committed_change(tx, &workspace_id, &op, &result, &mut change).await?;
+        recorded_operations.push(serde_json::to_value(&op)?);
+        recorded_changes.push(change);
         output.push(result);
     }
+    c["operations"] = json!(recorded_operations);
+    c["changes"] = json!(recorded_changes);
     c["status"] = json!("applied");
     c["applied_at"] = json!(now());
     c["applied_by"] = json!(actor.id);
@@ -6472,6 +6489,14 @@ async fn rebind_committed_change(
             }
             if change["relation_delta"]["after"].is_object() {
                 change["relation_delta"]["after"]["relation_id"] = json!(actual_id);
+            }
+        }
+        ("POST", _, _) if change["effect"] == "created" => {
+            let collection = text(change, "collection");
+            if !collection.is_empty() {
+                let snapshot: Value = get(tx, workspace_id, collection, actual_id).await?;
+                change["id"] = json!(actual_id);
+                change["after"] = snapshot;
             }
         }
         _ => {}
@@ -6976,109 +7001,137 @@ fn active_undo_operations(
         }
     }
 
-    let root_map = (0..source_operation_count)
-        .map(Some)
-        .collect::<Vec<Option<usize>>>();
-    let mut pending = vec![(source_id.to_owned(), root_map)];
-    let mut applied_events = Vec::<(String, String, Vec<usize>)>::new();
-    let mut reserved = HashSet::new();
+    fn mapped_undo_sources(change: &Value, parent_operation_count: usize) -> Vec<Option<usize>> {
+        let operation_count = change["operations"].as_array().map_or(0, Vec::len);
+        if let Some(sources) = change["undo_operation_sources"].as_array() {
+            return (0..operation_count)
+                .map(|index| {
+                    sources
+                        .get(index)
+                        .and_then(Value::as_u64)
+                        .and_then(|source| usize::try_from(source).ok())
+                        .filter(|source| *source < parent_operation_count)
+                })
+                .collect();
+        }
 
-    while let Some((parent_id, parent_map)) = pending.pop() {
-        for change in children.get(parent_id.as_str()).into_iter().flatten() {
-            if !undo_change_is_live(change, current_time) {
+        // Compatibility for proposals saved before operation provenance was
+        // recorded. Earlier versions emitted one inverse per selected source
+        // operation in reverse order.
+        let mut indexes = undo_indexes(change, parent_operation_count);
+        indexes.reverse();
+        if indexes.len() == operation_count {
+            indexes.into_iter().map(Some).collect()
+        } else {
+            vec![None; operation_count]
+        }
+    }
+
+    fn operation_has_effect(
+        change: &Value,
+        operation_index: usize,
+        children: &HashMap<&str, Vec<&Value>>,
+        current_time: &str,
+        memo: &mut HashMap<(String, usize), bool>,
+        visiting: &mut HashSet<(String, usize)>,
+    ) -> bool {
+        let change_id = text(change, "id").to_owned();
+        let key = (change_id.clone(), operation_index);
+        if let Some(effective) = memo.get(&key) {
+            return *effective;
+        }
+        if !visiting.insert(key.clone()) {
+            // A malformed undo cycle must keep the source operation guarded.
+            return true;
+        }
+
+        let operation_count = change["operations"].as_array().map_or(0, Vec::len);
+        let effective = if text(change, "status") != "applied" || operation_index >= operation_count
+        {
+            false
+        } else {
+            let mut fully_reversed = false;
+            for child in children.get(change_id.as_str()).into_iter().flatten() {
+                if text(child, "status") != "applied" || !undo_change_is_live(child, current_time) {
+                    continue;
+                }
+                if !undo_indexes(child, operation_count).contains(&operation_index) {
+                    continue;
+                }
+
+                let inverse_indexes = mapped_undo_sources(child, operation_count)
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, source)| {
+                        (source == Some(operation_index)).then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                if !inverse_indexes.is_empty()
+                    && inverse_indexes.into_iter().all(|inverse_index| {
+                        operation_has_effect(
+                            child,
+                            inverse_index,
+                            children,
+                            current_time,
+                            memo,
+                            visiting,
+                        )
+                    })
+                {
+                    fully_reversed = true;
+                    break;
+                }
+            }
+            !fully_reversed
+        };
+
+        visiting.remove(&key);
+        memo.insert(key, effective);
+        effective
+    }
+
+    let mut memo = HashMap::new();
+    let mut visiting = HashSet::new();
+    let mut active = HashSet::new();
+    for source_index in 0..source_operation_count {
+        for change in children.get(source_id).into_iter().flatten() {
+            if !undo_change_is_live(change, current_time)
+                || !undo_indexes(change, source_operation_count).contains(&source_index)
+            {
                 continue;
             }
-            let parent_indexes = undo_indexes(change, parent_map.len());
-            let selected_parent_indexes = parent_indexes.iter().copied().collect::<HashSet<_>>();
-            let mut parent_groups = HashMap::<usize, Vec<usize>>::new();
-            for (index, root_index) in parent_map.iter().enumerate() {
-                if let Some(root_index) = root_index {
-                    parent_groups.entry(*root_index).or_default().push(index);
-                }
-            }
-            let affected_sources = parent_groups
-                .iter()
-                .filter(|(_, indexes)| {
-                    indexes
-                        .iter()
-                        .any(|index| selected_parent_indexes.contains(index))
-                })
-                .map(|(root_index, _)| *root_index)
-                .collect::<HashSet<_>>();
-            let completed_sources = parent_groups
-                .iter()
-                .filter(|(_, indexes)| {
-                    indexes
-                        .iter()
-                        .all(|index| selected_parent_indexes.contains(index))
-                })
-                .map(|(root_index, _)| *root_index)
-                .collect::<HashSet<_>>();
-            let status = text(change, "status");
-            if status == "applied" {
-                applied_events.push((
-                    text(change, "applied_at").to_owned(),
-                    text(change, "id").to_owned(),
-                    completed_sources.iter().copied().collect(),
-                ));
-            } else {
-                reserved.extend(affected_sources);
+
+            if text(change, "status") != "applied" {
+                active.insert(source_index);
+                break;
             }
 
-            // Each stored entry is the parent operation index corresponding
-            // to one operation in this undo proposal. Compose it through the
-            // parent map so deeper reversals still point at the source.
-            let operation_count = change["operations"].as_array().map_or(0, Vec::len);
-            let child_map = if let Some(sources) = change["undo_operation_sources"].as_array() {
-                sources
-                    .iter()
-                    .take(operation_count)
-                    .map(|source| {
-                        source
-                            .as_u64()
-                            .and_then(|index| usize::try_from(index).ok())
-                            .and_then(|index| parent_map.get(index).copied().flatten())
-                            .filter(|root_index| completed_sources.contains(root_index))
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                // Compatibility for undo proposals saved before operation
-                // provenance was recorded. Earlier versions emitted one
-                // inverse per selected source operation in reverse order.
-                let mut indexes = undo_indexes(change, parent_map.len());
-                indexes.reverse();
-                if indexes.len() == operation_count {
-                    indexes
-                        .iter()
-                        .map(|index| {
-                            parent_map
-                                .get(*index)
-                                .copied()
-                                .flatten()
-                                .filter(|root_index| completed_sources.contains(root_index))
-                        })
-                        .collect()
-                } else {
-                    vec![None; operation_count]
-                }
-            };
-            if status == "applied" {
-                pending.push((text(change, "id").to_owned(), child_map));
+            let inverse_indexes = mapped_undo_sources(change, source_operation_count)
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, source)| (source == Some(source_index)).then_some(index))
+                .collect::<Vec<_>>();
+            if inverse_indexes.is_empty()
+                || inverse_indexes.into_iter().any(|inverse_index| {
+                    operation_has_effect(
+                        change,
+                        inverse_index,
+                        &children,
+                        current_time,
+                        &mut memo,
+                        &mut visiting,
+                    )
+                })
+            {
+                // Keep a source operation guarded while any part of its undo
+                // remains applied. Separate proposals can restore sibling
+                // inverse operations without losing this accumulated state.
+                active.insert(source_index);
+                break;
             }
         }
     }
-
-    applied_events.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    let mut undone = HashSet::new();
-    for (_, _, indexes) in applied_events {
-        for index in indexes {
-            if !undone.insert(index) {
-                undone.remove(&index);
-            }
-        }
-    }
-    undone.extend(reserved);
-    undone
+    active
 }
 
 fn history_item_matches(current: &Value, expected: &Value) -> bool {

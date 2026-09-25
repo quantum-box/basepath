@@ -312,11 +312,13 @@ function safeSourceUrl(value?: string): string | undefined {
 
 function History({
   workspaceId,
+  workspaceRole,
   entry,
   store,
   onClose,
 }: {
   workspaceId: string;
+  workspaceRole: Workspace["role"];
   entry: ReviewEntry;
   store: WorkspaceStore;
   onClose: () => void;
@@ -501,7 +503,7 @@ function History({
         </p>
       )}
 
-      <div className="review-checkin-form">
+      {workspaceRole !== "viewer" && <div className="review-checkin-form">
         <label>
           <span>状況</span>
           <select
@@ -547,7 +549,7 @@ function History({
             チェックインを記録
           </button>
         </div>
-      </div>
+      </div>}
 
       {checkins.length > 0 && (
         <div className="review-checkins">
@@ -682,7 +684,8 @@ function History({
                           </div>
                         )}
                       </div>
-                      {version.undoable !== false && change.undoable !== false &&
+                      {workspaceRole !== "viewer" &&
+                        version.undoable !== false && change.undoable !== false &&
                         typeof change.operation_index === "number" && (
                         <button
                           className="secondary-button"
@@ -893,6 +896,7 @@ export function ReviewScreen({
       {open && workspace && (
         <History
           workspaceId={workspace.id}
+          workspaceRole={workspace.role}
           entry={open}
           store={store}
           onClose={() => {
