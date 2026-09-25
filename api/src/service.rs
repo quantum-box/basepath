@@ -6614,6 +6614,31 @@ async fn rebind_committed_change(
     change: &mut Value,
 ) -> Result<()> {
     let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
+
+    // Reparent responses do not have a top-level `id`, so the normal create
+    // rebinding path below cannot update the preview-only relation snapshot.
+    // Read the committed item and edge directly after dispatch instead.
+    if operation.method == "POST"
+        && parts.get(3) == Some(&"items")
+        && parts.len() == 6
+        && parts[5] == "reparent"
+    {
+        let item_id = parts[4];
+        let item: Item = get(tx, workspace_id, "items", item_id).await?;
+        let parent = part_of_snapshot(tx, workspace_id, item_id).await?;
+        let sibling_ids = match parent.as_ref() {
+            Some(parent) => {
+                part_of_sibling_ids(tx, workspace_id, text(parent, "target_id")).await?
+            }
+            None => Vec::new(),
+        };
+        change["id"] = json!(item_id);
+        change["after"] = value(&item)?;
+        change["relation_delta"]["after"] = parent.map_or(Value::Null, |parent| parent);
+        change["relation_delta"]["after_sibling_ids"] = json!(sibling_ids);
+        return Ok(());
+    }
+
     let actual_id = text(result, "id");
     if actual_id.is_empty() {
         return Ok(());
@@ -7466,6 +7491,8 @@ async fn item_has_later_activity(
     source_metric_ids: Option<&[Value]>,
     source_relation_state: Option<&[Value]>,
     ignored_relation_ids: &HashSet<String>,
+    ignored_relation_snapshots: &[Value],
+    ignored_part_of_parent_ids: &HashSet<String>,
 ) -> Result<bool> {
     if source_applied_at.is_empty() {
         return Ok(true);
@@ -7511,15 +7538,33 @@ async fn item_has_later_activity(
     }
     let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
     if let Some(source_state) = source_relation_state {
+        let is_projected_out = |relation: &Value| {
+            ignored_relation_ids.contains(text(relation, "id"))
+                || ignored_relation_snapshots
+                    .iter()
+                    .any(|snapshot| relation_value_identity_matches(relation, snapshot))
+                || (text(relation, "relation_type") == "part_of"
+                    && ignored_part_of_parent_ids.contains(text(relation, "target_id")))
+        };
         let current_state = item_relation_activity_state(&relations, item_id)
             .into_iter()
-            .filter(|relation| !ignored_relation_ids.contains(text(relation, "id")))
+            .filter(|relation| !is_projected_out(relation))
             .collect::<Vec<_>>();
-        return Ok(current_state.as_slice() != source_state);
+        let source_state = source_state
+            .iter()
+            .filter(|relation| !is_projected_out(relation))
+            .cloned()
+            .collect::<Vec<_>>();
+        return Ok(current_state != source_state);
     }
     Ok(relations.iter().any(|relation| {
         (relation.source_id == item_id || relation.target_id == item_id)
             && !ignored_relation_ids.contains(&relation.id)
+            && !ignored_relation_snapshots
+                .iter()
+                .any(|snapshot| relation_snapshot_identity_matches(relation, snapshot))
+            && !(relation.relation_type == "part_of"
+                && ignored_part_of_parent_ids.contains(&relation.target_id))
             && relation
                 .created_at
                 .as_deref()
@@ -7542,6 +7587,106 @@ fn relation_snapshot_identity_matches(relation: &Relation, expected: &Value) -> 
         }
 }
 
+fn relation_value_identity_matches(left: &Value, right: &Value) -> bool {
+    let relation_type = text(left, "relation_type");
+    if relation_type.is_empty() || relation_type != text(right, "relation_type") {
+        return false;
+    }
+    let left_source = text(left, "source_id");
+    let left_target = text(left, "target_id");
+    let right_source = text(right, "source_id");
+    let right_target = text(right, "target_id");
+    if relation_type == "relates_to" {
+        (left_source.min(left_target), left_source.max(left_target))
+            == (
+                right_source.min(right_target),
+                right_source.max(right_target),
+            )
+    } else {
+        left_source == right_source && left_target == right_target
+    }
+}
+
+fn selected_later_relation_activity_projection(
+    operations: &[Operation],
+    changes: &[Value],
+    selected: &[usize],
+    operation_index: usize,
+    item_id: &str,
+) -> (HashSet<String>, Vec<Value>, HashSet<String>) {
+    let mut relation_ids = HashSet::new();
+    let mut relation_snapshots = Vec::new();
+    let mut part_of_parent_ids = HashSet::new();
+    for later_index in selected
+        .iter()
+        .copied()
+        .filter(|index| *index > operation_index)
+    {
+        let Some(operation) = operations.get(later_index) else {
+            continue;
+        };
+        let Some(change) = changes.get(later_index) else {
+            continue;
+        };
+        let delta = &change["relation_delta"];
+        if text(delta, "type") == "children_order" && text(&delta["before"], "parent_id") == item_id
+        {
+            part_of_parent_ids.insert(item_id.to_owned());
+        }
+
+        let relation_delta = matches!(text(delta, "type"), "relation" | "part_of");
+        if !relation_delta {
+            continue;
+        }
+        let snapshots = [&delta["before"], &delta["after"]];
+        for snapshot in snapshots {
+            if !snapshot.is_object()
+                || !["source_id", "target_id"]
+                    .into_iter()
+                    .any(|field| text(snapshot, field) == item_id)
+            {
+                continue;
+            }
+            let relation_id = if text(snapshot, "relation_id").is_empty() {
+                text(snapshot, "id")
+            } else {
+                text(snapshot, "relation_id")
+            };
+            if !relation_id.is_empty() {
+                relation_ids.insert(relation_id.to_owned());
+            }
+            relation_snapshots.push(snapshot.clone());
+            if text(snapshot, "relation_type") == "part_of"
+                && text(snapshot, "target_id") == item_id
+            {
+                // Moving or deleting one child can shift every sibling's
+                // position. The selected inverse validates the saved sibling
+                // order, so exclude that parent-scoped position change here.
+                part_of_parent_ids.insert(item_id.to_owned());
+            }
+        }
+
+        // Creating an item with a parent records only its after edge; include
+        // that edge's ID for the existing create-undo activity check.
+        if operation.method == "POST"
+            && text(change, "effect") == "created"
+            && text(delta, "type") == "part_of"
+        {
+            let snapshot = &delta["after"];
+            if text(snapshot, "relation_type") == "part_of"
+                && text(snapshot, "target_id") == item_id
+            {
+                let relation_id = text(snapshot, "relation_id");
+                if !relation_id.is_empty() {
+                    relation_ids.insert(relation_id.to_owned());
+                }
+                part_of_parent_ids.insert(item_id.to_owned());
+            }
+        }
+    }
+    (relation_ids, relation_snapshots, part_of_parent_ids)
+}
+
 fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
     relation_snapshot_identity_matches(relation, expected)
         && relation.rationale == text(expected, "rationale")
@@ -7552,6 +7697,7 @@ async fn changeset_has_unselected_later_item_activity(
     tx: &mut Tx,
     workspace_id: &str,
     operations: &[Operation],
+    changes: &[Value],
     selected: &HashSet<usize>,
     operation_index: usize,
     item_id: &str,
@@ -7562,46 +7708,61 @@ async fn changeset_has_unselected_later_item_activity(
         }
         let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
         let collection = parts.get(3).copied().unwrap_or_default();
-        let directly_references_item = match (operation.method.as_str(), collection, parts.len()) {
-            ("POST", "items", 6) if parts[5] == "checkins" => parts[4] == item_id,
-            ("PATCH", "items", 5) => {
-                parts[4] == item_id
-                    || operation.body["fields"]["next_action_id"].as_str() == Some(item_id)
-            }
-            ("POST", "items", 4) => {
-                operation.body["parent_id"].as_str() == Some(item_id)
-                    || operation.body["fields"]["next_action_id"].as_str() == Some(item_id)
-            }
-            ("POST", "items", 6) if parts[5] == "reparent" => {
-                parts[4] == item_id || operation.body["parent_id"].as_str() == Some(item_id)
-            }
-            ("POST", "items", 6) if parts[5] == "children" => {
-                parts[4] == item_id
-                    || ["order", "child_ids"].into_iter().any(|field| {
-                        operation.body[field]
-                            .as_array()
-                            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id)))
-                    })
-            }
-            ("POST", "actions", 6) => parts[4] == item_id,
-            ("POST", "relations", 4) => {
-                operation.body["source_id"].as_str() == Some(item_id)
-                    || operation.body["target_id"].as_str() == Some(item_id)
-            }
-            ("POST", "records", 4) => operation.body["item_ids"]
-                .as_array()
-                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id))),
-            ("POST", "metrics", 4) => operation.body["item_id"].as_str() == Some(item_id),
-            ("POST", "observations", 4) => {
-                let metric_id = text(&operation.body, "metric_id");
-                !metric_id.is_empty()
-                    && list::<Metric>(tx, workspace_id, "metrics")
-                        .await?
-                        .iter()
-                        .any(|metric| metric.id == metric_id && metric.item_id == item_id)
-            }
-            _ => false,
-        };
+        let change = changes.get(index).cloned().unwrap_or(Value::Null);
+        let delta = &change["relation_delta"];
+        let references_item_in_relation_delta = ["before", "after"].into_iter().any(|side| {
+            ["source_id", "target_id"]
+                .into_iter()
+                .any(|field| text(&delta[side], field) == item_id)
+        }) || (text(delta, "type") == "children_order"
+            && (text(&delta["before"], "parent_id") == item_id
+                || text(&delta["after"], "parent_id") == item_id
+                || ["before", "after"].into_iter().any(|side| {
+                    delta[side]["child_ids"]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id)))
+                })));
+        let directly_references_item = references_item_in_relation_delta
+            || match (operation.method.as_str(), collection, parts.len()) {
+                ("POST", "items", 6) if parts[5] == "checkins" => parts[4] == item_id,
+                ("PATCH", "items", 5) => {
+                    parts[4] == item_id
+                        || operation.body["fields"]["next_action_id"].as_str() == Some(item_id)
+                }
+                ("POST", "items", 4) => {
+                    operation.body["parent_id"].as_str() == Some(item_id)
+                        || operation.body["fields"]["next_action_id"].as_str() == Some(item_id)
+                }
+                ("POST", "items", 6) if parts[5] == "reparent" => {
+                    parts[4] == item_id || operation.body["parent_id"].as_str() == Some(item_id)
+                }
+                ("POST", "items", 6) if parts[5] == "children" => {
+                    parts[4] == item_id
+                        || ["order", "child_ids"].into_iter().any(|field| {
+                            operation.body[field].as_array().is_some_and(|ids| {
+                                ids.iter().any(|id| id.as_str() == Some(item_id))
+                            })
+                        })
+                }
+                ("POST", "actions", 6) => parts[4] == item_id,
+                ("POST", "relations", 4) => {
+                    operation.body["source_id"].as_str() == Some(item_id)
+                        || operation.body["target_id"].as_str() == Some(item_id)
+                }
+                ("POST", "records", 4) => operation.body["item_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id))),
+                ("POST", "metrics", 4) => operation.body["item_id"].as_str() == Some(item_id),
+                ("POST", "observations", 4) => {
+                    let metric_id = text(&operation.body, "metric_id");
+                    !metric_id.is_empty()
+                        && list::<Metric>(tx, workspace_id, "metrics")
+                            .await?
+                            .iter()
+                            .any(|metric| metric.id == metric_id && metric.item_id == item_id)
+                }
+                _ => false,
+            };
         if directly_references_item {
             return Ok(true);
         }
@@ -7883,37 +8044,17 @@ async fn reverse_preview(
                         }));
                         continue;
                     }
-                    let selected_later_relation_ids = selected
-                        .iter()
-                        .copied()
-                        .filter(|later_index| *later_index > index)
-                        .filter_map(|later_index| {
-                            let later_operation = &operations[later_index];
-                            let later_change = &changes[later_index];
-                            let later_parts: Vec<_> =
-                                later_operation.path.trim_matches('/').split('/').collect();
-                            match (
-                                later_operation.method.as_str(),
-                                later_parts.get(3).copied(),
-                                later_parts.len(),
-                            ) {
-                                ("POST", Some("relations"), 4)
-                                    if later_change["effect"] == "created" =>
-                                {
-                                    Some(text(later_change, "id").to_owned())
-                                }
-                                ("POST", Some("items"), 4)
-                                    if later_change["effect"] == "created" =>
-                                {
-                                    later_change["relation_delta"]["after"]["relation_id"]
-                                        .as_str()
-                                        .map(str::to_owned)
-                                }
-                                _ => None,
-                            }
-                        })
-                        .filter(|relation_id| !relation_id.is_empty())
-                        .collect::<HashSet<_>>();
+                    let (
+                        selected_later_relation_ids,
+                        selected_later_relation_snapshots,
+                        selected_later_part_of_parent_ids,
+                    ) = selected_later_relation_activity_projection(
+                        &operations,
+                        changes,
+                        &selected,
+                        index,
+                        target_id,
+                    );
                     if item_has_later_activity(
                         tx,
                         workspace_id,
@@ -7924,6 +8065,8 @@ async fn reverse_preview(
                             .as_array()
                             .map(Vec::as_slice),
                         &selected_later_relation_ids,
+                        &selected_later_relation_snapshots,
+                        &selected_later_part_of_parent_ids,
                     )
                     .await?
                     {
@@ -7934,6 +8077,7 @@ async fn reverse_preview(
                         tx,
                         workspace_id,
                         &operations,
+                        changes,
                         &selected_set,
                         index,
                         target_id,
