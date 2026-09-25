@@ -5879,6 +5879,12 @@ async fn stored_history_versions(
     Ok(versions)
 }
 
+fn item_patch_reopens_completed_action(body: &Value, before: &Value) -> bool {
+    text(before, "kind") == "action"
+        && text(before, "state") == "done"
+        && body["state"].as_str().is_some_and(|state| state != "done")
+}
+
 fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
     let parts: Vec<_> = text(operation, "path")
         .trim_matches('/')
@@ -5889,13 +5895,38 @@ fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
         parts.get(3).copied(),
         parts.len(),
     ) {
-        ("PATCH", Some("items"), 5) => true,
+        ("PATCH", Some("items"), 5) => {
+            !item_patch_reopens_completed_action(&operation["body"], &change["before"])
+        }
         ("POST", Some("items"), 4) => change["effect"] == "created",
         ("POST", Some("items"), 6) => parts.get(5) == Some(&"reparent"),
         ("POST", Some("relations"), 4) => change["relation_delta"]["after"].is_object(),
         ("DELETE", Some("relations"), 5) => change["relation_delta"]["before"].is_object(),
         _ => false,
     }
+}
+
+fn history_comparison_snapshot(value: &Value) -> Value {
+    let mut snapshot = value.clone();
+    if let Some(object) = snapshot.as_object_mut() {
+        for field in [
+            "version",
+            "updated_at",
+            "relation_id",
+            "parent_title",
+            "source_title",
+            "target_title",
+        ] {
+            object.remove(field);
+        }
+    }
+    snapshot
+}
+
+fn history_comparison_is_net_zero(change: &Value) -> bool {
+    history_comparison_snapshot(&change["before"]) == history_comparison_snapshot(&change["after"])
+        && history_comparison_snapshot(&change["relation_delta"]["before"])
+            == history_comparison_snapshot(&change["relation_delta"]["after"])
 }
 
 async fn history_versions(tx: &mut Tx, actor: &Actor, workspace_id: &str) -> Result<Value> {
@@ -5999,7 +6030,9 @@ async fn history_compare(
             }
         }
     }
-    merged.retain(|change| change["effect"] != "unchanged");
+    merged.retain(|change| {
+        change["effect"] != "unchanged" && !history_comparison_is_net_zero(change)
+    });
     Ok(json!({
         "workspace_id": workspace_id,
         "from": {"id": versions[from_index]["id"], "title": versions[from_index]["title"], "applied_at": versions[from_index]["applied_at"]},
@@ -6253,6 +6286,10 @@ async fn reverse_preview(
                     );
                     continue;
                 }
+                if item_patch_reopens_completed_action(&operation.body, before) {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"action_completion_requires_complete_operation"}));
+                    continue;
+                }
                 let mut reverse_body = json!({"expected_version":current.version});
                 let Some(requested) = operation.body.as_object() else {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"operation_body_invalid"}));
@@ -6500,6 +6537,22 @@ async fn reverse_preview(
                         }),
                     ));
                 } else {
+                    let source_id = text(old, "source_id");
+                    let target_id = text(old, "target_id");
+                    match get::<Item>(tx, workspace_id, "items", source_id).await {
+                        Ok(item) if item.archived_at.is_none() => {}
+                        _ => {
+                            conflicts.push(json!({"operation":index,"item_id":source_id,"reason":"relation_endpoint_unavailable"}));
+                            continue;
+                        }
+                    }
+                    match get::<Item>(tx, workspace_id, "items", target_id).await {
+                        Ok(item) if item.archived_at.is_none() => {}
+                        _ => {
+                            conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"relation_endpoint_unavailable"}));
+                            continue;
+                        }
+                    }
                     inverse.push(inverse_operation(
                         "POST",
                         format!("/v1/workspaces/{workspace_id}/relations"),
