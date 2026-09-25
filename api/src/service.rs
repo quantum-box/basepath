@@ -4479,6 +4479,11 @@ async fn plan_history_state(
                 "parent_sibling_ids": parent_sibling_ids,
             })
         }
+        ("POST", Some("items"), 6) if parts[5] == "children" => {
+            let item: Value = get(tx, workspace_id, "items", parts[4]).await?;
+            let child_order = part_of_child_order(tx, workspace_id, parts[4]).await?;
+            json!({"item":item,"child_order":child_order})
+        }
         ("POST", Some("relations"), 4) => {
             if after {
                 let relation_id = result
@@ -4495,7 +4500,7 @@ async fn plan_history_state(
             if after {
                 Value::Null
             } else {
-                relation_snapshot(tx, workspace_id, parts[4])
+                relation_history_snapshot(tx, workspace_id, parts[4])
                     .await?
                     .ok_or_else(ApiError::missing)?
             }
@@ -4517,6 +4522,7 @@ fn plan_history_change(
     let item_path = collection == "items";
     let reparent = method == "POST" && item_path && parts.get(5) == Some(&"reparent");
     let created_item = method == "POST" && item_path && parts.len() == 4;
+    let children_reorder = method == "POST" && item_path && parts.get(5) == Some(&"children");
     let item_before = if reparent || (item_path && !created_item) {
         before_state.get("item").cloned().unwrap_or(Value::Null)
     } else if created_item {
@@ -4555,6 +4561,30 @@ fn plan_history_change(
             "type": "part_of",
             "before": Value::Null,
             "after": after_state.get("parent").cloned().unwrap_or(Value::Null),
+        }))
+    } else if children_reorder {
+        let child_order_snapshot = |state: &Value| {
+            let child_order = state.get("child_order").cloned().unwrap_or(json!([]));
+            let child_ids = child_order
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|child| child["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            json!({
+                "parent_id": parts.get(4).copied().unwrap_or_default(),
+                "child_ids": child_ids,
+                "child_order": child_order,
+            })
+        };
+        let before = child_order_snapshot(&before_state);
+        let after = child_order_snapshot(&after_state);
+        Some(json!({
+            "type": "children_order",
+            "before_sibling_ids": before["child_ids"],
+            "after_sibling_ids": after["child_ids"],
+            "before": before,
+            "after": after,
         }))
     } else if collection == "relations" {
         Some(json!({
@@ -5466,6 +5496,31 @@ async fn part_of_sibling_ids(
     )
 }
 
+async fn part_of_child_order(
+    tx: &mut Tx,
+    workspace_id: &str,
+    parent_id: &str,
+) -> Result<Vec<Value>> {
+    let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+    let items: Vec<Item> = list(tx, workspace_id, "items").await?;
+    let titles: HashMap<&str, &str> = items
+        .iter()
+        .map(|item| (item.id.as_str(), item.title.as_str()))
+        .collect();
+    Ok(
+        ordered_part_of_siblings(&relations, &items, parent_id, None)
+            .into_iter()
+            .map(|relation| {
+                json!({
+                    "id": relation.source_id,
+                    "title": titles.get(relation.source_id.as_str()).copied().unwrap_or(""),
+                    "position": relation.position,
+                })
+            })
+            .collect(),
+    )
+}
+
 async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<Value>> {
     let relations: Vec<Relation> = list(tx, w, "relations").await?;
     let Some(relation) = relations
@@ -5507,6 +5562,21 @@ async fn relation_snapshot(tx: &mut Tx, w: &str, relation_id: &str) -> Result<Op
         "position": relation.position,
         "rationale": relation.rationale,
     })))
+}
+
+async fn relation_history_snapshot(
+    tx: &mut Tx,
+    workspace_id: &str,
+    relation_id: &str,
+) -> Result<Option<Value>> {
+    let Some(mut snapshot) = relation_snapshot(tx, workspace_id, relation_id).await? else {
+        return Ok(None);
+    };
+    if text(&snapshot, "relation_type") == "part_of" {
+        snapshot["parent_sibling_ids"] =
+            json!(part_of_sibling_ids(tx, workspace_id, text(&snapshot, "target_id")).await?);
+    }
+    Ok(Some(snapshot))
 }
 
 async fn operation_side_effect_counts(tx: &mut Tx, w: &str) -> Result<(i64, i64)> {
@@ -5565,6 +5635,13 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         && collection == "items"
         && parts.len() == 4
         && op.body["parent_id"].as_str().is_some();
+    let children_reorder =
+        op.method == "POST" && collection == "items" && parts.len() == 6 && parts[5] == "children";
+    let child_order_before = if children_reorder {
+        part_of_child_order(tx, w, parts[4]).await?
+    } else {
+        Vec::new()
+    };
     let parent_before = match reparent_item {
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
         None => None,
@@ -5574,7 +5651,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         None => Vec::new(),
     };
     let relation_before = if op.method == "DELETE" && collection == "relations" {
-        relation_snapshot(tx, w, parts.get(4).copied().unwrap_or("")).await?
+        relation_history_snapshot(tx, w, parts.get(4).copied().unwrap_or("")).await?
     } else {
         None
     };
@@ -5648,6 +5725,11 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         Some(parent) => part_of_sibling_ids(tx, w, text(parent, "target_id")).await?,
         None => Vec::new(),
     };
+    let child_order_after = if children_reorder {
+        part_of_child_order(tx, w, parts[4]).await?
+    } else {
+        Vec::new()
+    };
     let relation_after = if op.method == "POST" && collection == "relations" {
         match result["id"].as_str() {
             Some(relation_id) => relation_snapshot(tx, w, relation_id).await?,
@@ -5663,6 +5745,28 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
             "after": parent_after,
             "before_sibling_ids": parent_before_sibling_ids,
             "after_sibling_ids": parent_after_sibling_ids,
+        }))
+    } else if children_reorder {
+        let child_ids = |children: &[Value]| {
+            children
+                .iter()
+                .filter_map(|child| child["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        };
+        Some(json!({
+            "type": "children_order",
+            "before_sibling_ids": child_ids(&child_order_before),
+            "after_sibling_ids": child_ids(&child_order_after),
+            "before": {
+                "parent_id": parts[4],
+                "child_ids": child_ids(&child_order_before),
+                "child_order": child_order_before,
+            },
+            "after": {
+                "parent_id": parts[4],
+                "child_ids": child_ids(&child_order_after),
+                "child_order": child_order_after,
+            },
         }))
     } else if collection == "relations" {
         Some(json!({
@@ -5947,6 +6051,21 @@ fn reparent_has_sibling_snapshots(change: &Value) -> bool {
             })
 }
 
+fn deleted_part_of_has_sibling_snapshot(change: &Value) -> bool {
+    let before = &change["relation_delta"]["before"];
+    if text(before, "relation_type") != "part_of" {
+        return true;
+    }
+    let source_id = text(before, "source_id");
+    before["parent_sibling_ids"]
+        .as_array()
+        .is_some_and(|siblings| {
+            siblings
+                .iter()
+                .any(|sibling| sibling.as_str() == Some(source_id))
+        })
+}
+
 fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
     let parts: Vec<_> = text(operation, "path")
         .trim_matches('/')
@@ -5965,7 +6084,10 @@ fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
             parts.get(5) == Some(&"reparent") && reparent_has_sibling_snapshots(change)
         }
         ("POST", Some("relations"), 4) => change["relation_delta"]["after"].is_object(),
-        ("DELETE", Some("relations"), 5) => change["relation_delta"]["before"].is_object(),
+        ("DELETE", Some("relations"), 5) => {
+            change["relation_delta"]["before"].is_object()
+                && deleted_part_of_has_sibling_snapshot(change)
+        }
         _ => false,
     }
 }
@@ -6632,27 +6754,40 @@ async fn reverse_preview(
                         continue;
                     }
                     let parent_id = text(old, "target_id");
-                    let parent: Item = match get::<Item>(tx, workspace_id, "items", parent_id).await
-                    {
-                        Ok(parent) if parent.archived_at.is_none() => parent,
+                    match get::<Item>(tx, workspace_id, "items", parent_id).await {
+                        Ok(parent) if parent.archived_at.is_none() => {}
                         _ => {
                             conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"parent_unavailable"}));
                             continue;
                         }
+                    }
+                    let Some(saved_siblings) = old["parent_sibling_ids"].as_array() else {
+                        conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"sibling_order_snapshot_missing"}));
+                        continue;
                     };
-                    let sibling_count = relations
+                    let expected_siblings = saved_siblings
                         .iter()
-                        .filter(|relation| {
-                            relation.relation_type == "part_of"
-                                && relation.target_id == parent.id
-                                && relation.source_id != item_id
-                        })
-                        .count();
-                    let position = old["position"].as_i64().unwrap_or(sibling_count as i64);
-                    if position < 0 || position as usize > sibling_count {
+                        .filter_map(Value::as_str)
+                        .filter(|id| *id != item_id)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    let items: Vec<Item> = list(tx, workspace_id, "items").await?;
+                    let current_siblings =
+                        ordered_part_of_siblings(&relations, &items, parent_id, None)
+                            .into_iter()
+                            .map(|relation| relation.source_id)
+                            .collect::<Vec<_>>();
+                    if current_siblings != expected_siblings {
                         conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"sibling_order_changed_after_source"}));
                         continue;
                     }
+                    let Some(position) = saved_siblings
+                        .iter()
+                        .position(|id| id.as_str() == Some(item_id))
+                    else {
+                        conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"sibling_order_snapshot_missing"}));
+                        continue;
+                    };
                     inverse.push(inverse_operation(
                         "POST",
                         format!("/v1/workspaces/{workspace_id}/items/{item_id}/reparent"),

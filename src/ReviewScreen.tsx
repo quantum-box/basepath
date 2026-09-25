@@ -146,8 +146,12 @@ function valueLabel(value: unknown): string {
 }
 
 function changesItem(change: PlanHistoryChange, itemId: string): boolean {
+  const mentionsChild = (snapshot: Record<string, unknown> | null | undefined) =>
+    Array.isArray(snapshot?.child_ids) && snapshot.child_ids.includes(itemId);
   return (
     change.id === itemId ||
+    mentionsChild(change.relation_delta?.before) ||
+    mentionsChild(change.relation_delta?.after) ||
     change.relation_delta?.before?.source_id === itemId ||
     change.relation_delta?.before?.target_id === itemId ||
     change.relation_delta?.after?.source_id === itemId ||
@@ -157,6 +161,32 @@ function changesItem(change: PlanHistoryChange, itemId: string): boolean {
 
 function comparedFields(change: PlanHistoryChange): string[] {
   const relation = change.relation_delta;
+  if (relation?.type === "children_order") {
+    const childIds = (snapshot: Record<string, unknown> | null | undefined) =>
+      Array.isArray(snapshot?.child_order)
+        ? snapshot.child_order.map((child) =>
+            child && typeof child === "object" && "id" in child
+              ? String(child.id)
+              : "",
+          )
+        : [];
+    const labels = (snapshot: Record<string, unknown> | null | undefined) =>
+      Array.isArray(snapshot?.child_order)
+        ? snapshot.child_order
+            .map((child) =>
+              child && typeof child === "object" && "title" in child
+                ? String(child.title)
+                : child && typeof child === "object" && "id" in child
+                  ? String(child.id)
+                  : "項目",
+            )
+            .join(" → ") || "（なし）"
+        : "（なし）";
+    return childIds(relation.before).join("\u001f") ===
+      childIds(relation.after).join("\u001f")
+      ? ["子項目の並びに変更なし"]
+      : [`子項目の並び: ${labels(relation.before)} → ${labels(relation.after)}`];
+  }
   if (relation?.type === "relation") {
     const describe = (value: NonNullable<typeof relation.before>) => {
       const relationType =
