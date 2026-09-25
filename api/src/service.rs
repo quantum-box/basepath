@@ -5849,9 +5849,10 @@ async fn stored_history_versions(
             continue;
         }
         let mut changes = saved_changes.clone();
+        let operation = &details["operation"];
         for (index, change) in changes.iter_mut().enumerate() {
             change["operation_index"] = json!(index);
-            change["undoable"] = json!(true);
+            change["undoable"] = json!(safely_reversible_operation(operation, change));
         }
         versions.push(json!({
             "id": row.text(0)?,
@@ -6005,7 +6006,7 @@ async fn history_compare(
                     (true, true) => "unchanged",
                 });
                 row["operation_count"] = json!(row["operation_count"].as_u64().unwrap_or(1) + 1);
-                if change.get("relation_delta").is_some() {
+                if change["relation_delta"].is_object() {
                     if row["relation_delta"].is_null() {
                         row["relation_delta"] = change["relation_delta"].clone();
                     } else {
@@ -6500,6 +6501,10 @@ async fn reverse_preview(
                             continue;
                         }
                     };
+                    if item.archived_at.is_some() {
+                        conflicts.push(json!({"operation":index,"item_id":item_id,"reason":"relation_endpoint_unavailable"}));
+                        continue;
+                    }
                     if part_of_snapshot(tx, workspace_id, item_id).await?.is_some() {
                         conflicts.push(json!({"operation":index,"item_id":item_id,"reason":"item_reparented_after_source"}));
                         continue;
