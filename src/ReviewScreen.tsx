@@ -150,6 +150,8 @@ function changesItem(change: PlanHistoryChange, itemId: string): boolean {
     Array.isArray(snapshot?.child_ids) && snapshot.child_ids.includes(itemId);
   return (
     change.id === itemId ||
+    change.before?.item_id === itemId ||
+    change.after?.item_id === itemId ||
     mentionsChild(change.relation_delta?.before) ||
     mentionsChild(change.relation_delta?.after) ||
     change.relation_delta?.before?.source_id === itemId ||
@@ -160,6 +162,28 @@ function changesItem(change: PlanHistoryChange, itemId: string): boolean {
 }
 
 function comparedFields(change: PlanHistoryChange): string[] {
+  if (change.collection === "metrics") {
+    const before = change.before ?? null;
+    const after = change.after ?? null;
+    const name = String(after?.name ?? before?.name ?? change.title ?? "指標");
+    if (!before) return [`指標を追加: ${name}`];
+    if (!after) return [`指標を削除: ${name}`];
+    const labels: Record<string, string> = {
+      name: "指標名",
+      unit: "単位",
+      baseline: "基準値",
+      target: "目標値",
+      direction: "評価方向",
+      period_start: "開始日",
+      period_end: "終了日",
+    };
+    const changed = Object.keys(labels)
+      .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
+      .map((field) =>
+        `${labels[field]}: ${valueLabel(before[field])} → ${valueLabel(after[field])}`,
+      );
+    return changed.length ? changed : ["指標の内容に変更なし"];
+  }
   const relation = change.relation_delta;
   if (relation?.type === "children_order") {
     const childIds = (snapshot: Record<string, unknown> | null | undefined) =>
