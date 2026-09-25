@@ -4467,7 +4467,14 @@ async fn plan_history_state(
             } else {
                 get::<Value>(tx, workspace_id, "items", parts[4]).await?
             };
-            json!({"item": snapshot})
+            let mut metric_ids = list::<Metric>(tx, workspace_id, "metrics")
+                .await?
+                .into_iter()
+                .filter(|metric| metric.item_id == parts[4])
+                .map(|metric| metric.id)
+                .collect::<Vec<_>>();
+            metric_ids.sort();
+            json!({"item": snapshot, "metric_ids": metric_ids})
         }
         ("POST", Some("items"), 4) => {
             if !after {
@@ -4875,8 +4882,15 @@ fn plan_history_compound_changes(
                 "POST",
                 format!("/v1/workspaces/{workspace_id}/items"),
                 Value::Object(body),
-                json!({"item": Value::Null}),
-                json!({"item": new.cloned().unwrap_or(Value::Null), "parent": parent.unwrap_or(Value::Null)}),
+                json!({
+                    "item": Value::Null,
+                    "metric_ids": compound_item_metric_ids(&before["metrics"], &item_id),
+                }),
+                json!({
+                    "item": new.cloned().unwrap_or(Value::Null),
+                    "parent": parent.unwrap_or(Value::Null),
+                    "metric_ids": compound_item_metric_ids(&after["metrics"], &item_id),
+                }),
             )
         } else {
             let body = old
@@ -4887,8 +4901,15 @@ fn plan_history_compound_changes(
                 "PATCH",
                 format!("/v1/workspaces/{workspace_id}/items/{item_id}"),
                 body,
-                json!({"item": old.cloned().unwrap_or(Value::Null)}),
-                json!({"item": new.cloned().unwrap_or(Value::Null), "parent": Value::Null}),
+                json!({
+                    "item": old.cloned().unwrap_or(Value::Null),
+                    "metric_ids": compound_item_metric_ids(&before["metrics"], &item_id),
+                }),
+                json!({
+                    "item": new.cloned().unwrap_or(Value::Null),
+                    "parent": Value::Null,
+                    "metric_ids": compound_item_metric_ids(&after["metrics"], &item_id),
+                }),
             )
         };
         push_compound_history_change(
@@ -5087,6 +5108,17 @@ fn plan_history_change(
     } else {
         None
     };
+    let metric_ids = if item_path
+        && before_state["metric_ids"].is_array()
+        && after_state["metric_ids"].is_array()
+    {
+        json!({
+            "before": before_state["metric_ids"],
+            "after": after_state["metric_ids"],
+        })
+    } else {
+        Value::Null
+    };
     let title = item_after
         .get("title")
         .and_then(Value::as_str)
@@ -5131,8 +5163,21 @@ fn plan_history_change(
         },
         "before": item_before,
         "after": item_after,
+        "metric_ids": metric_ids,
         "relation_delta": relation_delta,
     })
+}
+
+fn compound_item_metric_ids(metrics: &Value, item_id: &str) -> Vec<String> {
+    let mut ids = metrics
+        .as_object()
+        .into_iter()
+        .flat_map(|rows| rows.values())
+        .filter(|metric| text(metric, "item_id") == item_id)
+        .filter_map(|metric| metric["id"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
 }
 
 async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
@@ -6680,6 +6725,21 @@ fn history_comparison_snapshot(value: &Value) -> Value {
     snapshot
 }
 
+fn relation_history_comparison_snapshot(value: &Value) -> Value {
+    let mut snapshot = history_comparison_snapshot(value);
+    if text(&snapshot, "relation_type") == "relates_to" {
+        let source_id = text(&snapshot, "source_id").to_owned();
+        let target_id = text(&snapshot, "target_id").to_owned();
+        if source_id > target_id {
+            if let Some(relation) = snapshot.as_object_mut() {
+                relation.insert("source_id".into(), json!(target_id));
+                relation.insert("target_id".into(), json!(source_id));
+            }
+        }
+    }
+    snapshot
+}
+
 fn relation_change_identity(change: &Value) -> Option<(String, String, String)> {
     if text(&change["relation_delta"], "type") != "relation" {
         return None;
@@ -6710,12 +6770,12 @@ fn history_comparison_is_net_zero(change: &Value) -> bool {
     if text(change, "collection") == "relations"
         && text(&change["relation_delta"], "type") == "relation"
     {
-        return history_comparison_snapshot(&change["relation_delta"]["before"])
-            == history_comparison_snapshot(&change["relation_delta"]["after"]);
+        return relation_history_comparison_snapshot(&change["relation_delta"]["before"])
+            == relation_history_comparison_snapshot(&change["relation_delta"]["after"]);
     }
     history_comparison_snapshot(&change["before"]) == history_comparison_snapshot(&change["after"])
-        && history_comparison_snapshot(&change["relation_delta"]["before"])
-            == history_comparison_snapshot(&change["relation_delta"]["after"])
+        && relation_history_comparison_snapshot(&change["relation_delta"]["before"])
+            == relation_history_comparison_snapshot(&change["relation_delta"]["after"])
 }
 
 async fn history_versions(tx: &mut Tx, actor: &Actor, workspace_id: &str) -> Result<Value> {
@@ -7059,6 +7119,7 @@ async fn item_has_later_activity(
     workspace_id: &str,
     item_id: &str,
     source_applied_at: &str,
+    source_metric_ids: Option<&[Value]>,
 ) -> Result<bool> {
     if source_applied_at.is_empty() {
         return Ok(true);
@@ -7082,13 +7143,24 @@ async fn item_has_later_activity(
     {
         return Ok(true);
     }
+    let known_metric_ids = source_metric_ids.map(|ids| {
+        ids.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<HashSet<_>>()
+    });
     if list::<Metric>(tx, workspace_id, "metrics")
         .await?
         .iter()
-        .any(|metric| metric.item_id == item_id)
+        .any(|metric| {
+            metric.item_id == item_id
+                && known_metric_ids
+                    .as_ref()
+                    .is_none_or(|ids| !ids.contains(&metric.id))
+        })
     {
-        // Metrics do not carry creation timestamps. Treat an attached metric
-        // as a conflict rather than risk hiding its observations.
+        // Metrics do not carry creation timestamps. Compare their IDs against
+        // the source snapshot, preserving compatibility with older history.
         return Ok(true);
     }
     Ok(list::<Relation>(tx, workspace_id, "relations")
@@ -7449,6 +7521,7 @@ async fn reverse_preview(
                         workspace_id,
                         target_id,
                         text(&original, "applied_at"),
+                        change["metric_ids"]["after"].as_array().map(Vec::as_slice),
                     )
                     .await?
                     {
