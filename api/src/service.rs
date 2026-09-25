@@ -2277,6 +2277,14 @@ impl Service {
                 response["preview_graph"] = graph_snapshot(&mut tx, w, 200).await?;
                 response["workspaces"] = json!(memberships(&mut tx, actor).await?);
             }
+            if parts.get(3) == Some(&"changesets") {
+                if response["changeset"].is_object() {
+                    mask_unavailable_change_source(&mut tx, actor, w, &mut response["changeset"])
+                        .await?;
+                } else if response["id"].is_string() || response["conversation_id"].is_string() {
+                    mask_unavailable_change_source(&mut tx, actor, w, &mut response).await?;
+                }
+            }
             return Ok(response);
         }
         let history_before =
@@ -5864,6 +5872,7 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
 /// the same trail whichever one the person went through.
 async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>> {
     let ops: Vec<Operation> = serde_json::from_value(c["operations"].clone())?;
+    let workspace_id = text(c, "workspace_id").to_owned();
     let human = Actor {
         id: actor.id.clone(),
         tenant: actor.tenant.clone(),
@@ -5871,8 +5880,16 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
         connection: actor.connection.clone(),
     };
     let mut output = vec![];
-    for op in ops {
-        output.push(dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?);
+    for (index, op) in ops.into_iter().enumerate() {
+        let result = dispatch(tx, &human, &op.method, &op.path, &HashMap::new(), &op.body).await?;
+        if let Some(change) = c
+            .get_mut("changes")
+            .and_then(Value::as_array_mut)
+            .and_then(|changes| changes.get_mut(index))
+        {
+            rebind_committed_change(tx, &workspace_id, &op, &result, change).await?;
+        }
+        output.push(result);
     }
     c["status"] = json!("applied");
     c["applied_at"] = json!(now());
@@ -5880,6 +5897,60 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
     c["applied_by_connection"] = json!(actor.connection);
     c["applied_version"] = json!(workspace_version(tx, text(c, "workspace_id")).await?);
     Ok(output)
+}
+
+async fn rebind_committed_change(
+    tx: &mut Tx,
+    workspace_id: &str,
+    operation: &Operation,
+    result: &Value,
+    change: &mut Value,
+) -> Result<()> {
+    let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
+    let actual_id = text(result, "id");
+    if actual_id.is_empty() {
+        return Ok(());
+    }
+    match (
+        operation.method.as_str(),
+        parts.get(3).copied(),
+        parts.len(),
+    ) {
+        ("POST", Some("items"), 4) => {
+            let preview_id = text(change, "id").to_owned();
+            let item: Item = get(tx, workspace_id, "items", actual_id).await?;
+            let snapshot = value(&item)?;
+            change["id"] = json!(actual_id);
+            change["after"] = snapshot.clone();
+            if preview_id == actual_id {
+                // A Field-reference duplicate returns the existing row. It
+                // was not created by this operation and must not acquire an
+                // undo action that could archive somebody else's item.
+                change["before"] = snapshot.clone();
+                change["effect"] = json!("unchanged");
+            }
+            if change["relation_delta"]["type"] == "part_of" {
+                let parent = part_of_snapshot(tx, workspace_id, actual_id)
+                    .await?
+                    .unwrap_or(Value::Null);
+                change["relation_delta"]["after"] = parent.clone();
+                if preview_id == actual_id {
+                    change["relation_delta"]["before"] = parent;
+                }
+            }
+        }
+        ("POST", Some("relations"), 4) => {
+            change["id"] = json!(actual_id);
+            if change["after"].is_object() {
+                change["after"]["relation_id"] = json!(actual_id);
+            }
+            if change["relation_delta"]["after"].is_object() {
+                change["relation_delta"]["after"]["relation_id"] = json!(actual_id);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 /// Keep source material visible only while its workspace-bound conversation
 /// link is active and the person reading it is the person who linked it.
@@ -6303,6 +6374,55 @@ async fn item_has_activity(tx: &mut Tx, workspace_id: &str, item_id: &str) -> Re
         .any(|metric| metric.item_id == item_id))
 }
 
+async fn item_has_later_activity(
+    tx: &mut Tx,
+    workspace_id: &str,
+    item_id: &str,
+    source_applied_at: &str,
+) -> Result<bool> {
+    if source_applied_at.is_empty() {
+        return Ok(true);
+    }
+    if list::<Checkin>(tx, workspace_id, "checkins")
+        .await?
+        .iter()
+        .any(|checkin| {
+            checkin.item_id == item_id && checkin.created_at.as_str() > source_applied_at
+        })
+    {
+        return Ok(true);
+    }
+    if list::<Record>(tx, workspace_id, "records")
+        .await?
+        .iter()
+        .any(|record| {
+            record.item_ids.iter().any(|id| id == item_id)
+                && record.created_at.as_str() > source_applied_at
+        })
+    {
+        return Ok(true);
+    }
+    if list::<Metric>(tx, workspace_id, "metrics")
+        .await?
+        .iter()
+        .any(|metric| metric.item_id == item_id)
+    {
+        // Metrics do not carry creation timestamps. Treat an attached metric
+        // as a conflict rather than risk hiding its observations.
+        return Ok(true);
+    }
+    Ok(list::<Relation>(tx, workspace_id, "relations")
+        .await?
+        .iter()
+        .any(|relation| {
+            (relation.source_id == item_id || relation.target_id == item_id)
+                && relation
+                    .created_at
+                    .as_deref()
+                    .is_none_or(|created_at| created_at > source_applied_at)
+        }))
+}
+
 fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
     relation.source_id == text(expected, "source_id")
         && relation.target_id == text(expected, "target_id")
@@ -6565,6 +6685,27 @@ async fn reverse_preview(
                 if mismatch {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"field_changed_after_source"}));
                     continue;
+                }
+                let restoring_archived_item =
+                    requested.get("archived_at").is_some_and(Value::is_null)
+                        && !before["archived_at"].is_null()
+                        && after["archived_at"].is_null();
+                if restoring_archived_item {
+                    if !history_item_matches(&current_value, after) {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"restored_item_changed_after_source"}));
+                        continue;
+                    }
+                    if item_has_later_activity(
+                        tx,
+                        workspace_id,
+                        target_id,
+                        text(&original, "applied_at"),
+                    )
+                    .await?
+                    {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"restored_item_has_later_work"}));
+                        continue;
+                    }
                 }
                 if !inverse_fields.is_empty() {
                     reverse_body["fields"] = Value::Object(inverse_fields);
