@@ -5999,6 +5999,7 @@ async fn history_compare(
             }
         }
     }
+    merged.retain(|change| change["effect"] != "unchanged");
     Ok(json!({
         "workspace_id": workspace_id,
         "from": {"id": versions[from_index]["id"], "title": versions[from_index]["title"], "applied_at": versions[from_index]["applied_at"]},

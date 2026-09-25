@@ -369,9 +369,13 @@ function History({
           operation_indexes: [undoTarget.operationIndex],
         },
       );
-      window.location.assign(
+      const approvalUrl = new URL(
         "/changes/" + encodeURIComponent(workspaceId) + "/" + encodeURIComponent(proposal.id),
+        window.location.origin,
       );
+      const tenantId = new URLSearchParams(window.location.search).get("tenant_id");
+      if (tenantId) approvalUrl.searchParams.set("tenant_id", tenantId);
+      window.location.assign(approvalUrl.pathname + approvalUrl.search);
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -634,7 +638,13 @@ function History({
             <div className="review-checkin-form">
               <label>
                 <span>比較元</span>
-                <select value={compareFrom} onChange={(event) => setCompareFrom(event.target.value)}>
+                <select
+                  value={compareFrom}
+                  onChange={(event) => {
+                    setCompareFrom(event.target.value);
+                    setComparison(null);
+                  }}
+                >
                   {itemVersions.map((version) => (
                     <option key={version.id} value={version.id}>
                       {version.title} · {version.applied_at?.slice(0, 10) ?? "日時不明"}
@@ -644,7 +654,13 @@ function History({
               </label>
               <label>
                 <span>比較先</span>
-                <select value={compareTo} onChange={(event) => setCompareTo(event.target.value)}>
+                <select
+                  value={compareTo}
+                  onChange={(event) => {
+                    setCompareTo(event.target.value);
+                    setComparison(null);
+                  }}
+                >
                   {itemVersions.map((version) => (
                     <option key={version.id} value={version.id}>
                       {version.title} · {version.applied_at?.slice(0, 10) ?? "日時不明"}
