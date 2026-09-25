@@ -6598,7 +6598,8 @@ async fn reverse_preview(
                     .cloned()
                     .unwrap_or(Value::Null);
                 if parent.as_ref().is_some_and(|parent| {
-                    parent["target_id"] != expected_parent["target_id"]
+                    parent["relation_id"] != expected_parent["relation_id"]
+                        || parent["target_id"] != expected_parent["target_id"]
                         || parent["position"] != expected_parent["position"]
                         || parent["rationale"] != expected_parent["rationale"]
                 }) || (parent.is_none() && !expected_parent.is_null())
@@ -6607,10 +6608,17 @@ async fn reverse_preview(
                     continue;
                 }
                 if parent.is_some() {
+                    let relation_id = text(parent.as_ref().unwrap(), "relation_id");
+                    let Some(relation) =
+                        relations.iter().find(|relation| relation.id == relation_id)
+                    else {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"relation_id":relation_id,"reason":"relation_missing"}));
+                        continue;
+                    };
                     inverse.push(inverse_operation(
-                        "POST",
-                        format!("/v1/workspaces/{workspace_id}/items/{target_id}/reparent"),
-                        json!({"expected_version":current.version,"parent_id":null}),
+                        "DELETE",
+                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                        json!({"expected_version":relation.version}),
                     ));
                 }
                 inverse.push(inverse_operation(
@@ -6735,11 +6743,10 @@ async fn reverse_preview(
                     continue;
                 }
                 if relation.relation_type == "part_of" {
-                    let item: Item = get(tx, workspace_id, "items", &relation.source_id).await?;
                     inverse.push(inverse_operation(
-                        "POST",
-                        format!("/v1/workspaces/{workspace_id}/items/{}/reparent", item.id),
-                        json!({"expected_version":item.version,"parent_id":null}),
+                        "DELETE",
+                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                        json!({"expected_version":relation.version}),
                     ));
                 } else {
                     inverse.push(inverse_operation(
