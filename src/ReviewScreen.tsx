@@ -122,6 +122,7 @@ type PlanHistoryVersion = {
   proposed_by?: string;
   approved_by?: string;
   applied_by?: string;
+  applied_by_connection?: string;
   applied_at?: string;
   conversation_id?: string | null;
   source_status?: "available" | "unavailable" | "not_linked";
@@ -292,8 +293,16 @@ function History({
       const itemChanges = nextVersions.filter((version) =>
         version.changes.some((change) => changesItem(change, entry.id)),
       );
-      setCompareFrom((current) => current || itemChanges.at(-2)?.id || "");
-      setCompareTo((current) => current || itemChanges.at(-1)?.id || "");
+      setCompareFrom((current) =>
+        itemChanges.some((version) => version.id === current)
+          ? current
+          : itemChanges.at(-2)?.id || "",
+      );
+      setCompareTo((current) =>
+        itemChanges.some((version) => version.id === current)
+          ? current
+          : itemChanges.at(-1)?.id || "",
+      );
     } catch (failure) {
       setError(
         failure instanceof ApiError
@@ -301,6 +310,14 @@ function History({
           : "履歴を読み込めませんでした",
       );
     }
+  }, [workspaceId, entry.id]);
+
+  useEffect(() => {
+    setCompareFrom("");
+    setCompareTo("");
+    setComparison(null);
+    setUndoTarget(null);
+    setUndoReason("");
   }, [workspaceId, entry.id]);
 
   useEffect(() => {

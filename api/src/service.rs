@@ -4496,6 +4496,8 @@ fn plan_history_change(
         } else {
             parts.get(4).copied().unwrap_or_default().to_owned()
         }
+    } else if collection == "relations" && method == "POST" {
+        text(&after_state, "relation_id").to_owned()
     } else if method == "POST" {
         text(&after_state, "id").to_owned()
     } else {
@@ -6125,11 +6127,16 @@ async fn reverse_preview(
         return Err(ApiError::invalid("operation_indexesに重複があります"));
     }
     let selected_set: HashSet<usize> = selected.iter().copied().collect();
+    let current_time = now();
     let already_undone: HashSet<usize> = all
         .iter()
         .filter(|change| {
-            change["undo_of"] == json!(change_id)
-                && ["pending", "approved", "applied"].contains(&text(change, "status"))
+            if change["undo_of"] != json!(change_id) {
+                return false;
+            }
+            let status = text(change, "status");
+            ["pending", "approved", "applied"].contains(&status)
+                && (status == "applied" || text(change, "expires_at") >= current_time.as_str())
         })
         .flat_map(|change| {
             change["undo_operations"]
@@ -6188,7 +6195,7 @@ async fn reverse_preview(
         }
         match (operation.method.as_str(), collection, parts.len()) {
             ("PATCH", "items", 5) if parts[4] == target_id => {
-                let current: Item = match get(tx, workspace_id, "items", &target_id).await {
+                let current: Item = match get(tx, workspace_id, "items", target_id).await {
                     Ok(item) => item,
                     Err(_) => {
                         conflicts.push(
@@ -6265,7 +6272,7 @@ async fn reverse_preview(
                 ));
             }
             ("POST", "items", 4) if change["effect"] == "created" => {
-                let current: Item = match get(tx, workspace_id, "items", &target_id).await {
+                let current: Item = match get(tx, workspace_id, "items", target_id).await {
                     Ok(item) => item,
                     Err(_) => {
                         conflicts.push(
@@ -6293,7 +6300,7 @@ async fn reverse_preview(
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_children"}));
                     continue;
                 }
-                let parent = part_of_snapshot(tx, workspace_id, &target_id).await?;
+                let parent = part_of_snapshot(tx, workspace_id, target_id).await?;
                 let expected_parent = change["relation_delta"]
                     .get("after")
                     .cloned()
@@ -6321,7 +6328,7 @@ async fn reverse_preview(
                 ));
             }
             ("POST", "items", 6) if parts[5] == "reparent" && parts[4] == target_id => {
-                let current_item: Item = match get(tx, workspace_id, "items", &target_id).await {
+                let current_item: Item = match get(tx, workspace_id, "items", target_id).await {
                     Ok(item) => item,
                     Err(_) => {
                         conflicts.push(
@@ -6330,7 +6337,7 @@ async fn reverse_preview(
                         continue;
                     }
                 };
-                let current_parent = part_of_snapshot(tx, workspace_id, &target_id).await?;
+                let current_parent = part_of_snapshot(tx, workspace_id, target_id).await?;
                 let expected_parent = change["relation_delta"]
                     .get("after")
                     .cloned()
