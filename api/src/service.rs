@@ -6745,11 +6745,13 @@ async fn stored_history_versions(
         .map(|item| (item.id.clone(), item))
         .collect();
     let workspace_role = role(tx, workspace_id, &actor.id).await?.unwrap_or_default();
-    let mut versions: Vec<Value> = list::<Value>(tx, workspace_id, "changesets")
-        .await?
-        .into_iter()
+    let all_changesets: Vec<Value> = list::<Value>(tx, workspace_id, "changesets").await?;
+    let mut versions: Vec<Value> = all_changesets
+        .iter()
         .filter(|change| change["status"] == "applied")
+        .cloned()
         .collect();
+    let current_time = now();
     for version in &mut versions {
         version["kind"] = json!("changeset");
         mask_unavailable_change_source(tx, actor, workspace_id, version).await?;
@@ -6757,6 +6759,12 @@ async fn stored_history_versions(
             .as_array()
             .cloned()
             .unwrap_or_default();
+        let active_undo = active_undo_operations(
+            &all_changesets,
+            text(version, "id"),
+            operations.len(),
+            current_time.as_str(),
+        );
         let mut any_undoable = false;
         if let Some(changes) = version["changes"].as_array_mut() {
             for (index, change) in changes.iter_mut().enumerate() {
@@ -6771,6 +6779,7 @@ async fn stored_history_versions(
                             &workspace_role,
                             &current_items,
                         )
+                        && !active_undo.contains(&index)
                 });
                 any_undoable |= undoable;
                 change["undoable"] = json!(undoable);
@@ -6802,6 +6811,13 @@ async fn stored_history_versions(
             .as_array()
             .cloned()
             .unwrap_or_else(|| vec![details["operation"].clone()]);
+        let change_id = row.text(0)?;
+        let active_undo = active_undo_operations(
+            &all_changesets,
+            &change_id,
+            operations.len(),
+            current_time.as_str(),
+        );
         let mut any_undoable = false;
         for (index, change) in changes.iter_mut().enumerate() {
             change["operation_index"] = json!(index);
@@ -6814,6 +6830,7 @@ async fn stored_history_versions(
                         &workspace_role,
                         &current_items,
                     )
+                    && !active_undo.contains(&index)
             });
             any_undoable |= undoable;
             change["undoable"] = json!(undoable);
@@ -7050,6 +7067,12 @@ fn history_comparison_is_net_zero(change: &Value) -> bool {
     {
         return relation_history_comparison_snapshot(&change["relation_delta"]["before"])
             == relation_history_comparison_snapshot(&change["relation_delta"]["after"]);
+    }
+    if text(&change["relation_delta"], "type") == "children_order" {
+        return change["relation_delta"]["before"]["child_ids"]
+            .as_array()
+            .zip(change["relation_delta"]["after"]["child_ids"].as_array())
+            .is_some_and(|(before, after)| before == after);
     }
     history_comparison_snapshot(&change["before"]) == history_comparison_snapshot(&change["after"])
         && relation_history_comparison_snapshot(&change["relation_delta"]["before"])
