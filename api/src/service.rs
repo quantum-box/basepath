@@ -6034,26 +6034,32 @@ fn item_patch_reopens_completed_action(body: &Value, before: &Value) -> bool {
 
 fn reparent_has_sibling_snapshots(change: &Value) -> bool {
     let before = &change["relation_delta"]["before"];
-    if before.is_null() {
-        return true;
-    }
+    let after = &change["relation_delta"]["after"];
     let item_id = text(change, "id");
     let before_siblings = change["relation_delta"]["before_sibling_ids"].as_array();
-    if !before_siblings.is_some_and(|siblings| {
-        siblings
-            .iter()
-            .any(|sibling| sibling.as_str() == Some(item_id))
-    }) {
+    if !before.is_null()
+        && !before_siblings.is_some_and(|siblings| {
+            siblings
+                .iter()
+                .any(|sibling| sibling.as_str() == Some(item_id))
+        })
+    {
         return false;
     }
-    text(before, "target_id") != text(&change["relation_delta"]["after"], "target_id")
-        || change["relation_delta"]["after_sibling_ids"]
-            .as_array()
-            .is_some_and(|siblings| {
-                siblings
-                    .iter()
-                    .any(|sibling| sibling.as_str() == Some(item_id))
-            })
+    let after_siblings = change["relation_delta"]["after_sibling_ids"].as_array();
+    if !after.is_null()
+        && !after_siblings.is_some_and(|siblings| {
+            siblings
+                .iter()
+                .any(|sibling| sibling.as_str() == Some(item_id))
+        })
+    {
+        return false;
+    }
+    before.is_null()
+        || after.is_null()
+        || text(before, "target_id") != text(after, "target_id")
+        || before_siblings != after_siblings
 }
 
 fn deleted_part_of_has_sibling_snapshot(change: &Value) -> bool {
@@ -6184,7 +6190,12 @@ async fn history_compare(
             if collection.is_empty() || id.is_empty() {
                 continue;
             }
-            let key = format!("{collection}:{id}");
+            let dimension = if text(&change["relation_delta"], "type") == "children_order" {
+                ":children_order"
+            } else {
+                ""
+            };
+            let key = format!("{collection}:{id}{dimension}");
             if let Some(index) = positions.get(&key).copied() {
                 let row = &mut merged[index];
                 row["after"] = change.get("after").cloned().unwrap_or(Value::Null);
@@ -6648,12 +6659,14 @@ async fn reverse_preview(
                     .unwrap_or(Value::Null);
                 if current_parent.as_ref().map(|parent| {
                     (
+                        parent["relation_id"].clone(),
                         parent["target_id"].clone(),
                         parent["position"].clone(),
                         parent["rationale"].clone(),
                     )
                 }) != expected_parent.as_object().map(|parent| {
                     (
+                        parent.get("relation_id").cloned().unwrap_or(Value::Null),
                         parent.get("target_id").cloned().unwrap_or(Value::Null),
                         parent.get("position").cloned().unwrap_or(Value::Null),
                         parent.get("rationale").cloned().unwrap_or(Value::Null),
@@ -6661,6 +6674,35 @@ async fn reverse_preview(
                 }) {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"parent_changed_after_source"}));
                     continue;
+                }
+                if !expected_parent.is_null() {
+                    let current_parent_id = text(&expected_parent, "target_id");
+                    let Some(saved_siblings) =
+                        change["relation_delta"]["after_sibling_ids"].as_array()
+                    else {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":current_parent_id,"reason":"sibling_order_snapshot_missing"}));
+                        continue;
+                    };
+                    let expected_siblings = saved_siblings
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    if !expected_siblings.iter().any(|id| id == target_id) {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":current_parent_id,"reason":"sibling_order_snapshot_missing"}));
+                        continue;
+                    }
+                    let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+                    let items: Vec<Item> = list(tx, workspace_id, "items").await?;
+                    let current_siblings =
+                        ordered_part_of_siblings(&relations, &items, current_parent_id, None)
+                            .into_iter()
+                            .map(|relation| relation.source_id)
+                            .collect::<Vec<_>>();
+                    if current_siblings != expected_siblings {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":current_parent_id,"reason":"current_parent_siblings_changed_after_source"}));
+                        continue;
+                    }
                 }
                 let before = change["relation_delta"]
                     .get("before")
