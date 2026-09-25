@@ -4543,6 +4543,13 @@ async fn plan_history_state(
                     .ok_or_else(ApiError::missing)?
             }
         }
+        ("POST", Some("metrics"), 4) => {
+            if after {
+                result.cloned().ok_or_else(ApiError::missing)?
+            } else {
+                Value::Null
+            }
+        }
         _ => return Ok(None),
     };
     Ok(Some(value))
@@ -5084,6 +5091,8 @@ fn plan_history_change(
         .get("title")
         .and_then(Value::as_str)
         .or_else(|| item_before.get("title").and_then(Value::as_str))
+        .or_else(|| item_after.get("name").and_then(Value::as_str))
+        .or_else(|| item_before.get("name").and_then(Value::as_str))
         .map(str::to_owned)
         .unwrap_or_else(|| {
             let relation = item_after.as_object().or(item_before.as_object());
@@ -6920,19 +6929,40 @@ fn active_undo_operations(
                 continue;
             }
             let parent_indexes = undo_indexes(change, parent_map.len());
-            let root_indexes = parent_indexes
+            let selected_parent_indexes = parent_indexes.iter().copied().collect::<HashSet<_>>();
+            let mut parent_groups = HashMap::<usize, Vec<usize>>::new();
+            for (index, root_index) in parent_map.iter().enumerate() {
+                if let Some(root_index) = root_index {
+                    parent_groups.entry(*root_index).or_default().push(index);
+                }
+            }
+            let affected_sources = parent_groups
                 .iter()
-                .filter_map(|index| parent_map.get(*index).copied().flatten())
-                .collect::<Vec<_>>();
+                .filter(|(_, indexes)| {
+                    indexes
+                        .iter()
+                        .any(|index| selected_parent_indexes.contains(index))
+                })
+                .map(|(root_index, _)| *root_index)
+                .collect::<HashSet<_>>();
+            let completed_sources = parent_groups
+                .iter()
+                .filter(|(_, indexes)| {
+                    indexes
+                        .iter()
+                        .all(|index| selected_parent_indexes.contains(index))
+                })
+                .map(|(root_index, _)| *root_index)
+                .collect::<HashSet<_>>();
             let status = text(change, "status");
             if status == "applied" {
                 applied_events.push((
                     text(change, "applied_at").to_owned(),
                     text(change, "id").to_owned(),
-                    root_indexes,
+                    completed_sources.iter().copied().collect(),
                 ));
             } else {
-                reserved.extend(root_indexes);
+                reserved.extend(affected_sources);
             }
 
             // Each stored entry is the parent operation index corresponding
@@ -6948,6 +6978,7 @@ fn active_undo_operations(
                             .as_u64()
                             .and_then(|index| usize::try_from(index).ok())
                             .and_then(|index| parent_map.get(index).copied().flatten())
+                            .filter(|root_index| completed_sources.contains(root_index))
                     })
                     .collect::<Vec<_>>()
             } else {
@@ -6959,7 +6990,13 @@ fn active_undo_operations(
                 if indexes.len() == operation_count {
                     indexes
                         .iter()
-                        .map(|index| parent_map.get(*index).copied().flatten())
+                        .map(|index| {
+                            parent_map
+                                .get(*index)
+                                .copied()
+                                .flatten()
+                                .filter(|root_index| completed_sources.contains(root_index))
+                        })
                         .collect()
                 } else {
                     vec![None; operation_count]

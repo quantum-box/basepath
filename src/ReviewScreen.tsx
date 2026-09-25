@@ -222,11 +222,30 @@ function comparedFields(change: PlanHistoryChange): string[] {
     if (!relation.before && relation.after) return ["関連を追加: " + describe(relation.after)];
     if (relation.before && !relation.after) return ["関連を解除: " + describe(relation.before)];
     if (relation.before && relation.after) {
-      const before = describe(relation.before);
-      const after = describe(relation.after);
-      return before === after
-        ? ["関連の内容に変更なし"]
-        : ["関連: " + before + " → " + after];
+      const before = relation.before;
+      const after = relation.after;
+      const changed: string[] = [];
+      const beforeDescription = describe(before);
+      const afterDescription = describe(after);
+      if (beforeDescription !== afterDescription) {
+        changed.push("関連: " + beforeDescription + " → " + afterDescription);
+      }
+      if ((before.rationale ?? "") !== (after.rationale ?? "")) {
+        changed.push(
+          "理由: " + valueLabel(before.rationale) + " → " + valueLabel(after.rationale),
+        );
+      }
+      const beforeType = before.relation_type ?? before.type;
+      const afterType = after.relation_type ?? after.type;
+      if (
+        (beforeType === "part_of" || afterType === "part_of") &&
+        JSON.stringify(before.position ?? null) !== JSON.stringify(after.position ?? null)
+      ) {
+        changed.push(
+          "順序: " + valueLabel(before.position) + " → " + valueLabel(after.position),
+        );
+      }
+      return changed.length ? changed : ["関連の内容に変更なし"];
     }
   }
   const before = change.before ?? null;
