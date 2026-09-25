@@ -4467,7 +4467,17 @@ async fn plan_history_state(
         ("POST", Some("items"), 6) if parts[5] == "reparent" => {
             let item: Value = get(tx, workspace_id, "items", parts[4]).await?;
             let parent = part_of_snapshot(tx, workspace_id, parts[4]).await?;
-            json!({"item": item, "parent": parent})
+            let parent_sibling_ids = match parent.as_ref() {
+                Some(parent) => {
+                    part_of_sibling_ids(tx, workspace_id, text(parent, "target_id")).await?
+                }
+                None => Vec::new(),
+            };
+            json!({
+                "item": item,
+                "parent": parent,
+                "parent_sibling_ids": parent_sibling_ids,
+            })
         }
         ("POST", Some("relations"), 4) => {
             if after {
@@ -4537,6 +4547,8 @@ fn plan_history_change(
             "type": "part_of",
             "before": before_state.get("parent").cloned().unwrap_or(Value::Null),
             "after": after_state.get("parent").cloned().unwrap_or(Value::Null),
+            "before_sibling_ids": before_state.get("parent_sibling_ids").cloned().unwrap_or(json!([])),
+            "after_sibling_ids": after_state.get("parent_sibling_ids").cloned().unwrap_or(json!([])),
         }))
     } else if created_item && body["parent_id"].is_string() {
         Some(json!({
@@ -5439,6 +5451,21 @@ fn ordered_part_of_siblings(
     siblings
 }
 
+async fn part_of_sibling_ids(
+    tx: &mut Tx,
+    workspace_id: &str,
+    parent_id: &str,
+) -> Result<Vec<String>> {
+    let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+    let items: Vec<Item> = list(tx, workspace_id, "items").await?;
+    Ok(
+        ordered_part_of_siblings(&relations, &items, parent_id, None)
+            .into_iter()
+            .map(|relation| relation.source_id)
+            .collect(),
+    )
+}
+
 async fn part_of_snapshot(tx: &mut Tx, w: &str, item_id: &str) -> Result<Option<Value>> {
     let relations: Vec<Relation> = list(tx, w, "relations").await?;
     let Some(relation) = relations
@@ -5542,6 +5569,10 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         Some(item_id) => part_of_snapshot(tx, w, item_id).await?,
         None => None,
     };
+    let parent_before_sibling_ids = match parent_before.as_ref() {
+        Some(parent) => part_of_sibling_ids(tx, w, text(parent, "target_id")).await?,
+        None => Vec::new(),
+    };
     let relation_before = if op.method == "DELETE" && collection == "relations" {
         relation_snapshot(tx, w, parts.get(4).copied().unwrap_or("")).await?
     } else {
@@ -5613,6 +5644,10 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
         },
         None => None,
     };
+    let parent_after_sibling_ids = match parent_after.as_ref() {
+        Some(parent) => part_of_sibling_ids(tx, w, text(parent, "target_id")).await?,
+        None => Vec::new(),
+    };
     let relation_after = if op.method == "POST" && collection == "relations" {
         match result["id"].as_str() {
             Some(relation_id) => relation_snapshot(tx, w, relation_id).await?,
@@ -5626,6 +5661,8 @@ async fn describe_operation(tx: &mut Tx, human: &Actor, w: &str, op: &Operation)
             "type": "part_of",
             "before": parent_before,
             "after": parent_after,
+            "before_sibling_ids": parent_before_sibling_ids,
+            "after_sibling_ids": parent_after_sibling_ids,
         }))
     } else if collection == "relations" {
         Some(json!({
@@ -5886,6 +5923,30 @@ fn item_patch_reopens_completed_action(body: &Value, before: &Value) -> bool {
         && body["state"].as_str().is_some_and(|state| state != "done")
 }
 
+fn reparent_has_sibling_snapshots(change: &Value) -> bool {
+    let before = &change["relation_delta"]["before"];
+    if before.is_null() {
+        return true;
+    }
+    let item_id = text(change, "id");
+    let before_siblings = change["relation_delta"]["before_sibling_ids"].as_array();
+    if !before_siblings.is_some_and(|siblings| {
+        siblings
+            .iter()
+            .any(|sibling| sibling.as_str() == Some(item_id))
+    }) {
+        return false;
+    }
+    text(before, "target_id") != text(&change["relation_delta"]["after"], "target_id")
+        || change["relation_delta"]["after_sibling_ids"]
+            .as_array()
+            .is_some_and(|siblings| {
+                siblings
+                    .iter()
+                    .any(|sibling| sibling.as_str() == Some(item_id))
+            })
+}
+
 fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
     let parts: Vec<_> = text(operation, "path")
         .trim_matches('/')
@@ -5900,7 +5961,9 @@ fn safely_reversible_operation(operation: &Value, change: &Value) -> bool {
             !item_patch_reopens_completed_action(&operation["body"], &change["before"])
         }
         ("POST", Some("items"), 4) => change["effect"] == "created",
-        ("POST", Some("items"), 6) => parts.get(5) == Some(&"reparent"),
+        ("POST", Some("items"), 6) => {
+            parts.get(5) == Some(&"reparent") && reparent_has_sibling_snapshots(change)
+        }
         ("POST", Some("relations"), 4) => change["relation_delta"]["after"].is_object(),
         ("DELETE", Some("relations"), 5) => change["relation_delta"]["before"].is_object(),
         _ => false,
@@ -6012,6 +6075,10 @@ async fn history_compare(
                     } else {
                         row["relation_delta"]["after"] = change["relation_delta"]
                             .get("after")
+                            .cloned()
+                            .unwrap_or(Value::Null);
+                        row["relation_delta"]["after_sibling_ids"] = change["relation_delta"]
+                            .get("after_sibling_ids")
                             .cloned()
                             .unwrap_or(Value::Null);
                     }
@@ -6410,6 +6477,10 @@ async fn reverse_preview(
                         continue;
                     }
                 };
+                if current_item.archived_at.is_some() {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"reparent_endpoint_unavailable"}));
+                    continue;
+                }
                 let current_parent = part_of_snapshot(tx, workspace_id, target_id).await?;
                 let expected_parent = change["relation_delta"]
                     .get("after")
@@ -6435,13 +6506,64 @@ async fn reverse_preview(
                     .get("before")
                     .cloned()
                     .unwrap_or(Value::Null);
+                let restore_position = if before.is_null() {
+                    Value::Null
+                } else {
+                    let former_parent_id = text(&before, "target_id");
+                    match get::<Item>(tx, workspace_id, "items", former_parent_id).await {
+                        Ok(parent) if parent.archived_at.is_none() => {}
+                        _ => {
+                            conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":former_parent_id,"reason":"reparent_endpoint_unavailable"}));
+                            continue;
+                        }
+                    }
+                    let same_parent = former_parent_id == text(&expected_parent, "target_id");
+                    let saved_siblings = if same_parent {
+                        change["relation_delta"]["after_sibling_ids"].as_array()
+                    } else {
+                        change["relation_delta"]["before_sibling_ids"].as_array()
+                    };
+                    let Some(saved_siblings) = saved_siblings else {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":former_parent_id,"reason":"sibling_order_snapshot_missing"}));
+                        continue;
+                    };
+                    let expected_siblings = saved_siblings
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|id| same_parent || *id != target_id)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+                    let items: Vec<Item> = list(tx, workspace_id, "items").await?;
+                    let current_siblings =
+                        ordered_part_of_siblings(&relations, &items, former_parent_id, None)
+                            .into_iter()
+                            .map(|relation| relation.source_id)
+                            .collect::<Vec<_>>();
+                    if current_siblings != expected_siblings {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":former_parent_id,"reason":"former_parent_siblings_changed_after_source"}));
+                        continue;
+                    }
+                    let Some(position) = change["relation_delta"]["before_sibling_ids"]
+                        .as_array()
+                        .and_then(|siblings| {
+                            siblings
+                                .iter()
+                                .position(|id| id.as_str() == Some(target_id))
+                        })
+                    else {
+                        conflicts.push(json!({"operation":index,"item_id":target_id,"parent_id":former_parent_id,"reason":"sibling_order_snapshot_missing"}));
+                        continue;
+                    };
+                    json!(position as i64)
+                };
                 inverse.push(inverse_operation(
                     "POST",
                     format!("/v1/workspaces/{workspace_id}/items/{target_id}/reparent"),
                     json!({
                         "expected_version":current_item.version,
                         "parent_id":before.get("target_id").cloned().unwrap_or(Value::Null),
-                        "position":before.get("position").cloned().unwrap_or(Value::Null),
+                        "position":restore_position,
                         "rationale":before.get("rationale").cloned().unwrap_or(json!("")),
                     }),
                 ));
