@@ -6911,6 +6911,65 @@ fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
         && expected["position"] == json!(relation.position)
 }
 
+async fn changeset_has_unselected_later_item_activity(
+    tx: &mut Tx,
+    workspace_id: &str,
+    operations: &[Operation],
+    selected: &HashSet<usize>,
+    operation_index: usize,
+    item_id: &str,
+) -> Result<bool> {
+    for (index, operation) in operations.iter().enumerate().skip(operation_index + 1) {
+        if selected.contains(&index) {
+            continue;
+        }
+        let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
+        let collection = parts.get(3).copied().unwrap_or_default();
+        let directly_references_item = match (operation.method.as_str(), collection, parts.len()) {
+            ("POST", "items", 6) if parts[5] == "checkins" => parts[4] == item_id,
+            ("PATCH", "items", 5) => {
+                parts[4] == item_id
+                    || operation.body["fields"]["next_action_id"].as_str() == Some(item_id)
+            }
+            ("POST", "items", 4) => {
+                operation.body["parent_id"].as_str() == Some(item_id)
+                    || operation.body["fields"]["next_action_id"].as_str() == Some(item_id)
+            }
+            ("POST", "items", 6) if parts[5] == "reparent" => {
+                parts[4] == item_id || operation.body["parent_id"].as_str() == Some(item_id)
+            }
+            ("POST", "items", 6) if parts[5] == "children" => {
+                parts[4] == item_id
+                    || operation.body["child_ids"]
+                        .as_array()
+                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id)))
+            }
+            ("POST", "actions", 6) => parts[4] == item_id,
+            ("POST", "relations", 4) => {
+                operation.body["source_id"].as_str() == Some(item_id)
+                    || operation.body["target_id"].as_str() == Some(item_id)
+            }
+            ("POST", "records", 4) => operation.body["item_ids"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(item_id))),
+            ("POST", "metrics", 4) => operation.body["item_id"].as_str() == Some(item_id),
+            ("POST", "observations", 4) => {
+                let metric_id = text(&operation.body, "metric_id");
+                !metric_id.is_empty()
+                    && list::<Metric>(tx, workspace_id, "metrics")
+                        .await?
+                        .iter()
+                        .any(|metric| metric.id == metric_id && metric.item_id == item_id)
+            }
+            _ => false,
+        };
+        if directly_references_item {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 async fn reverse_preview(
     tx: &mut Tx,
     actor: &Actor,
@@ -7187,9 +7246,22 @@ async fn reverse_preview(
                     requested.get("archived_at").is_some_and(Value::is_null)
                         && !before["archived_at"].is_null()
                         && after["archived_at"].is_null();
-                if restoring_archived_item {
+                let reopening_archived_item = requested
+                    .get("archived_at")
+                    .is_some_and(|archived_at| !archived_at.is_null())
+                    && before["archived_at"].is_null()
+                    && !after["archived_at"].is_null();
+                if restoring_archived_item || reopening_archived_item {
                     if !history_item_matches(&current_value, after) {
-                        conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"restored_item_changed_after_source"}));
+                        conflicts.push(json!({
+                            "operation":index,
+                            "item_id":target_id,
+                            "reason": if restoring_archived_item {
+                                "restored_item_changed_after_source"
+                            } else {
+                                "archived_item_changed_after_source"
+                            },
+                        }));
                         continue;
                     }
                     if item_has_later_activity(
@@ -7201,6 +7273,27 @@ async fn reverse_preview(
                     .await?
                     {
                         conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"restored_item_has_later_work"}));
+                        continue;
+                    }
+                    if changeset_has_unselected_later_item_activity(
+                        tx,
+                        workspace_id,
+                        &operations,
+                        &selected_set,
+                        index,
+                        target_id,
+                    )
+                    .await?
+                    {
+                        conflicts.push(json!({
+                            "operation":index,
+                            "item_id":target_id,
+                            "reason": if restoring_archived_item {
+                                "restored_item_has_later_work"
+                            } else {
+                                "archived_item_has_later_work"
+                            },
+                        }));
                         continue;
                     }
                 }
