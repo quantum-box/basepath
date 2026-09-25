@@ -6671,7 +6671,39 @@ fn history_comparison_snapshot(value: &Value) -> Value {
     snapshot
 }
 
+fn relation_change_identity(change: &Value) -> Option<(String, String, String)> {
+    if text(&change["relation_delta"], "type") != "relation" {
+        return None;
+    }
+    let relation = change["relation_delta"]["before"]
+        .as_object()
+        .map(|_| &change["relation_delta"]["before"])
+        .or_else(|| {
+            change["relation_delta"]["after"]
+                .as_object()
+                .map(|_| &change["relation_delta"]["after"])
+        })?;
+    let relation_type = text(relation, "relation_type");
+    let mut source_id = text(relation, "source_id").to_owned();
+    let mut target_id = text(relation, "target_id").to_owned();
+    if relation_type.is_empty() || source_id.is_empty() || target_id.is_empty() {
+        return None;
+    }
+    // `relates_to` is undirected, so reversing its endpoints still identifies
+    // the same edge. The other relation types preserve their direction.
+    if relation_type == "relates_to" && source_id > target_id {
+        std::mem::swap(&mut source_id, &mut target_id);
+    }
+    Some((relation_type.to_owned(), source_id, target_id))
+}
+
 fn history_comparison_is_net_zero(change: &Value) -> bool {
+    if text(change, "collection") == "relations"
+        && text(&change["relation_delta"], "type") == "relation"
+    {
+        return history_comparison_snapshot(&change["relation_delta"]["before"])
+            == history_comparison_snapshot(&change["relation_delta"]["after"]);
+    }
     history_comparison_snapshot(&change["before"]) == history_comparison_snapshot(&change["after"])
         && history_comparison_snapshot(&change["relation_delta"]["before"])
             == history_comparison_snapshot(&change["relation_delta"]["after"])
@@ -6746,7 +6778,11 @@ async fn history_compare(
             } else {
                 ""
             };
-            let key = format!("{collection}:{id}{dimension}");
+            let key = relation_change_identity(change)
+                .map(|(relation_type, source_id, target_id)| {
+                    format!("relations:{relation_type}:{source_id}:{target_id}")
+                })
+                .unwrap_or_else(|| format!("{collection}:{id}{dimension}"));
             if let Some(index) = positions.get(&key).copied() {
                 let row = &mut merged[index];
                 row["after"] = change.get("after").cloned().unwrap_or(Value::Null);
@@ -6819,6 +6855,133 @@ fn inverse_operation(method: &str, path: String, body: Value) -> Operation {
         match_rationale: None,
         interpretation: None,
     }
+}
+
+fn push_undo_operation(
+    operations: &mut Vec<Operation>,
+    source_indexes: &mut Vec<usize>,
+    source_index: usize,
+    operation: Operation,
+) {
+    operations.push(operation);
+    source_indexes.push(source_index);
+}
+
+fn undo_indexes(change: &Value, parent_operation_count: usize) -> Vec<usize> {
+    change["undo_operations"]
+        .as_array()
+        .map(|indexes| {
+            indexes
+                .iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|index| usize::try_from(index).ok())
+                .filter(|index| *index < parent_operation_count)
+                .collect()
+        })
+        .filter(|indexes: &Vec<usize>| !indexes.is_empty())
+        .unwrap_or_else(|| (0..parent_operation_count).collect())
+}
+
+fn undo_change_is_live(change: &Value, current_time: &str) -> bool {
+    match text(change, "status") {
+        "applied" => true,
+        "pending" | "approved" => text(change, "expires_at") >= current_time,
+        _ => false,
+    }
+}
+
+/// Resolves which root operation each inverse operation reverses, then walks
+/// undo-of-undo chains to determine which source operations are still undone.
+/// Applied reversals toggle the source operation back; a pending reversal
+/// reserves it until the proposal is applied or withdrawn.
+fn active_undo_operations(
+    all: &[Value],
+    source_id: &str,
+    source_operation_count: usize,
+    current_time: &str,
+) -> HashSet<usize> {
+    let mut children: HashMap<&str, Vec<&Value>> = HashMap::new();
+    for change in all {
+        if let Some(parent_id) = change["undo_of"].as_str() {
+            children.entry(parent_id).or_default().push(change);
+        }
+    }
+
+    let root_map = (0..source_operation_count)
+        .map(Some)
+        .collect::<Vec<Option<usize>>>();
+    let mut pending = vec![(source_id.to_owned(), root_map)];
+    let mut applied_events = Vec::<(String, String, Vec<usize>)>::new();
+    let mut reserved = HashSet::new();
+
+    while let Some((parent_id, parent_map)) = pending.pop() {
+        for change in children.get(parent_id.as_str()).into_iter().flatten() {
+            if !undo_change_is_live(change, current_time) {
+                continue;
+            }
+            let parent_indexes = undo_indexes(change, parent_map.len());
+            let root_indexes = parent_indexes
+                .iter()
+                .filter_map(|index| parent_map.get(*index).copied().flatten())
+                .collect::<Vec<_>>();
+            let status = text(change, "status");
+            if status == "applied" {
+                applied_events.push((
+                    text(change, "applied_at").to_owned(),
+                    text(change, "id").to_owned(),
+                    root_indexes,
+                ));
+            } else {
+                reserved.extend(root_indexes);
+            }
+
+            // Each stored entry is the parent operation index corresponding
+            // to one operation in this undo proposal. Compose it through the
+            // parent map so deeper reversals still point at the source.
+            let operation_count = change["operations"].as_array().map_or(0, Vec::len);
+            let child_map = if let Some(sources) = change["undo_operation_sources"].as_array() {
+                sources
+                    .iter()
+                    .take(operation_count)
+                    .map(|source| {
+                        source
+                            .as_u64()
+                            .and_then(|index| usize::try_from(index).ok())
+                            .and_then(|index| parent_map.get(index).copied().flatten())
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                // Compatibility for undo proposals saved before operation
+                // provenance was recorded. Earlier versions emitted one
+                // inverse per selected source operation in reverse order.
+                let mut indexes = undo_indexes(change, parent_map.len());
+                indexes.reverse();
+                if indexes.len() == operation_count {
+                    indexes
+                        .iter()
+                        .map(|index| parent_map.get(*index).copied().flatten())
+                        .collect()
+                } else {
+                    vec![None; operation_count]
+                }
+            };
+            if status == "applied" {
+                pending.push((text(change, "id").to_owned(), child_map));
+            }
+        }
+    }
+
+    applied_events.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let mut undone = HashSet::new();
+    for (_, _, indexes) in applied_events {
+        for index in indexes {
+            if !undone.insert(index) {
+                undone.remove(&index);
+            }
+        }
+    }
+    undone.extend(reserved);
+    undone
 }
 
 fn history_item_matches(current: &Value, expected: &Value) -> bool {
@@ -7080,29 +7243,8 @@ async fn reverse_preview(
     }
     let selected_set: HashSet<usize> = selected.iter().copied().collect();
     let current_time = now();
-    let already_undone: HashSet<usize> = all
-        .iter()
-        .filter(|change| {
-            if change["undo_of"] != json!(change_id) {
-                return false;
-            }
-            let status = text(change, "status");
-            ["pending", "approved", "applied"].contains(&status)
-                && (status == "applied" || text(change, "expires_at") >= current_time.as_str())
-        })
-        .flat_map(|change| {
-            change["undo_operations"]
-                .as_array()
-                .map(|indexes| {
-                    indexes
-                        .iter()
-                        .filter_map(Value::as_u64)
-                        .filter_map(|index| usize::try_from(index).ok())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| (0..operations.len()).collect())
-        })
-        .collect();
+    let already_undone =
+        active_undo_operations(&all, change_id, operations.len(), current_time.as_str());
     if selected_set
         .iter()
         .any(|index| already_undone.contains(index))
@@ -7153,6 +7295,7 @@ async fn reverse_preview(
 
     let mut conflicts = Vec::new();
     let mut inverse = Vec::new();
+    let mut undo_operation_sources = Vec::new();
     let mut seen_targets = HashSet::new();
     for index in selected.iter().rev().copied() {
         let operation = &operations[index];
@@ -7300,11 +7443,16 @@ async fn reverse_preview(
                 if !inverse_fields.is_empty() {
                     reverse_body["fields"] = Value::Object(inverse_fields);
                 }
-                inverse.push(inverse_operation(
-                    "PATCH",
-                    format!("/v1/workspaces/{workspace_id}/items/{target_id}"),
-                    reverse_body,
-                ));
+                push_undo_operation(
+                    &mut inverse,
+                    &mut undo_operation_sources,
+                    index,
+                    inverse_operation(
+                        "PATCH",
+                        format!("/v1/workspaces/{workspace_id}/items/{target_id}"),
+                        reverse_body,
+                    ),
+                );
             }
             ("POST", "items", 4) if change["effect"] == "created" => {
                 let current: Item = match get(tx, workspace_id, "items", target_id).await {
@@ -7368,17 +7516,27 @@ async fn reverse_preview(
                         conflicts.push(json!({"operation":index,"item_id":target_id,"relation_id":relation_id,"reason":"relation_missing"}));
                         continue;
                     };
-                    inverse.push(inverse_operation(
-                        "DELETE",
-                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
-                        json!({"expected_version":relation.version}),
-                    ));
+                    push_undo_operation(
+                        &mut inverse,
+                        &mut undo_operation_sources,
+                        index,
+                        inverse_operation(
+                            "DELETE",
+                            format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                            json!({"expected_version":relation.version}),
+                        ),
+                    );
                 }
-                inverse.push(inverse_operation(
-                    "PATCH",
-                    format!("/v1/workspaces/{workspace_id}/items/{target_id}"),
-                    json!({"expected_version":current.version,"archived_at":now()}),
-                ));
+                push_undo_operation(
+                    &mut inverse,
+                    &mut undo_operation_sources,
+                    index,
+                    inverse_operation(
+                        "PATCH",
+                        format!("/v1/workspaces/{workspace_id}/items/{target_id}"),
+                        json!({"expected_version":current.version,"archived_at":now()}),
+                    ),
+                );
             }
             ("POST", "items", 6) if parts[5] == "reparent" && parts[4] == target_id => {
                 let current_item: Item = match get(tx, workspace_id, "items", target_id).await {
@@ -7501,16 +7659,21 @@ async fn reverse_preview(
                     };
                     json!(position as i64)
                 };
-                inverse.push(inverse_operation(
-                    "POST",
-                    format!("/v1/workspaces/{workspace_id}/items/{target_id}/reparent"),
-                    json!({
-                        "expected_version":current_item.version,
-                        "parent_id":before.get("target_id").cloned().unwrap_or(Value::Null),
-                        "position":restore_position,
-                        "rationale":before.get("rationale").cloned().unwrap_or(json!("")),
-                    }),
-                ));
+                push_undo_operation(
+                    &mut inverse,
+                    &mut undo_operation_sources,
+                    index,
+                    inverse_operation(
+                        "POST",
+                        format!("/v1/workspaces/{workspace_id}/items/{target_id}/reparent"),
+                        json!({
+                            "expected_version":current_item.version,
+                            "parent_id":before.get("target_id").cloned().unwrap_or(Value::Null),
+                            "position":restore_position,
+                            "rationale":before.get("rationale").cloned().unwrap_or(json!("")),
+                        }),
+                    ),
+                );
             }
             ("POST", "relations", 4) => {
                 let relation_id = change["relation_delta"]["after"]["relation_id"]
@@ -7526,11 +7689,16 @@ async fn reverse_preview(
                     conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_changed_after_source"}));
                     continue;
                 }
-                inverse.push(inverse_operation(
-                    "DELETE",
-                    format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
-                    json!({"expected_version":relation.version}),
-                ));
+                push_undo_operation(
+                    &mut inverse,
+                    &mut undo_operation_sources,
+                    index,
+                    inverse_operation(
+                        "DELETE",
+                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                        json!({"expected_version":relation.version}),
+                    ),
+                );
             }
             ("DELETE", "relations", 5) => {
                 let old = &change["relation_delta"]["before"];
@@ -7601,16 +7769,21 @@ async fn reverse_preview(
                         conflicts.push(json!({"operation":index,"item_id":item_id,"parent_id":parent_id,"reason":"sibling_order_snapshot_missing"}));
                         continue;
                     };
-                    inverse.push(inverse_operation(
-                        "POST",
-                        format!("/v1/workspaces/{workspace_id}/items/{item_id}/reparent"),
-                        json!({
-                            "expected_version":item.version,
-                            "parent_id":parent_id,
-                            "position":position,
-                            "rationale":old["rationale"],
-                        }),
-                    ));
+                    push_undo_operation(
+                        &mut inverse,
+                        &mut undo_operation_sources,
+                        index,
+                        inverse_operation(
+                            "POST",
+                            format!("/v1/workspaces/{workspace_id}/items/{item_id}/reparent"),
+                            json!({
+                                "expected_version":item.version,
+                                "parent_id":parent_id,
+                                "position":position,
+                                "rationale":old["rationale"],
+                            }),
+                        ),
+                    );
                 } else {
                     let source_id = text(old, "source_id");
                     let target_id = text(old, "target_id");
@@ -7628,16 +7801,21 @@ async fn reverse_preview(
                             continue;
                         }
                     }
-                    inverse.push(inverse_operation(
-                        "POST",
-                        format!("/v1/workspaces/{workspace_id}/relations"),
-                        json!({
-                            "source_id":old["source_id"],
-                            "target_id":old["target_id"],
-                            "type":old["relation_type"],
-                            "rationale":old["rationale"],
-                        }),
-                    ));
+                    push_undo_operation(
+                        &mut inverse,
+                        &mut undo_operation_sources,
+                        index,
+                        inverse_operation(
+                            "POST",
+                            format!("/v1/workspaces/{workspace_id}/relations"),
+                            json!({
+                                "source_id":old["source_id"],
+                                "target_id":old["target_id"],
+                                "type":old["relation_type"],
+                                "rationale":old["rationale"],
+                            }),
+                        ),
+                    );
                 }
             }
             _ => conflicts.push(json!({
@@ -7675,6 +7853,7 @@ async fn reverse_preview(
     proposal["undo_of"] = json!(change_id);
     proposal["undo_reason"] = json!(reason);
     proposal["undo_operations"] = json!(selected);
+    proposal["undo_operation_sources"] = json!(undo_operation_sources);
     put(tx, workspace_id, "changesets", &proposal_id, &proposal).await?;
     Ok(proposal)
 }
