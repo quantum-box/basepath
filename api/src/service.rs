@@ -4151,6 +4151,7 @@ async fn dispatch_inner(
             // response keeps working, with what the operations produced
             // alongside it rather than stored on the row.
             c["results"] = json!(results);
+            mask_unavailable_change_source(tx, actor, w, &mut c).await?;
             Ok(c)
         }
         // Rejecting only discards a proposal, so an agent may do it: nothing
@@ -4171,6 +4172,7 @@ async fn dispatch_inner(
             // A rejected proposal can never be applied, approval or not.
             c["approved_hash"] = Value::Null;
             put(tx, w, col, id, &c).await?;
+            mask_unavailable_change_source(tx, actor, w, &mut c).await?;
             Ok(c)
         }
         ("POST", "changesets", id, "apply") => {
@@ -4184,6 +4186,7 @@ async fn dispatch_inner(
             if c["status"] == "applied"
                 && (c["approved_by"] == actor.id || c["applied_by"] == actor.id)
             {
+                mask_unavailable_change_source(tx, actor, w, &mut c).await?;
                 return Ok(json!({"changeset":c,"results":[],"already_applied":true}));
             }
             validate_preview(tx, w, &c).await?;
@@ -4209,6 +4212,7 @@ async fn dispatch_inner(
                     c["auto_apply_rule"] = json!(rule.id);
                     let output = commit(tx, actor, &mut c).await?;
                     put(tx, w, col, id, &c).await?;
+                    mask_unavailable_change_source(tx, actor, w, &mut c).await?;
                     return Ok(json!({"changeset":c,"results":output,"auto_applied":true}));
                 }
             }
@@ -4228,6 +4232,7 @@ async fn dispatch_inner(
             }
             let output = commit(tx, actor, &mut c).await?;
             put(tx, w, col, id, &c).await?;
+            mask_unavailable_change_source(tx, actor, w, &mut c).await?;
             Ok(json!({"changeset":c,"results":output}))
         }
         // The structured reading of a conversation. A draft is versioned
@@ -6266,6 +6271,27 @@ fn history_item_matches(current: &Value, expected: &Value) -> bool {
     current == expected
 }
 
+async fn item_has_activity(tx: &mut Tx, workspace_id: &str, item_id: &str) -> Result<bool> {
+    if list::<Checkin>(tx, workspace_id, "checkins")
+        .await?
+        .iter()
+        .any(|checkin| checkin.item_id == item_id)
+    {
+        return Ok(true);
+    }
+    if list::<Record>(tx, workspace_id, "records")
+        .await?
+        .iter()
+        .any(|record| record.item_ids.iter().any(|id| id == item_id))
+    {
+        return Ok(true);
+    }
+    Ok(list::<Metric>(tx, workspace_id, "metrics")
+        .await?
+        .iter()
+        .any(|metric| metric.item_id == item_id))
+}
+
 fn relation_snapshot_matches(relation: &Relation, expected: &Value) -> bool {
     relation.source_id == text(expected, "source_id")
         && relation.target_id == text(expected, "target_id")
@@ -6551,6 +6577,10 @@ async fn reverse_preview(
                 let current_value = value(&current)?;
                 if !history_item_matches(&current_value, &change["after"]) {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_changed_after_source"}));
+                    continue;
+                }
+                if item_has_activity(tx, workspace_id, target_id).await? {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_activity"}));
                     continue;
                 }
                 let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
