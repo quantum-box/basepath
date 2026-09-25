@@ -6607,8 +6607,8 @@ async fn reverse_preview(
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_moved_after_source"}));
                     continue;
                 }
-                if parent.is_some() {
-                    let relation_id = text(parent.as_ref().unwrap(), "relation_id");
+                if let Some(parent) = parent.as_ref() {
+                    let relation_id = text(parent, "relation_id");
                     let Some(relation) =
                         relations.iter().find(|relation| relation.id == relation_id)
                     else {
@@ -6742,19 +6742,11 @@ async fn reverse_preview(
                     conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_changed_after_source"}));
                     continue;
                 }
-                if relation.relation_type == "part_of" {
-                    inverse.push(inverse_operation(
-                        "DELETE",
-                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
-                        json!({"expected_version":relation.version}),
-                    ));
-                } else {
-                    inverse.push(inverse_operation(
-                        "DELETE",
-                        format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
-                        json!({"expected_version":relation.version}),
-                    ));
-                }
+                inverse.push(inverse_operation(
+                    "DELETE",
+                    format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                    json!({"expected_version":relation.version}),
+                ));
             }
             ("DELETE", "relations", 5) => {
                 let old = &change["relation_delta"]["before"];
