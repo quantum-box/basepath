@@ -7465,6 +7465,7 @@ async fn item_has_later_activity(
     source_applied_at: &str,
     source_metric_ids: Option<&[Value]>,
     source_relation_state: Option<&[Value]>,
+    ignored_relation_ids: &HashSet<String>,
 ) -> Result<bool> {
     if source_applied_at.is_empty() {
         return Ok(true);
@@ -7510,10 +7511,15 @@ async fn item_has_later_activity(
     }
     let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
     if let Some(source_state) = source_relation_state {
-        return Ok(item_relation_activity_state(&relations, item_id) != source_state);
+        let current_state = item_relation_activity_state(&relations, item_id)
+            .into_iter()
+            .filter(|relation| !ignored_relation_ids.contains(text(relation, "id")))
+            .collect::<Vec<_>>();
+        return Ok(current_state.as_slice() != source_state);
     }
     Ok(relations.iter().any(|relation| {
         (relation.source_id == item_id || relation.target_id == item_id)
+            && !ignored_relation_ids.contains(&relation.id)
             && relation
                 .created_at
                 .as_deref()
@@ -7877,6 +7883,37 @@ async fn reverse_preview(
                         }));
                         continue;
                     }
+                    let selected_later_relation_ids = selected
+                        .iter()
+                        .copied()
+                        .filter(|later_index| *later_index > index)
+                        .filter_map(|later_index| {
+                            let later_operation = &operations[later_index];
+                            let later_change = &changes[later_index];
+                            let later_parts: Vec<_> =
+                                later_operation.path.trim_matches('/').split('/').collect();
+                            match (
+                                later_operation.method.as_str(),
+                                later_parts.get(3).copied(),
+                                later_parts.len(),
+                            ) {
+                                ("POST", Some("relations"), 4)
+                                    if later_change["effect"] == "created" =>
+                                {
+                                    Some(text(later_change, "id").to_owned())
+                                }
+                                ("POST", Some("items"), 4)
+                                    if later_change["effect"] == "created" =>
+                                {
+                                    later_change["relation_delta"]["after"]["relation_id"]
+                                        .as_str()
+                                        .map(str::to_owned)
+                                }
+                                _ => None,
+                            }
+                        })
+                        .filter(|relation_id| !relation_id.is_empty())
+                        .collect::<HashSet<_>>();
                     if item_has_later_activity(
                         tx,
                         workspace_id,
@@ -7886,6 +7923,7 @@ async fn reverse_preview(
                         change["relation_state"]["after"]
                             .as_array()
                             .map(Vec::as_slice),
+                        &selected_later_relation_ids,
                     )
                     .await?
                     {
@@ -8188,10 +8226,7 @@ async fn reverse_preview(
                 let relation_id = parts[4];
                 let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
                 if relations.iter().any(|relation| {
-                    relation.id == relation_id
-                        || (relation.source_id == text(old, "source_id")
-                            && relation.target_id == text(old, "target_id")
-                            && relation.relation_type == text(old, "relation_type"))
+                    relation.id == relation_id || relation_snapshot_identity_matches(relation, old)
                 }) {
                     conflicts.push(json!({"operation":index,"relation_id":relation_id,"reason":"relation_recreated_after_source"}));
                     continue;
