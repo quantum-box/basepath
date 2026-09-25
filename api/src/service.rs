@@ -2287,8 +2287,12 @@ impl Service {
             }
             return Ok(response);
         }
-        let history_before =
-            plan_history_state(&mut tx, w, method, path, &body, None, false).await?;
+        let compound_history = is_compound_plan_write(method, path);
+        let history_before = if compound_history {
+            Some(plan_history_compound_state(&mut tx, w).await?)
+        } else {
+            plan_history_state(&mut tx, w, method, path, &body, None, false).await?
+        };
         let base_version = if history_before.is_some() {
             Some(workspace_version(&mut tx, w).await?)
         } else {
@@ -2305,24 +2309,45 @@ impl Service {
         )
         .await?;
         let history_after = if history_before.is_some() {
-            plan_history_state(&mut tx, w, method, path, &body, Some(&result), true).await?
+            if compound_history {
+                Some(plan_history_compound_state(&mut tx, w).await?)
+            } else {
+                plan_history_state(&mut tx, w, method, path, &body, Some(&result), true).await?
+            }
         } else {
             None
         };
         let audit_details = match (history_before, history_after, base_version) {
             (Some(before), Some(after), Some(base_version)) => {
-                let deduplicated_item_id = before["deduplicated_item_id"].as_str();
-                let returned_item_id = after["item"]["id"].as_str();
-                if deduplicated_item_id.is_some() && deduplicated_item_id == returned_item_id {
-                    None
+                if compound_history {
+                    let (operations, changes) = plan_history_compound_changes(w, &before, &after);
+                    if changes.is_empty() {
+                        None
+                    } else {
+                        Some(json!({
+                            "base_version": base_version,
+                            "applied_version": workspace_version(&mut tx, w).await?,
+                            "operation": {"method": method, "path": path, "body": body},
+                            "operations": operations,
+                            "changes": changes,
+                        }))
+                    }
                 } else {
-                    let change = plan_history_change(method, path, &body, before, after);
-                    Some(json!({
-                        "base_version": base_version,
-                        "applied_version": workspace_version(&mut tx, w).await?,
-                        "operation": {"method": method, "path": path, "body": body},
-                        "changes": [change],
-                    }))
+                    let deduplicated_item_id = before["deduplicated_item_id"].as_str();
+                    let returned_item_id = after["item"]["id"].as_str();
+                    if deduplicated_item_id.is_some() && deduplicated_item_id == returned_item_id {
+                        None
+                    } else {
+                        let operation = json!({"method": method, "path": path, "body": body});
+                        let change = plan_history_change(method, path, &body, before, after);
+                        Some(json!({
+                            "base_version": base_version,
+                            "applied_version": workspace_version(&mut tx, w).await?,
+                            "operation": operation,
+                            "operations": [operation],
+                            "changes": [change],
+                        }))
+                    }
                 }
             }
             _ => None,
@@ -4523,6 +4548,453 @@ async fn plan_history_state(
     Ok(Some(value))
 }
 
+fn is_compound_plan_write(method: &str, path: &str) -> bool {
+    if method != "POST" {
+        return false;
+    }
+    let parts: Vec<_> = path.trim_matches('/').split('/').collect();
+    parts.len() >= 5
+        && parts[0] == "v1"
+        && parts[1] == "workspaces"
+        && match (
+            parts.get(3).copied(),
+            parts.get(4).copied(),
+            parts.get(5).copied(),
+        ) {
+            (Some("templates"), Some(_), Some("apply")) if parts.len() == 6 => true,
+            (Some("onboarding"), Some("complete"), None) if parts.len() == 5 => true,
+            (Some("cycles"), Some(_), Some("carry-over")) if parts.len() == 6 => true,
+            _ => false,
+        }
+}
+
+fn history_state_by_id(rows: Vec<Value>) -> serde_json::Map<String, Value> {
+    let mut result = serde_json::Map::new();
+    for row in rows {
+        if let Some(id) = row["id"].as_str() {
+            result.insert(id.to_owned(), row);
+        }
+    }
+    result
+}
+
+async fn plan_history_compound_state(tx: &mut Tx, workspace_id: &str) -> Result<Value> {
+    let item_rows: Vec<Item> = list(tx, workspace_id, "items").await?;
+    let mut items = serde_json::Map::new();
+    for item in &item_rows {
+        items.insert(item.id.clone(), serde_json::to_value(item)?);
+    }
+    let metrics = history_state_by_id(list::<Value>(tx, workspace_id, "metrics").await?);
+    let views = history_state_by_id(list::<Value>(tx, workspace_id, "views").await?);
+    let relation_rows: Vec<Relation> = list(tx, workspace_id, "relations").await?;
+    let item_by_id: HashMap<&str, &Item> = item_rows
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+    let active_item_ids: HashSet<&str> = item_rows
+        .iter()
+        .filter(|item| item.archived_at.is_none())
+        .map(|item| item.id.as_str())
+        .collect();
+    let item_order: HashMap<&str, usize> = item_rows
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index))
+        .collect();
+    let mut siblings_by_parent: HashMap<String, Vec<&Relation>> = HashMap::new();
+    for relation in &relation_rows {
+        if relation.relation_type == "part_of"
+            && active_item_ids.contains(relation.source_id.as_str())
+        {
+            siblings_by_parent
+                .entry(relation.target_id.clone())
+                .or_default()
+                .push(relation);
+        }
+    }
+    for siblings in siblings_by_parent.values_mut() {
+        siblings.sort_by_key(|relation| {
+            (
+                relation.position.unwrap_or(i64::MAX),
+                item_order
+                    .get(relation.source_id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                relation.id.clone(),
+            )
+        });
+    }
+    let mut relations = serde_json::Map::new();
+    for relation in &relation_rows {
+        if let (Some(source), Some(target)) = (
+            item_by_id.get(relation.source_id.as_str()),
+            item_by_id.get(relation.target_id.as_str()),
+        ) {
+            let mut snapshot = json!({
+                "relation_id": relation.id,
+                "relation_type": relation.relation_type,
+                "source_id": relation.source_id,
+                "source_title": source.title,
+                "target_id": relation.target_id,
+                "target_title": target.title,
+                "position": relation.position,
+                "rationale": relation.rationale,
+            });
+            if relation.relation_type == "part_of" {
+                snapshot["parent_sibling_ids"] = json!(siblings_by_parent
+                    .get(&relation.target_id)
+                    .into_iter()
+                    .flat_map(|siblings| siblings.iter())
+                    .map(|sibling| sibling.source_id.clone())
+                    .collect::<Vec<_>>());
+            }
+            relations.insert(relation.id.clone(), snapshot);
+        }
+    }
+    Ok(json!({
+        "items": items,
+        "relations": relations,
+        "metrics": metrics,
+        "views": views,
+    }))
+}
+
+fn compound_history_ids(before: &Value, after: &Value) -> Vec<String> {
+    let mut ids = before
+        .as_object()
+        .into_iter()
+        .flat_map(|rows| rows.keys().cloned())
+        .chain(
+            after
+                .as_object()
+                .into_iter()
+                .flat_map(|rows| rows.keys().cloned()),
+        )
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn compound_item_creation_depth(
+    item_id: &str,
+    created_items: &HashSet<String>,
+    parent_by_item: &HashMap<String, String>,
+    visiting: &mut HashSet<String>,
+) -> usize {
+    if !created_items.contains(item_id) || !visiting.insert(item_id.to_owned()) {
+        return 0;
+    }
+    let depth = parent_by_item
+        .get(item_id)
+        .filter(|parent_id| created_items.contains(parent_id.as_str()))
+        .map(|parent_id| {
+            compound_item_creation_depth(parent_id, created_items, parent_by_item, visiting) + 1
+        })
+        .unwrap_or(0);
+    visiting.remove(item_id);
+    depth
+}
+
+fn compound_item_patch_body(before: &Value, after: &Value) -> Value {
+    let mut body = serde_json::Map::new();
+    if let Some(version) = before.get("version") {
+        body.insert("expected_version".into(), version.clone());
+    }
+    for field in [
+        "title",
+        "description",
+        "state",
+        "archived_at",
+        "start_date",
+        "due_date",
+        "scheduled_date",
+        "scheduled_time",
+    ] {
+        if before.get(field) != after.get(field) {
+            body.insert(
+                field.to_owned(),
+                after.get(field).cloned().unwrap_or(Value::Null),
+            );
+        }
+    }
+    let before_fields = before["fields"].as_object();
+    let after_fields = after["fields"].as_object();
+    let fields = before_fields
+        .into_iter()
+        .flat_map(|fields| fields.keys())
+        .chain(after_fields.into_iter().flat_map(|fields| fields.keys()))
+        .collect::<HashSet<_>>();
+    let mut changed_fields = serde_json::Map::new();
+    for field in fields {
+        if before["fields"].get(field) != after["fields"].get(field) {
+            changed_fields.insert(
+                field.clone(),
+                after["fields"].get(field).cloned().unwrap_or(Value::Null),
+            );
+        }
+    }
+    if !changed_fields.is_empty() {
+        body.insert("fields".into(), Value::Object(changed_fields));
+    }
+    Value::Object(body)
+}
+
+fn compound_history_operation(method: &str, path: String, body: Value) -> Value {
+    json!({
+        "method": method,
+        "path": path,
+        "body": body,
+        "basis": Value::Null,
+        "match_rationale": Value::Null,
+        "interpretation": Value::Null,
+    })
+}
+
+fn compound_relation_unchanged(before: &Value, after: &Value) -> bool {
+    [
+        "relation_id",
+        "relation_type",
+        "source_id",
+        "target_id",
+        "position",
+        "rationale",
+    ]
+    .into_iter()
+    .all(|field| before.get(field) == after.get(field))
+}
+
+fn push_compound_history_change(
+    operations: &mut Vec<Value>,
+    changes: &mut Vec<Value>,
+    method: &str,
+    path: String,
+    body: Value,
+    before_state: Value,
+    after_state: Value,
+) {
+    let operation = compound_history_operation(method, path.clone(), body.clone());
+    let change = plan_history_change(method, &path, &body, before_state, after_state);
+    operations.push(operation);
+    changes.push(change);
+}
+
+fn plan_history_compound_changes(
+    workspace_id: &str,
+    before: &Value,
+    after: &Value,
+) -> (Vec<Value>, Vec<Value>) {
+    let before_items = &before["items"];
+    let after_items = &after["items"];
+    let item_ids = compound_history_ids(before_items, after_items);
+    let created_items = item_ids
+        .iter()
+        .filter(|id| before_items.get(*id).is_none() && after_items.get(*id).is_some())
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut parent_by_item = HashMap::new();
+    for relation in after["relations"]
+        .as_object()
+        .into_iter()
+        .flat_map(|rows| rows.values())
+    {
+        if relation["relation_type"] == "part_of" {
+            if let (Some(source), Some(target)) = (
+                relation["source_id"].as_str(),
+                relation["target_id"].as_str(),
+            ) {
+                parent_by_item.insert(source.to_owned(), target.to_owned());
+            }
+        }
+    }
+
+    let mut ordered_item_ids = item_ids;
+    ordered_item_ids.sort_by(|left, right| {
+        let left_created = created_items.contains(left);
+        let right_created = created_items.contains(right);
+        match (left_created, right_created) {
+            (true, true) => {
+                let left_depth = compound_item_creation_depth(
+                    left,
+                    &created_items,
+                    &parent_by_item,
+                    &mut HashSet::new(),
+                );
+                let right_depth = compound_item_creation_depth(
+                    right,
+                    &created_items,
+                    &parent_by_item,
+                    &mut HashSet::new(),
+                );
+                left_depth.cmp(&right_depth).then_with(|| left.cmp(right))
+            }
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => left.cmp(right),
+        }
+    });
+
+    let mut operations = Vec::new();
+    let mut changes = Vec::new();
+    for item_id in ordered_item_ids {
+        let old = before_items.get(&item_id);
+        let new = after_items.get(&item_id);
+        if old == new {
+            continue;
+        }
+        let created = old.is_none() && new.is_some();
+        let parent = if created {
+            after["relations"]
+                .as_object()
+                .into_iter()
+                .flat_map(|rows| rows.values())
+                .find(|relation| {
+                    relation["relation_type"] == "part_of"
+                        && relation["source_id"].as_str() == Some(item_id.as_str())
+                        && before["relations"]
+                            .get(text(relation, "relation_id"))
+                            .is_none()
+                })
+                .cloned()
+        } else {
+            None
+        };
+        let (method, path, body, before_state, after_state) = if created {
+            let mut body = serde_json::Map::new();
+            if let Some(parent) = parent.as_ref() {
+                body.insert("parent_id".into(), parent["target_id"].clone());
+            }
+            (
+                "POST",
+                format!("/v1/workspaces/{workspace_id}/items"),
+                Value::Object(body),
+                json!({"item": Value::Null}),
+                json!({"item": new.cloned().unwrap_or(Value::Null), "parent": parent.unwrap_or(Value::Null)}),
+            )
+        } else {
+            let body = old
+                .zip(new)
+                .map(|(old, new)| compound_item_patch_body(old, new))
+                .unwrap_or_else(|| json!({}));
+            (
+                "PATCH",
+                format!("/v1/workspaces/{workspace_id}/items/{item_id}"),
+                body,
+                json!({"item": old.cloned().unwrap_or(Value::Null)}),
+                json!({"item": new.cloned().unwrap_or(Value::Null), "parent": Value::Null}),
+            )
+        };
+        push_compound_history_change(
+            &mut operations,
+            &mut changes,
+            method,
+            path,
+            body,
+            before_state,
+            after_state,
+        );
+    }
+
+    let before_relations = &before["relations"];
+    let after_relations = &after["relations"];
+    for relation_id in compound_history_ids(before_relations, after_relations) {
+        let old = before_relations.get(&relation_id);
+        let new = after_relations.get(&relation_id);
+        if old == new
+            || old
+                .zip(new)
+                .is_some_and(|(old, new)| compound_relation_unchanged(old, new))
+        {
+            continue;
+        }
+        // A newly created item's parent link is already included in the
+        // item's semantic create operation, just as it is for POST /items.
+        if old.is_none()
+            && new.is_some_and(|relation| {
+                relation["relation_type"] == "part_of"
+                    && relation["source_id"]
+                        .as_str()
+                        .is_some_and(|item_id| created_items.contains(item_id))
+            })
+        {
+            continue;
+        }
+        if let Some(new) = new {
+            let body = json!({
+                "source_id": new["source_id"],
+                "target_id": new["target_id"],
+                "type": new["relation_type"],
+                "rationale": new["rationale"],
+            });
+            push_compound_history_change(
+                &mut operations,
+                &mut changes,
+                "POST",
+                format!("/v1/workspaces/{workspace_id}/relations"),
+                body,
+                Value::Null,
+                new.clone(),
+            );
+        } else if let Some(old) = old {
+            push_compound_history_change(
+                &mut operations,
+                &mut changes,
+                "DELETE",
+                format!("/v1/workspaces/{workspace_id}/relations/{relation_id}"),
+                json!({}),
+                old.clone(),
+                Value::Null,
+            );
+        }
+    }
+
+    for collection in ["metrics", "views"] {
+        let before_rows = &before[collection];
+        let after_rows = &after[collection];
+        for id in compound_history_ids(before_rows, after_rows) {
+            let old = before_rows.get(&id);
+            let new = after_rows.get(&id);
+            if old == new {
+                continue;
+            }
+            let (method, path, body) = if new.is_some() {
+                (
+                    "POST",
+                    format!("/v1/workspaces/{workspace_id}/{collection}"),
+                    json!({}),
+                )
+            } else {
+                (
+                    "DELETE",
+                    format!("/v1/workspaces/{workspace_id}/{collection}/{id}"),
+                    json!({}),
+                )
+            };
+            let before_state = old.cloned().unwrap_or(Value::Null);
+            let after_state = new.cloned().unwrap_or(Value::Null);
+            let change = plan_history_change(
+                method,
+                &path,
+                &body,
+                before_state.clone(),
+                after_state.clone(),
+            );
+            let mut change = change;
+            if change["title"].as_str().is_none_or(str::is_empty) {
+                change["title"] = new
+                    .or(old)
+                    .and_then(|snapshot| snapshot["name"].as_str())
+                    .map(|name| json!(name))
+                    .unwrap_or(Value::Null);
+            }
+            operations.push(compound_history_operation(method, path, body));
+            changes.push(change);
+        }
+    }
+
+    (operations, changes)
+}
+
 fn plan_history_change(
     method: &str,
     path: &str,
@@ -6066,15 +6538,23 @@ async fn stored_history_versions(
             continue;
         }
         let mut changes = saved_changes.clone();
-        let operation = &details["operation"];
+        let operations = details["operations"]
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| vec![details["operation"].clone()]);
+        let mut any_undoable = false;
         for (index, change) in changes.iter_mut().enumerate() {
             change["operation_index"] = json!(index);
-            change["undoable"] = json!(safely_reversible_operation(operation, change));
+            let undoable = operations
+                .get(index)
+                .is_some_and(|operation| safely_reversible_operation(operation, change));
+            any_undoable |= undoable;
+            change["undoable"] = json!(undoable);
         }
         versions.push(json!({
             "id": row.text(0)?,
             "kind": "audit",
-            "undoable": true,
+            "undoable": any_undoable,
             "title": row.text(2)?,
             "status": "applied",
             "actor": row.text(1)?,
@@ -6492,7 +6972,10 @@ async fn reverse_preview(
                 "applied_at": row.text(2)?,
                 "base_version": details["base_version"],
                 "applied_version": details["applied_version"],
-                "operations": [details["operation"]],
+                "operations": details["operations"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| vec![details["operation"].clone()]),
                 "changes": details["changes"],
             })
         };
@@ -6593,6 +7076,20 @@ async fn reverse_preview(
             }
         })
         .filter(|relation_id| !relation_id.is_empty())
+        .collect();
+    let selected_created_item_ids: HashSet<String> = selected
+        .iter()
+        .filter_map(|index| {
+            let operation = &operations[*index];
+            let change = &changes[*index];
+            let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
+            (operation.method == "POST"
+                && parts.get(3) == Some(&"items")
+                && parts.len() == 4
+                && change["effect"] == "created")
+                .then(|| text(change, "id").to_owned())
+        })
+        .filter(|item_id| !item_id.is_empty())
         .collect();
 
     let mut conflicts = Vec::new();
@@ -6742,6 +7239,17 @@ async fn reverse_preview(
                 });
                 if has_unrelated_relations {
                     conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_relations"}));
+                    continue;
+                }
+                let items: Vec<Item> = list(tx, workspace_id, "items").await?;
+                let has_unselected_next_action_reference = items.iter().any(|item| {
+                    item.id != target_id
+                        && item.archived_at.is_none()
+                        && item.fields.next_action_id.as_deref() == Some(target_id)
+                        && !selected_created_item_ids.contains(&item.id)
+                });
+                if has_unselected_next_action_reference {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_references"}));
                     continue;
                 }
                 let parent = part_of_snapshot(tx, workspace_id, target_id).await?;
