@@ -2303,13 +2303,19 @@ impl Service {
         };
         let audit_details = match (history_before, history_after, base_version) {
             (Some(before), Some(after), Some(base_version)) => {
-                let change = plan_history_change(method, path, &body, before, after);
-                Some(json!({
-                    "base_version": base_version,
-                    "applied_version": workspace_version(&mut tx, w).await?,
-                    "operation": {"method": method, "path": path, "body": body},
-                    "changes": [change],
-                }))
+                let deduplicated_item_id = before["deduplicated_item_id"].as_str();
+                let returned_item_id = after["item"]["id"].as_str();
+                if deduplicated_item_id.is_some() && deduplicated_item_id == returned_item_id {
+                    None
+                } else {
+                    let change = plan_history_change(method, path, &body, before, after);
+                    Some(json!({
+                        "base_version": base_version,
+                        "applied_version": workspace_version(&mut tx, w).await?,
+                        "operation": {"method": method, "path": path, "body": body},
+                        "changes": [change],
+                    }))
+                }
             }
             _ => None,
         };
@@ -4408,7 +4414,7 @@ async fn plan_history_state(
     workspace_id: &str,
     method: &str,
     path: &str,
-    _body: &Value,
+    body: &Value,
     result: Option<&Value>,
     after: bool,
 ) -> Result<Option<Value>> {
@@ -4427,7 +4433,30 @@ async fn plan_history_state(
         }
         ("POST", Some("items"), 4) => {
             if !after {
-                Value::Null
+                let reference = &body["fields"]["field_reference"];
+                let existing = match (
+                    reference["tenant_id"].as_str(),
+                    reference["external_id"].as_str(),
+                    reference["platform_id"].as_str(),
+                ) {
+                    (Some(tenant_id), Some(external_id), Some(platform_id)) => {
+                        list::<Item>(tx, workspace_id, "items")
+                            .await?
+                            .into_iter()
+                            .find(|item| {
+                                item.fields
+                                    .field_reference
+                                    .as_ref()
+                                    .is_some_and(|existing| {
+                                        existing.tenant_id == tenant_id
+                                            && existing.external_id == external_id
+                                            && existing.platform_id == platform_id
+                                    })
+                            })
+                    }
+                    _ => None,
+                };
+                existing.map_or(Value::Null, |item| json!({"deduplicated_item_id": item.id}))
             } else {
                 let item = result.cloned().ok_or_else(ApiError::missing)?;
                 let item_id = text(&item, "id");
@@ -6161,18 +6190,28 @@ async fn reverse_preview(
             "選択した操作にはすでに取り消し案があります",
         ));
     }
-    let created_items: HashSet<String> = selected
+    let selected_relation_ids: HashSet<String> = selected
         .iter()
         .filter_map(|index| {
             let operation = &operations[*index];
             let change = &changes[*index];
-            (operation.method == "POST"
-                && operation.path.trim_matches('/').split('/').count() == 4
-                && operation.path.trim_matches('/').split('/').nth(3) == Some("items")
-                && change["effect"] == "created")
-                .then(|| change["id"].as_str().map(str::to_owned))
-                .flatten()
+            let parts: Vec<_> = operation.path.trim_matches('/').split('/').collect();
+            match (
+                operation.method.as_str(),
+                parts.get(3).copied(),
+                parts.len(),
+            ) {
+                ("POST", Some("relations"), 4) if change["effect"] == "created" => {
+                    Some(text(change, "id").to_owned())
+                }
+                ("POST", Some("items"), 4) if change["effect"] == "created" => change
+                    ["relation_delta"]["after"]["relation_id"]
+                    .as_str()
+                    .map(str::to_owned),
+                _ => None,
+            }
         })
+        .filter(|relation_id| !relation_id.is_empty())
         .collect();
 
     let mut conflicts = Vec::new();
@@ -6287,17 +6326,12 @@ async fn reverse_preview(
                     continue;
                 }
                 let relations: Vec<Relation> = list(tx, workspace_id, "relations").await?;
-                let mut has_unrelated_children = false;
-                for relation in relations.iter().filter(|relation| {
-                    relation.relation_type == "part_of" && relation.target_id == target_id
-                }) {
-                    let child: Item = get(tx, workspace_id, "items", &relation.source_id).await?;
-                    if child.archived_at.is_none() && !created_items.contains(&child.id) {
-                        has_unrelated_children = true;
-                    }
-                }
-                if has_unrelated_children {
-                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_children"}));
+                let has_unrelated_relations = relations.iter().any(|relation| {
+                    (relation.source_id == target_id || relation.target_id == target_id)
+                        && !selected_relation_ids.contains(&relation.id)
+                });
+                if has_unrelated_relations {
+                    conflicts.push(json!({"operation":index,"item_id":target_id,"reason":"created_item_has_later_relations"}));
                     continue;
                 }
                 let parent = part_of_snapshot(tx, workspace_id, target_id).await?;
