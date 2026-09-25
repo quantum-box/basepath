@@ -2293,8 +2293,8 @@ impl Service {
         } else {
             plan_history_state(&mut tx, w, method, path, &body, None, false).await?
         };
-        let base_version = if history_before.is_some() {
-            Some(workspace_version(&mut tx, w).await?)
+        let base_versions = if history_before.is_some() {
+            Some(workspace_versions(&mut tx, w).await?)
         } else {
             None
         };
@@ -2317,8 +2317,23 @@ impl Service {
         } else {
             None
         };
-        let audit_details = match (history_before, history_after, base_version) {
-            (Some(before), Some(after), Some(base_version)) => {
+        let applied_versions = if history_after.is_some() {
+            Some(workspace_versions(&mut tx, w).await?)
+        } else {
+            None
+        };
+        let audit_details = match (
+            history_before,
+            history_after,
+            base_versions,
+            applied_versions,
+        ) {
+            (
+                Some(before),
+                Some(after),
+                Some((base_version, plan_base_version)),
+                Some((applied_version, plan_applied_version)),
+            ) => {
                 if compound_history {
                     let (operations, changes) = plan_history_compound_changes(w, &before, &after);
                     if changes.is_empty() {
@@ -2326,7 +2341,9 @@ impl Service {
                     } else {
                         Some(json!({
                             "base_version": base_version,
-                            "applied_version": workspace_version(&mut tx, w).await?,
+                            "applied_version": applied_version,
+                            "plan_base_version": plan_base_version,
+                            "plan_applied_version": plan_applied_version,
                             "operation": {"method": method, "path": path, "body": body},
                             "operations": operations,
                             "changes": changes,
@@ -2342,7 +2359,9 @@ impl Service {
                         let change = plan_history_change(method, path, &body, before, after);
                         Some(json!({
                             "base_version": base_version,
-                            "applied_version": workspace_version(&mut tx, w).await?,
+                            "applied_version": applied_version,
+                            "plan_base_version": plan_base_version,
+                            "plan_applied_version": plan_applied_version,
                             "operation": operation,
                             "operations": [operation],
                             "changes": [change],
@@ -5259,20 +5278,28 @@ fn compound_item_relation_activity_state(relations: &Value, item_id: &str) -> Ve
     state
 }
 
-async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
-    let mut parts = String::new();
+async fn workspace_versions(tx: &mut Tx, w: &str) -> Result<(String, String)> {
+    let mut plan_parts = String::new();
     for col in ["items", "relations", "metrics", "views"] {
-        parts.push_str(&serde_json::to_string(&list::<Value>(tx, w, col).await?)?);
+        plan_parts.push_str(&serde_json::to_string(&list::<Value>(tx, w, col).await?)?);
     }
+    let mut workspace_parts = plan_parts.clone();
     let sql = format!(
         "SELECT actor,role FROM memberships WHERE workspace_id=? ORDER BY actor{}",
         tx.lock_reads()
     );
     let rows = tx.fetch_all(&sql, &params![w]).await?;
     for row in &rows {
-        parts.push_str(&format!("{:?}", (row.text(0)?, row.text(1)?)));
+        workspace_parts.push_str(&format!("{:?}", (row.text(0)?, row.text(1)?)));
     }
-    Ok(format!("{:x}", Sha256::digest(parts)))
+    Ok((
+        format!("{:x}", Sha256::digest(workspace_parts)),
+        format!("{:x}", Sha256::digest(plan_parts)),
+    ))
+}
+
+async fn workspace_version(tx: &mut Tx, w: &str) -> Result<String> {
+    Ok(workspace_versions(tx, w).await?.0)
 }
 
 /// Returns the graph as it exists in the current transaction.
@@ -6494,6 +6521,7 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
     let ops: Vec<Operation> = serde_json::from_value(c["operations"].clone())?;
     let changes = c["changes"].as_array().cloned().unwrap_or_default();
     let workspace_id = text(c, "workspace_id").to_owned();
+    let plan_base_version = workspace_versions(tx, &workspace_id).await?.1;
     let human = Actor {
         id: actor.id.clone(),
         tenant: actor.tenant.clone(),
@@ -6532,7 +6560,10 @@ async fn commit(tx: &mut Tx, actor: &Actor, c: &mut Value) -> Result<Vec<Value>>
     c["applied_at"] = json!(now());
     c["applied_by"] = json!(actor.id);
     c["applied_by_connection"] = json!(actor.connection);
-    c["applied_version"] = json!(workspace_version(tx, text(c, "workspace_id")).await?);
+    let (applied_version, plan_applied_version) = workspace_versions(tx, &workspace_id).await?;
+    c["applied_version"] = json!(applied_version);
+    c["plan_base_version"] = json!(plan_base_version);
+    c["plan_applied_version"] = json!(plan_applied_version);
     Ok(output)
 }
 
@@ -6669,6 +6700,12 @@ async fn stored_history_versions(
     actor: &Actor,
     workspace_id: &str,
 ) -> Result<Vec<Value>> {
+    let current_items: HashMap<String, Item> = list::<Item>(tx, workspace_id, "items")
+        .await?
+        .into_iter()
+        .map(|item| (item.id.clone(), item))
+        .collect();
+    let workspace_role = role(tx, workspace_id, &actor.id).await?.unwrap_or_default();
     let mut versions: Vec<Value> = list::<Value>(tx, workspace_id, "changesets")
         .await?
         .into_iter()
@@ -6676,20 +6713,31 @@ async fn stored_history_versions(
         .collect();
     for version in &mut versions {
         version["kind"] = json!("changeset");
-        version["undoable"] = json!(true);
         mask_unavailable_change_source(tx, actor, workspace_id, version).await?;
         let operations = version["operations"]
             .as_array()
             .cloned()
             .unwrap_or_default();
+        let mut any_undoable = false;
         if let Some(changes) = version["changes"].as_array_mut() {
             for (index, change) in changes.iter_mut().enumerate() {
                 change["operation_index"] = json!(index);
                 let operation = operations.get(index);
-                change["undoable"] = json!(operation
-                    .is_some_and(|operation| { safely_reversible_operation(operation, change) }));
+                let undoable = operation.is_some_and(|operation| {
+                    safely_reversible_operation(operation, change)
+                        && history_operation_owner_allows_undo(
+                            operation,
+                            change,
+                            &actor.id,
+                            &workspace_role,
+                            &current_items,
+                        )
+                });
+                any_undoable |= undoable;
+                change["undoable"] = json!(undoable);
             }
         }
+        version["undoable"] = json!(any_undoable);
     }
 
     let rows = tx
@@ -6718,9 +6766,16 @@ async fn stored_history_versions(
         let mut any_undoable = false;
         for (index, change) in changes.iter_mut().enumerate() {
             change["operation_index"] = json!(index);
-            let undoable = operations
-                .get(index)
-                .is_some_and(|operation| safely_reversible_operation(operation, change));
+            let undoable = operations.get(index).is_some_and(|operation| {
+                safely_reversible_operation(operation, change)
+                    && history_operation_owner_allows_undo(
+                        operation,
+                        change,
+                        &actor.id,
+                        &workspace_role,
+                        &current_items,
+                    )
+            });
             any_undoable |= undoable;
             change["undoable"] = json!(undoable);
         }
@@ -6738,6 +6793,8 @@ async fn stored_history_versions(
             "source_status": "not_linked",
             "base_version": details["base_version"],
             "applied_version": details["applied_version"],
+            "plan_base_version": details["plan_base_version"],
+            "plan_applied_version": details["plan_applied_version"],
             "operation": details["operation"],
             "changes": changes,
         }));
@@ -6748,6 +6805,59 @@ async fn stored_history_versions(
             .then_with(|| text(left, "id").cmp(text(right, "id")))
     });
     Ok(versions)
+}
+
+fn history_operation_owner_allows_undo(
+    operation: &Value,
+    change: &Value,
+    actor_id: &str,
+    workspace_role: &str,
+    current_items: &HashMap<String, Item>,
+) -> bool {
+    let path = text(operation, "path");
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    if parts.first() != Some(&"items") {
+        return true;
+    }
+
+    let mut item_ids = HashSet::new();
+    if let Some(item_id) = parts.get(1).filter(|item_id| !item_id.is_empty()) {
+        item_ids.insert((*item_id).to_owned());
+    }
+    if parts.len() == 1 && text(change, "collection") == "items" {
+        let item_id = text(change, "id");
+        if !item_id.is_empty() {
+            item_ids.insert(item_id.to_owned());
+        }
+    }
+    if parts.get(2) == Some(&"reparent") {
+        if let Some(parent_id) = operation["body"]["parent_id"].as_str() {
+            item_ids.insert(parent_id.to_owned());
+        }
+        for snapshot in [
+            &change["relation_delta"]["before"],
+            &change["relation_delta"]["after"],
+        ] {
+            if text(snapshot, "relation_type") == "part_of" {
+                for field in ["source_id", "target_id"] {
+                    let item_id = text(snapshot, field);
+                    if !item_id.is_empty() {
+                        item_ids.insert(item_id.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    item_ids.into_iter().all(|item_id| {
+        let Some(item) = current_items.get(&item_id) else {
+            return true;
+        };
+        let Some(owner) = &item.fields.owner else {
+            return true;
+        };
+        owner.kind != "person" || owner.id == actor_id || workspace_role == "owner"
+    })
 }
 
 fn item_patch_reopens_completed_action(body: &Value, before: &Value) -> bool {
@@ -6939,24 +7049,27 @@ async fn history_compare(
         ));
     }
 
-    let mut coverage_complete = versions[from_index]["applied_version"].is_string();
-    let mut expected_version = versions[from_index]["applied_version"]
-        .as_str()
-        .map(str::to_owned);
+    let mut coverage_complete = history_coverage_token(&versions[from_index], false).is_some();
+    let mut expected_version =
+        history_coverage_token(&versions[from_index], false).map(str::to_owned);
+    let mut expected_plan_only = versions[from_index]["plan_applied_version"].is_string();
     let mut coverage_gaps = Vec::new();
     let mut merged = Vec::<Value>::new();
     let mut positions = HashMap::<String, usize>::new();
     for version in versions.iter().take(to_index + 1).skip(from_index + 1) {
-        let base = version["base_version"].as_str();
-        if expected_version.as_deref() != base {
+        let base = history_coverage_token(version, true);
+        let base_plan_only = version["plan_base_version"].is_string();
+        if expected_plan_only != base_plan_only || expected_version.as_deref() != base {
             coverage_complete = false;
             coverage_gaps.push(json!({
                 "change_id": version["id"],
                 "expected_version": expected_version,
                 "recorded_base_version": base,
+                "version_scope_changed": expected_plan_only != base_plan_only,
             }));
         }
-        expected_version = version["applied_version"].as_str().map(str::to_owned);
+        expected_version = history_coverage_token(version, false).map(str::to_owned);
+        expected_plan_only = version["plan_applied_version"].is_string();
         if expected_version.is_none() {
             coverage_complete = false;
         }
@@ -7027,6 +7140,18 @@ async fn history_compare(
         "coverage_gaps": coverage_gaps,
         "changes": merged,
     }))
+}
+
+fn history_coverage_token(version: &Value, base: bool) -> Option<&str> {
+    if base {
+        version["plan_base_version"]
+            .as_str()
+            .or_else(|| version["base_version"].as_str())
+    } else {
+        version["plan_applied_version"]
+            .as_str()
+            .or_else(|| version["applied_version"].as_str())
+    }
 }
 
 fn undo_conflict(conflicts: Vec<Value>) -> ApiError {
@@ -7335,8 +7460,10 @@ fn relation_snapshot_identity_matches(relation: &Relation, expected: &Value) -> 
     let target_id = text(expected, "target_id");
     relation.relation_type == relation_type
         && if relation_type == "relates_to" {
-            (relation.source_id.as_str(), relation.target_id.as_str())
-                == (source_id.min(target_id), source_id.max(target_id))
+            (
+                relation.source_id.as_str().min(relation.target_id.as_str()),
+                relation.source_id.as_str().max(relation.target_id.as_str()),
+            ) == (source_id.min(target_id), source_id.max(target_id))
         } else {
             relation.source_id == source_id && relation.target_id == target_id
         }
